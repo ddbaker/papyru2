@@ -5,26 +5,26 @@ use gpui_component::{
 };
 use gpui_component_assets::Assets;
 
-pub struct Example {
-    input_state: Entity<InputState>,
+pub struct SingleLineInput {
+    sl_input_state: Entity<InputState>,
     display_text: SharedString,
 
-    /// We need to keep the subscriptions alive with the Example entity.
+    /// We need to keep the subscriptions alive with the SingleLineInput entity.
     ///
-    /// So if the Example entity is dropped, the subscriptions are also dropped.
+    /// So if the SingleLineInput entity is dropped, the subscriptions are also dropped.
     /// This is important to avoid memory leaks.
-    _subscriptions: Vec<Subscription>,
+    _sl_subscriptions: Vec<Subscription>,
 }
 
-impl Example {
+impl SingleLineInput {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Enter your name"));
+        let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Enter your name"));
 
-        let _subscriptions = vec![cx.subscribe_in(&input_state, window, {
-            let input_state = input_state.clone();
+        let _sl_subscriptions = vec![cx.subscribe_in(&sl_input_state, window, {
+            let sl_input_state = sl_input_state.clone();
             move |this, _, ev: &InputEvent, _window, cx| match ev {
                 InputEvent::Change => {
-                    let value = input_state.read(cx).value();
+                    let value = sl_input_state.read(cx).value();
                     this.display_text = format!("Hello, {}!", value).into();
                     cx.notify()
                 }
@@ -33,14 +33,14 @@ impl Example {
         })];
 
         Self {
-            input_state,
+            sl_input_state,
             display_text: SharedString::default(),
-            _subscriptions,
+            _sl_subscriptions,
         }
     }
 }
 
-impl Render for Example {
+impl Render for SingleLineInput {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .p_5()
@@ -48,7 +48,7 @@ impl Render for Example {
             .size_full()
             .items_center()
             .justify_center()
-            .child(Input::new(&self.input_state))
+            .child(Input::new(&self.sl_input_state))
             .child(self.display_text.clone())
     }
 }
@@ -67,7 +67,7 @@ fn main() {
 
         cx.spawn(async move |cx| {
             cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| Example::new(window, cx));
+                let view = cx.new(|cx| SingleLineInput::new(window, cx));
                 // This first level on the window, should be a Root.
                 cx.new(|cx| Root::new(view, window, cx))
             })?;
