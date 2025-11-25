@@ -46,8 +46,8 @@ impl Render for SingleLineInput {
             .gap_2()
             .size_full()
             .items_center()
-            .justify_center()
+            //.justify_center()
             .child(Input::new(&self.sl_input_state))
-            .child(self.display_text.clone())
+            //.child(self.display_text.clone())
     }
 }
