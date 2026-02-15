@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use gpui::*;
 use gpui_component::{
     Root,
-    resizable::{h_resizable, resizable_panel},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
 use gpui_component_assets::Assets;
@@ -16,12 +16,14 @@ pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     editor: Entity<Papyru2Editor>,
     file_tree: Entity<FileTreeView>,
+    layout_split_state: Entity<ResizableState>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Papyru2App {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let top_bars = cx.new(|cx| TopBars::new(window, cx));
+        let layout_split_state = cx.new(|_| ResizableState::default());
+        let top_bars = cx.new(|cx| TopBars::new(window, layout_split_state.clone(), cx));
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
 
@@ -39,6 +41,7 @@ impl Papyru2App {
             top_bars,
             editor,
             file_tree,
+            layout_split_state,
             _subscriptions,
         }
     }
@@ -61,6 +64,7 @@ impl Render for Papyru2App {
             .child(
                 div().flex_1().child(
                     h_resizable("bottom-split")
+                        .with_state(&self.layout_split_state)
                         .child(resizable_panel().size(px(320.)).child(self.file_tree.clone()))
                         .child(resizable_panel().child(self.editor.clone())),
                 ),

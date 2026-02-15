@@ -3,18 +3,27 @@ use gpui_component::{
     IconName, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
+    resizable::{ResizableState, h_resizable, resizable_panel},
 };
 
 use crate::singleline_input::SingleLineInput;
 
 pub struct TopBars {
     singleline: Entity<SingleLineInput>,
+    layout_split_state: Entity<ResizableState>,
 }
 
 impl TopBars {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        layout_split_state: Entity<ResizableState>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let singleline = cx.new(|cx| SingleLineInput::new(window, cx));
-        Self { singleline }
+        Self {
+            singleline,
+            layout_split_state,
+        }
     }
 
     fn render_round_button(
@@ -35,11 +44,19 @@ impl TopBars {
 
 impl Render for TopBars {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(self.render_round_button("round-button1", IconName::Plus, cx))
-            .child(self.render_round_button("round-button2", IconName::Search, cx))
-            .child(div().flex_1().child(self.singleline.clone()))
+        div().h(px(32.)).child(
+            h_resizable("top-split")
+                .with_state(&self.layout_split_state)
+                .child(
+                    resizable_panel().child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(self.render_round_button("round-button1", IconName::Plus, cx))
+                            .child(self.render_round_button("round-button2", IconName::Search, cx)),
+                    ),
+                )
+                .child(resizable_panel().child(self.singleline.clone())),
+        )
     }
 }
