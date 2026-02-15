@@ -44,11 +44,11 @@ impl TopBars {
 
 impl Render for TopBars {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div().h(px(32.)).child(
+        div().h(px(32.)).w_full().child(
             h_resizable("top-split")
                 .with_state(&self.layout_split_state)
                 .child(
-                    resizable_panel().child(
+                    resizable_panel().size(px(320.)).child(
                         h_flex()
                             .gap_2()
                             .items_center()
