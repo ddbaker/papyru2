@@ -87,6 +87,24 @@ pub fn transfer_on_backspace(
 
     let (prefix, suffix) = split_at_char_index(singleline_text, singleline_cursor_char)?;
 
+    if editor_tail.is_empty() {
+        let mut new_singleline_text =
+            String::with_capacity(prefix.len() + suffix.len() + editor_head.len());
+        new_singleline_text.push_str(prefix);
+        new_singleline_text.push_str(suffix);
+        new_singleline_text.push_str(editor_head);
+        let new_singleline_cursor_char = new_singleline_text.chars().count();
+
+        return Some(BackspaceTransferResult {
+            new_singleline_text,
+            new_singleline_cursor_char,
+            new_editor_text: String::new(),
+            new_editor_cursor_line: 0,
+            new_editor_cursor_char: 0,
+            focus_target: FocusTarget::SingleLine,
+        });
+    }
+
     let mut new_singleline_text =
         String::with_capacity(prefix.len() + editor_head.len() + suffix.len());
     new_singleline_text.push_str(prefix);
@@ -188,5 +206,17 @@ mod tests {
 
         let backspace = transfer_on_backspace("abc", 3, "def\nxyz").expect("backspace transfer");
         assert_eq!(backspace.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test9_reverse_transfer_from_single_editor_line_appends_at_end() {
+        let result = transfer_on_backspace("abcdefghijkl", 6, "xyz").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefghijklxyz");
+        assert_eq!(result.new_singleline_cursor_char, 15);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
     }
 }
