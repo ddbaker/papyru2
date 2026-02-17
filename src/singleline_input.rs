@@ -1,38 +1,95 @@
 use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputState};
+
+#[derive(Clone, Debug)]
+pub enum SingleLineEvent {
+    PressEnter,
+}
+
+#[derive(Clone, Debug)]
+pub struct SingleLineSnapshot {
+    pub value: String,
+    pub cursor_char: usize,
+}
 
 pub struct SingleLineInput {
     sl_input_state: Entity<InputState>,
-    display_text: SharedString,
-    _sl_subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<SingleLineEvent> for SingleLineInput {}
 
 impl SingleLineInput {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sl_input_state =
             cx.new(|cx| InputState::new(window, cx).placeholder("Type here..."));
 
-        let _sl_subscriptions = vec![cx.subscribe_in(&sl_input_state, window, {
-            let sl_input_state = sl_input_state.clone();
-            move |this, _, ev: &InputEvent, _window, cx| {
-                if let InputEvent::Change = ev {
-                    let value = sl_input_state.read(cx).value();
-                    this.display_text = format!("Hello, {}!", value).into();
-                    cx.notify();
-                }
-            }
-        })];
+        Self { sl_input_state }
+    }
 
-        Self {
-            sl_input_state,
-            display_text: SharedString::default(),
-            _sl_subscriptions,
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.is_held {
+            cx.propagate();
+            return;
         }
+
+        let key = event.keystroke.key.as_str();
+        crate::app::trace_debug(format!("singleline keydown key={key}"));
+
+        if key == "enter" || key == "return" {
+            crate::app::trace_debug("singleline emit PressEnter");
+            cx.emit(SingleLineEvent::PressEnter);
+            cx.stop_propagation();
+            return;
+        }
+
+        cx.propagate();
+    }
+
+    pub fn snapshot(&self, cx: &App) -> SingleLineSnapshot {
+        let state = self.sl_input_state.read(cx);
+        let cursor = state.cursor_position();
+
+        SingleLineSnapshot {
+            value: state.value().to_string(),
+            cursor_char: cursor.character as usize,
+        }
+    }
+
+    pub fn apply_text_and_cursor(
+        &mut self,
+        text: impl Into<SharedString>,
+        cursor_char: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text: SharedString = text.into();
+        let cursor_char_u32 = cursor_char.min(u32::MAX as usize) as u32;
+
+        self.sl_input_state.update(cx, move |state, cx| {
+            state.set_value(text.clone(), window, cx);
+            state.set_cursor_position(
+                gpui_component::input::Position {
+                    line: 0,
+                    character: cursor_char_u32,
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
+    pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sl_input_state
+            .update(cx, |state, cx| state.focus(window, cx));
     }
 }
 
 impl Render for SingleLineInput {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Input::new(&self.sl_input_state).w_full()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_full()
+            .on_key_down(cx.listener(Self::on_key_down))
+            .child(Input::new(&self.sl_input_state).w_full())
     }
 }
+

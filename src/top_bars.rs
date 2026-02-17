@@ -26,6 +26,10 @@ impl TopBars {
         }
     }
 
+    pub fn singleline(&self) -> Entity<SingleLineInput> {
+        self.singleline.clone()
+    }
+
     fn render_round_button(
         &self,
         id: &'static str,
