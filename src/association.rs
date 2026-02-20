@@ -62,6 +62,54 @@ fn clamp_char_index(index: usize, text: &str) -> usize {
     index.min(text.chars().count())
 }
 
+const ORIGIN_LINE: u32 = 0;
+const ORIGIN_CHAR: u32 = 0;
+
+fn make_enter_result(
+    new_singleline_text: String,
+    new_singleline_cursor_char: usize,
+    new_editor_text: String,
+) -> EnterTransferResult {
+    EnterTransferResult {
+        new_singleline_text,
+        new_singleline_cursor_char,
+        new_editor_text,
+        new_editor_cursor_line: ORIGIN_LINE,
+        new_editor_cursor_char: ORIGIN_CHAR,
+        focus_target: FocusTarget::Editor,
+    }
+}
+
+fn make_backspace_result(
+    new_singleline_text: String,
+    new_singleline_cursor_char: usize,
+    new_editor_text: String,
+) -> BackspaceTransferResult {
+    BackspaceTransferResult {
+        new_singleline_text,
+        new_singleline_cursor_char,
+        new_editor_text,
+        new_editor_cursor_line: ORIGIN_LINE,
+        new_editor_cursor_char: ORIGIN_CHAR,
+        focus_target: FocusTarget::SingleLine,
+    }
+}
+
+fn make_down_result(new_editor_cursor_char: u32) -> DownCursorTransferResult {
+    DownCursorTransferResult {
+        new_editor_cursor_line: ORIGIN_LINE,
+        new_editor_cursor_char,
+        focus_target: FocusTarget::Editor,
+    }
+}
+
+fn make_up_result(new_singleline_cursor_char: usize) -> UpCursorTransferResult {
+    UpCursorTransferResult {
+        new_singleline_cursor_char,
+        focus_target: FocusTarget::SingleLine,
+    }
+}
+
 pub fn should_transfer_backspace(editor_cursor_line: u32, editor_cursor_char: u32) -> bool {
     editor_cursor_line == 0 && editor_cursor_char == 0
 }
@@ -79,14 +127,11 @@ pub fn transfer_on_enter(
             format!("\n{editor_text}")
         };
 
-        return Some(EnterTransferResult {
-            new_singleline_text: left.to_string(),
-            new_singleline_cursor_char: left.chars().count(),
+        return Some(make_enter_result(
+            left.to_string(),
+            left.chars().count(),
             new_editor_text,
-            new_editor_cursor_line: 0,
-            new_editor_cursor_char: 0,
-            focus_target: FocusTarget::Editor,
-        });
+        ));
     }
 
     let new_editor_text = if editor_text.is_empty() {
@@ -95,14 +140,11 @@ pub fn transfer_on_enter(
         format!("{right}\n{editor_text}")
     };
 
-    Some(EnterTransferResult {
-        new_singleline_text: left.to_string(),
-        new_singleline_cursor_char: left.chars().count(),
+    Some(make_enter_result(
+        left.to_string(),
+        left.chars().count(),
         new_editor_text,
-        new_editor_cursor_line: 0,
-        new_editor_cursor_char: 0,
-        focus_target: FocusTarget::Editor,
-    })
+    ))
 }
 
 pub fn transfer_on_backspace(
@@ -116,14 +158,11 @@ pub fn transfer_on_backspace(
             return None;
         }
 
-        return Some(BackspaceTransferResult {
-            new_singleline_text: singleline_text.to_string(),
-            new_singleline_cursor_char: singleline_text.chars().count(),
-            new_editor_text: editor_tail.to_string(),
-            new_editor_cursor_line: 0,
-            new_editor_cursor_char: 0,
-            focus_target: FocusTarget::SingleLine,
-        });
+        return Some(make_backspace_result(
+            singleline_text.to_string(),
+            singleline_text.chars().count(),
+            editor_tail.to_string(),
+        ));
     }
 
     let (prefix, suffix) = split_at_char_index(singleline_text, singleline_cursor_char)?;
@@ -136,14 +175,11 @@ pub fn transfer_on_backspace(
         new_singleline_text.push_str(editor_head);
         let new_singleline_cursor_char = new_singleline_text.chars().count();
 
-        return Some(BackspaceTransferResult {
+        return Some(make_backspace_result(
             new_singleline_text,
             new_singleline_cursor_char,
-            new_editor_text: String::new(),
-            new_editor_cursor_line: 0,
-            new_editor_cursor_char: 0,
-            focus_target: FocusTarget::SingleLine,
-        });
+            String::new(),
+        ));
     }
 
     let mut new_singleline_text =
@@ -152,14 +188,11 @@ pub fn transfer_on_backspace(
     new_singleline_text.push_str(editor_head);
     new_singleline_text.push_str(suffix);
 
-    Some(BackspaceTransferResult {
+    Some(make_backspace_result(
         new_singleline_text,
-        new_singleline_cursor_char: prefix.chars().count(),
-        new_editor_text: editor_tail.to_string(),
-        new_editor_cursor_line: 0,
-        new_editor_cursor_char: 0,
-        focus_target: FocusTarget::SingleLine,
-    })
+        prefix.chars().count(),
+        editor_tail.to_string(),
+    ))
 }
 
 pub fn transfer_on_down(
@@ -169,11 +202,7 @@ pub fn transfer_on_down(
     let (editor_head, _) = split_first_line(editor_text);
     let clamped_cursor_char = clamp_char_index(singleline_cursor_char, editor_head);
 
-    DownCursorTransferResult {
-        new_editor_cursor_line: 0,
-        new_editor_cursor_char: clamped_cursor_char.min(u32::MAX as usize) as u32,
-        focus_target: FocusTarget::Editor,
-    }
+    make_down_result(clamped_cursor_char.min(u32::MAX as usize) as u32)
 }
 
 pub fn transfer_on_up(
@@ -187,10 +216,7 @@ pub fn transfer_on_up(
 
     let clamped_cursor_char = clamp_char_index(editor_cursor_char as usize, singleline_text);
 
-    Some(UpCursorTransferResult {
-        new_singleline_cursor_char: clamped_cursor_char,
-        focus_target: FocusTarget::SingleLine,
-    })
+    Some(make_up_result(clamped_cursor_char))
 }
 
 #[cfg(test)]

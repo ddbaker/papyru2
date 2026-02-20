@@ -104,6 +104,26 @@ impl Papyru2App {
         }
     }
 
+    fn apply_focus_target(
+        &mut self,
+        focus_target: crate::association::FocusTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match focus_target {
+            crate::association::FocusTarget::Editor => {
+                self.editor.update(cx, |editor, cx| {
+                    editor.focus(window, cx);
+                });
+            }
+            crate::association::FocusTarget::SingleLine => {
+                self.singleline.update(cx, |singleline, cx| {
+                    singleline.focus(window, cx);
+                });
+            }
+        }
+    }
+
     fn transfer_singleline_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
@@ -163,18 +183,7 @@ impl Papyru2App {
             }
         });
 
-        match result.focus_target {
-            crate::association::FocusTarget::Editor => {
-                self.editor.update(cx, |editor, cx| {
-                    editor.focus(window, cx);
-                });
-            }
-            crate::association::FocusTarget::SingleLine => {
-                self.singleline.update(cx, |singleline, cx| {
-                    singleline.focus(window, cx);
-                });
-            }
-        }
+        self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
@@ -220,11 +229,7 @@ impl Papyru2App {
             );
         });
 
-        if result.focus_target == crate::association::FocusTarget::Editor {
-            self.editor.update(cx, |editor, cx| {
-                editor.focus(window, cx);
-            });
-        }
+        self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
@@ -299,18 +304,7 @@ impl Papyru2App {
             );
         });
 
-        match result.focus_target {
-            crate::association::FocusTarget::Editor => {
-                self.editor.update(cx, |editor, cx| {
-                    editor.focus(window, cx);
-                });
-            }
-            crate::association::FocusTarget::SingleLine => {
-                self.singleline.update(cx, |singleline, cx| {
-                    singleline.focus(window, cx);
-                });
-            }
-        }
+        self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
@@ -356,11 +350,7 @@ impl Papyru2App {
             singleline.apply_cursor(result.new_singleline_cursor_char, window, cx);
         });
 
-        if result.focus_target == crate::association::FocusTarget::SingleLine {
-            self.singleline.update(cx, |singleline, cx| {
-                singleline.focus(window, cx);
-            });
-        }
+        self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
