@@ -70,17 +70,22 @@ impl Papyru2Editor {
                     }
 
                     let is_noop_change = value == this.last_value;
-                    let first_line_non_empty = value
-                        .split('\n')
-                        .next()
-                        .is_some_and(|line| !line.is_empty());
+                    let first_line_non_empty =
+                        value.split('\n').next().is_some_and(|line| !line.is_empty());
+                    let has_non_empty_tail_line =
+                        value.split('\n').skip(1).any(|line| !line.is_empty());
 
-                    if is_noop_change && cursor.line == 0 && cursor.character == 0 && first_line_non_empty
+                    if is_noop_change
+                        && cursor.line == 0
+                        && cursor.character == 0
+                        && (first_line_non_empty || has_non_empty_tail_line)
                     {
                         crate::app::trace_debug(format!(
-                            "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}))",
+                            "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}), first_line_non_empty={}, has_non_empty_tail_line={})",
                             this.last_cursor.line,
-                            this.last_cursor.character
+                            this.last_cursor.character,
+                            first_line_non_empty,
+                            has_non_empty_tail_line
                         ));
                         cx.emit(EditorEvent::BackspaceAtLineHead);
                     }

@@ -73,7 +73,20 @@ pub fn transfer_on_enter(
 ) -> Option<EnterTransferResult> {
     let (left, right) = split_at_char_index(singleline_text, singleline_cursor_char)?;
     if right.is_empty() {
-        return None;
+        let new_editor_text = if editor_text.is_empty() {
+            String::new()
+        } else {
+            format!("\n{editor_text}")
+        };
+
+        return Some(EnterTransferResult {
+            new_singleline_text: left.to_string(),
+            new_singleline_cursor_char: left.chars().count(),
+            new_editor_text,
+            new_editor_cursor_line: 0,
+            new_editor_cursor_char: 0,
+            focus_target: FocusTarget::Editor,
+        });
     }
 
     let new_editor_text = if editor_text.is_empty() {
@@ -99,7 +112,18 @@ pub fn transfer_on_backspace(
 ) -> Option<BackspaceTransferResult> {
     let (editor_head, editor_tail) = split_first_line(editor_text);
     if editor_head.is_empty() {
-        return None;
+        if editor_tail.is_empty() {
+            return None;
+        }
+
+        return Some(BackspaceTransferResult {
+            new_singleline_text: singleline_text.to_string(),
+            new_singleline_cursor_char: singleline_text.chars().count(),
+            new_editor_text: editor_tail.to_string(),
+            new_editor_cursor_line: 0,
+            new_editor_cursor_char: 0,
+            focus_target: FocusTarget::SingleLine,
+        });
     }
 
     let (prefix, suffix) = split_at_char_index(singleline_text, singleline_cursor_char)?;
@@ -225,8 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn assoc_test5_enter_at_end_is_no_op() {
-        assert!(transfer_on_enter("abcdef", 6, "xyz").is_none());
+    fn assoc_test5_enter_with_invalid_cursor_is_no_op() {
+        assert!(transfer_on_enter("abcdef", 100, "").is_none());
     }
 
     #[test]
@@ -338,5 +362,41 @@ mod tests {
 
         assert_eq!(result.new_singleline_cursor_char, 0);
         assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test18_req_assoc11_enter_at_singleline_tail_inserts_empty_editor_head() {
+        let result = transfer_on_enter("abcdefg", 7, "xyz").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "\nxyz");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
+    }
+
+    #[test]
+    fn assoc_test19_req_assoc12_backspace_at_empty_editor_head_moves_cursor_to_singleline_tail() {
+        let result = transfer_on_backspace("abcdefg", 3, "\nxyz").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "xyz");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test20_req_assoc13_enter_at_singleline_tail_with_blank_editor_moves_focus_to_editor_head() {
+        let result = transfer_on_enter("abcdefg", 7, "").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
     }
 }

@@ -145,13 +145,22 @@ impl Papyru2App {
         });
 
         self.editor.update(cx, |editor, cx| {
-            editor.apply_text_and_cursor(
-                result.new_editor_text.clone(),
-                result.new_editor_cursor_line,
-                result.new_editor_cursor_char,
-                window,
-                cx,
-            );
+            if result.new_editor_text == editor_snapshot.value {
+                editor.apply_cursor(
+                    result.new_editor_cursor_line,
+                    result.new_editor_cursor_char,
+                    window,
+                    cx,
+                );
+            } else {
+                editor.apply_text_and_cursor(
+                    result.new_editor_text.clone(),
+                    result.new_editor_cursor_line,
+                    result.new_editor_cursor_char,
+                    window,
+                    cx,
+                );
+            }
         });
 
         match result.focus_target {
