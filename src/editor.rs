@@ -10,6 +10,7 @@ use gpui_component::input::InputEvent;
 #[derive(Clone, Debug)]
 pub enum EditorEvent {
     BackspaceAtLineHead,
+    PressUpAtFirstLine,
 }
 
 #[derive(Clone, Debug)]
@@ -138,6 +139,29 @@ impl Papyru2Editor {
         cx.propagate();
     }
 
+    fn on_move_up_action(
+        &mut self,
+        _: &gpui_component::input::MoveUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let snapshot = self.snapshot(cx);
+        crate::app::trace_debug(format!(
+            "editor action MoveUp captured cursor=({}, {}) value='{}'",
+            snapshot.cursor_line,
+            snapshot.cursor_char,
+            crate::app::compact_text(&snapshot.value)
+        ));
+
+        if snapshot.cursor_line == 0 {
+            crate::app::trace_debug("editor action MoveUp emit PressUpAtFirstLine");
+            cx.emit(EditorEvent::PressUpAtFirstLine);
+            cx.stop_propagation();
+        } else {
+            cx.propagate();
+        }
+    }
+
     pub fn snapshot(&self, cx: &App) -> EditorSnapshot {
         let state = self.input_state.read(cx);
         let cursor = state.cursor_position();
@@ -179,6 +203,30 @@ impl Papyru2Editor {
         });
 
         self.last_value = text_owned;
+        self.last_cursor = gpui_component::input::Position {
+            line: cursor_line,
+            character: cursor_char,
+        };
+    }
+
+    pub fn apply_cursor(
+        &mut self,
+        cursor_line: u32,
+        cursor_char: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input_state.update(cx, move |state, cx| {
+            state.set_cursor_position(
+                gpui_component::input::Position {
+                    line: cursor_line,
+                    character: cursor_char,
+                },
+                window,
+                cx,
+            );
+        });
+
         self.last_cursor = gpui_component::input::Position {
             line: cursor_line,
             character: cursor_char,
@@ -233,7 +281,8 @@ impl Render for Papyru2Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
-            .on_key_down(cx.listener(Self::on_key_down))
+            .capture_key_down(cx.listener(Self::on_key_down))
+            .capture_action(cx.listener(Self::on_move_up_action))
             .child(
                 Input::new(&self.input_state)
                     .size_full()

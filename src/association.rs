@@ -24,6 +24,19 @@ pub struct BackspaceTransferResult {
     pub focus_target: FocusTarget,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownCursorTransferResult {
+    pub new_editor_cursor_line: u32,
+    pub new_editor_cursor_char: u32,
+    pub focus_target: FocusTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpCursorTransferResult {
+    pub new_singleline_cursor_char: usize,
+    pub focus_target: FocusTarget,
+}
+
 fn byte_index_at_char(text: &str, char_index: usize) -> Option<usize> {
     if char_index == text.chars().count() {
         return Some(text.len());
@@ -43,6 +56,10 @@ fn split_first_line(text: &str) -> (&str, &str) {
     } else {
         (text, "")
     }
+}
+
+fn clamp_char_index(index: usize, text: &str) -> usize {
+    index.min(text.chars().count())
 }
 
 pub fn should_transfer_backspace(editor_cursor_line: u32, editor_cursor_char: u32) -> bool {
@@ -121,10 +138,42 @@ pub fn transfer_on_backspace(
     })
 }
 
+pub fn transfer_on_down(
+    singleline_cursor_char: usize,
+    editor_text: &str,
+) -> DownCursorTransferResult {
+    let (editor_head, _) = split_first_line(editor_text);
+    let clamped_cursor_char = clamp_char_index(singleline_cursor_char, editor_head);
+
+    DownCursorTransferResult {
+        new_editor_cursor_line: 0,
+        new_editor_cursor_char: clamped_cursor_char.min(u32::MAX as usize) as u32,
+        focus_target: FocusTarget::Editor,
+    }
+}
+
+pub fn transfer_on_up(
+    editor_cursor_line: u32,
+    editor_cursor_char: u32,
+    singleline_text: &str,
+) -> Option<UpCursorTransferResult> {
+    if editor_cursor_line != 0 {
+        return None;
+    }
+
+    let clamped_cursor_char = clamp_char_index(editor_cursor_char as usize, singleline_text);
+
+    Some(UpCursorTransferResult {
+        new_singleline_cursor_char: clamped_cursor_char,
+        focus_target: FocusTarget::SingleLine,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        FocusTarget, should_transfer_backspace, transfer_on_backspace, transfer_on_enter,
+        FocusTarget, should_transfer_backspace, transfer_on_backspace, transfer_on_down,
+        transfer_on_enter, transfer_on_up,
     };
 
     #[test]
@@ -217,6 +266,77 @@ mod tests {
         assert_eq!(result.new_editor_text, "");
         assert_eq!(result.new_editor_cursor_line, 0);
         assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test10_req_assoc5_down_same_position_ascii() {
+        let result = transfer_on_down(5, "123456789");
+
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 5);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
+    }
+
+    #[test]
+    fn assoc_test11_req_assoc6_up_same_position_ascii() {
+        let result = transfer_on_up(0, 5, "123456789").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_cursor_char, 5);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test12_req_assoc7_down_clamp_to_editor_tail_ascii() {
+        let result = transfer_on_down(8, "123");
+
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 3);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
+    }
+
+    #[test]
+    fn assoc_test13_req_assoc8_up_clamp_to_singleline_tail_ascii() {
+        let result = transfer_on_up(0, 8, "123").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_cursor_char, 3);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test14_req_assoc9_multibyte_up_down_and_clamp() {
+        let down_same = transfer_on_down(2, "は世界\n大好き");
+        assert_eq!(down_same.new_editor_cursor_char, 2);
+
+        let down_clamped = transfer_on_down(5, "は世界\n大好き");
+        assert_eq!(down_clamped.new_editor_cursor_char, 3);
+
+        let up_same = transfer_on_up(0, 3, "こんにち").expect("expected transfer");
+        assert_eq!(up_same.new_singleline_cursor_char, 3);
+
+        let up_clamped = transfer_on_up(0, 9, "こんにち").expect("expected transfer");
+        assert_eq!(up_clamped.new_singleline_cursor_char, 4);
+    }
+
+    #[test]
+    fn assoc_test15_up_from_non_first_editor_line_is_no_transfer() {
+        assert!(transfer_on_up(1, 2, "123456").is_none());
+    }
+
+    #[test]
+    fn assoc_test16_down_to_empty_editor_line_clamps_to_zero() {
+        let result = transfer_on_down(7, "");
+
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
+    }
+
+    #[test]
+    fn assoc_test17_up_to_empty_singleline_clamps_to_zero() {
+        let result = transfer_on_up(0, 9, "").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_cursor_char, 0);
         assert_eq!(result.focus_target, FocusTarget::SingleLine);
     }
 }

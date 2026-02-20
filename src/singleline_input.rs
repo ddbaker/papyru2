@@ -4,6 +4,7 @@ use gpui_component::input::{Input, InputState};
 #[derive(Clone, Debug)]
 pub enum SingleLineEvent {
     PressEnter,
+    PressDown,
 }
 
 #[derive(Clone, Debug)]
@@ -32,12 +33,26 @@ impl SingleLineInput {
             return;
         }
 
-        let key = event.keystroke.key.as_str();
+        let key_raw = event.keystroke.key.as_str();
+        let key = key_raw.to_ascii_lowercase();
         crate::app::trace_debug(format!("singleline keydown key={key}"));
 
         if key == "enter" || key == "return" {
             crate::app::trace_debug("singleline emit PressEnter");
             cx.emit(SingleLineEvent::PressEnter);
+            cx.stop_propagation();
+            return;
+        }
+
+        if key == "down" || key == "arrowdown" {
+            let snapshot = self.snapshot(cx);
+            crate::app::trace_debug(format!(
+                "singleline down candidate cursor={} value='{}'",
+                snapshot.cursor_char,
+                crate::app::compact_text(&snapshot.value)
+            ));
+            crate::app::trace_debug("singleline emit PressDown");
+            cx.emit(SingleLineEvent::PressDown);
             cx.stop_propagation();
             return;
         }
@@ -71,6 +86,24 @@ impl SingleLineInput {
                 gpui_component::input::Position {
                     line: 0,
                     character: cursor_char_u32,
+                },
+                window,
+                cx,
+            );
+        });
+    }
+
+    pub fn apply_cursor(
+        &mut self,
+        cursor_char: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sl_input_state.update(cx, move |state, cx| {
+            state.set_cursor_position(
+                gpui_component::input::Position {
+                    line: 0,
+                    character: cursor_char.min(u32::MAX as usize) as u32,
                 },
                 window,
                 cx,

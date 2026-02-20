@@ -72,6 +72,10 @@ impl Papyru2App {
                         trace_debug("app received SingleLineEvent::PressEnter");
                         this.transfer_singleline_enter(window, cx);
                     }
+                    crate::singleline_input::SingleLineEvent::PressDown => {
+                        trace_debug("app received SingleLineEvent::PressDown");
+                        this.transfer_singleline_down(window, cx);
+                    }
                 },
             ),
             cx.subscribe_in(
@@ -81,6 +85,10 @@ impl Papyru2App {
                     crate::editor::EditorEvent::BackspaceAtLineHead => {
                         trace_debug("app received EditorEvent::BackspaceAtLineHead");
                         this.transfer_editor_backspace(window, cx);
+                    }
+                    crate::editor::EditorEvent::PressUpAtFirstLine => {
+                        trace_debug("app received EditorEvent::PressUpAtFirstLine");
+                        this.transfer_editor_up(window, cx);
                     }
                 },
             ),
@@ -171,6 +179,56 @@ impl Papyru2App {
         ));
     }
 
+    fn transfer_singleline_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+
+        trace_debug(format!(
+            "transfer_down before sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char,
+            compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char
+        ));
+
+        let result =
+            crate::association::transfer_on_down(singleline_snapshot.cursor_char, &editor_snapshot.value);
+
+        trace_debug(format!(
+            "transfer_down result ed_cursor=({}, {}) focus={:?}",
+            result.new_editor_cursor_line,
+            result.new_editor_cursor_char,
+            result.focus_target
+        ));
+
+        self.editor.update(cx, |editor, cx| {
+            editor.apply_cursor(
+                result.new_editor_cursor_line,
+                result.new_editor_cursor_char,
+                window,
+                cx,
+            );
+        });
+
+        if result.focus_target == crate::association::FocusTarget::Editor {
+            self.editor.update(cx, |editor, cx| {
+                editor.focus(window, cx);
+            });
+        }
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        trace_debug(format!(
+            "transfer_down after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
+
     fn transfer_editor_backspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
         trace_debug(format!(
@@ -249,6 +307,56 @@ impl Papyru2App {
         let ed_after = self.editor.read(cx).snapshot(cx);
         trace_debug(format!(
             "transfer_backspace after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
+
+    fn transfer_editor_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+
+        trace_debug(format!(
+            "transfer_up before ed='{}' ed_cursor=({}, {}) sl='{}' sl_cursor={}",
+            compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char,
+            compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char
+        ));
+
+        let Some(result) = crate::association::transfer_on_up(
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char,
+            &singleline_snapshot.value,
+        ) else {
+            trace_debug("transfer_up skipped (editor cursor not on line-1)");
+            return;
+        };
+
+        trace_debug(format!(
+            "transfer_up result sl_cursor={} focus={:?}",
+            result.new_singleline_cursor_char,
+            result.focus_target
+        ));
+
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_cursor(result.new_singleline_cursor_char, window, cx);
+        });
+
+        if result.focus_target == crate::association::FocusTarget::SingleLine {
+            self.singleline.update(cx, |singleline, cx| {
+                singleline.focus(window, cx);
+            });
+        }
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        trace_debug(format!(
+            "transfer_up after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             compact_text(&sl_after.value),
             sl_after.cursor_char,
             compact_text(&ed_after.value),
