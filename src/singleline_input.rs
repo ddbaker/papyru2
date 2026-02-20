@@ -21,8 +21,7 @@ impl EventEmitter<SingleLineEvent> for SingleLineInput {}
 
 impl SingleLineInput {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let sl_input_state =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Type here..."));
+        let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Type here..."));
 
         Self { sl_input_state }
     }
@@ -125,4 +124,3 @@ impl Render for SingleLineInput {
             .child(Input::new(&self.sl_input_state).w_full())
     }
 }
-

@@ -124,11 +124,7 @@ impl Papyru2Editor {
             key_raw,
             key,
             event.is_held,
-            event
-                .keystroke
-                .key_char
-                .as_deref()
-                .unwrap_or("<none>")
+            event.keystroke.key_char.as_deref().unwrap_or("<none>")
         ));
 
         if key == "backspace" || key == "delete" {

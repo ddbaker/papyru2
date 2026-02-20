@@ -264,7 +264,8 @@ mod tests {
 
     #[test]
     fn assoc_test4_req_assoc4_multibyte_reverse_transfer() {
-        let result = transfer_on_backspace("こんにち", 4, "は世界\n大好き").expect("expected transfer");
+        let result =
+            transfer_on_backspace("こんにち", 4, "は世界\n大好き").expect("expected transfer");
 
         assert_eq!(result.new_singleline_text, "こんにちは世界");
         assert_eq!(result.new_singleline_cursor_char, 4);
@@ -415,7 +416,8 @@ mod tests {
     }
 
     #[test]
-    fn assoc_test20_req_assoc13_enter_at_singleline_tail_with_blank_editor_moves_focus_to_editor_head() {
+    fn assoc_test20_req_assoc13_enter_at_singleline_tail_with_blank_editor_moves_focus_to_editor_head()
+     {
         let result = transfer_on_enter("abcdefg", 7, "").expect("expected transfer");
 
         assert_eq!(result.new_singleline_text, "abcdefg");

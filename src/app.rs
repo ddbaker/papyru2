@@ -12,7 +12,6 @@ use crate::editor::Papyru2Editor;
 use crate::file_tree::{FileTreeEvent, FileTreeView};
 use crate::top_bars::TopBars;
 
-
 pub(crate) fn trace_debug(message: impl AsRef<str>) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -63,18 +62,16 @@ impl Papyru2App {
             cx.subscribe_in(
                 &singleline,
                 window,
-                move |this,
-                      _,
-                      event: &crate::singleline_input::SingleLineEvent,
-                      window,
-                      cx| match event {
-                    crate::singleline_input::SingleLineEvent::PressEnter => {
-                        trace_debug("app received SingleLineEvent::PressEnter");
-                        this.transfer_singleline_enter(window, cx);
-                    }
-                    crate::singleline_input::SingleLineEvent::PressDown => {
-                        trace_debug("app received SingleLineEvent::PressDown");
-                        this.transfer_singleline_down(window, cx);
+                move |this, _, event: &crate::singleline_input::SingleLineEvent, window, cx| {
+                    match event {
+                        crate::singleline_input::SingleLineEvent::PressEnter => {
+                            trace_debug("app received SingleLineEvent::PressEnter");
+                            this.transfer_singleline_enter(window, cx);
+                        }
+                        crate::singleline_input::SingleLineEvent::PressDown => {
+                            trace_debug("app received SingleLineEvent::PressDown");
+                            this.transfer_singleline_down(window, cx);
+                        }
                     }
                 },
             ),
@@ -106,17 +103,17 @@ impl Papyru2App {
 
     fn apply_focus_target(
         &mut self,
-        focus_target: crate::association::FocusTarget,
+        focus_target: crate::sl_editor_association::FocusTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match focus_target {
-            crate::association::FocusTarget::Editor => {
+            crate::sl_editor_association::FocusTarget::Editor => {
                 self.editor.update(cx, |editor, cx| {
                     editor.focus(window, cx);
                 });
             }
-            crate::association::FocusTarget::SingleLine => {
+            crate::sl_editor_association::FocusTarget::SingleLine => {
                 self.singleline.update(cx, |singleline, cx| {
                     singleline.focus(window, cx);
                 });
@@ -137,7 +134,7 @@ impl Papyru2App {
             editor_snapshot.cursor_char
         ));
 
-        let Some(result) = crate::association::transfer_on_enter(
+        let Some(result) = crate::sl_editor_association::transfer_on_enter(
             &singleline_snapshot.value,
             singleline_snapshot.cursor_char,
             &editor_snapshot.value,
@@ -210,14 +207,14 @@ impl Papyru2App {
             editor_snapshot.cursor_char
         ));
 
-        let result =
-            crate::association::transfer_on_down(singleline_snapshot.cursor_char, &editor_snapshot.value);
+        let result = crate::sl_editor_association::transfer_on_down(
+            singleline_snapshot.cursor_char,
+            &editor_snapshot.value,
+        );
 
         trace_debug(format!(
             "transfer_down result ed_cursor=({}, {}) focus={:?}",
-            result.new_editor_cursor_line,
-            result.new_editor_cursor_char,
-            result.focus_target
+            result.new_editor_cursor_line, result.new_editor_cursor_char, result.focus_target
         ));
 
         self.editor.update(cx, |editor, cx| {
@@ -252,7 +249,7 @@ impl Papyru2App {
             editor_snapshot.cursor_char
         ));
 
-        if !crate::association::should_transfer_backspace(
+        if !crate::sl_editor_association::should_transfer_backspace(
             editor_snapshot.cursor_line,
             editor_snapshot.cursor_char,
         ) {
@@ -267,7 +264,7 @@ impl Papyru2App {
             singleline_snapshot.cursor_char
         ));
 
-        let Some(result) = crate::association::transfer_on_backspace(
+        let Some(result) = crate::sl_editor_association::transfer_on_backspace(
             &singleline_snapshot.value,
             singleline_snapshot.cursor_char,
             &editor_snapshot.value,
@@ -331,7 +328,7 @@ impl Papyru2App {
             singleline_snapshot.cursor_char
         ));
 
-        let Some(result) = crate::association::transfer_on_up(
+        let Some(result) = crate::sl_editor_association::transfer_on_up(
             editor_snapshot.cursor_line,
             editor_snapshot.cursor_char,
             &singleline_snapshot.value,
@@ -342,8 +339,7 @@ impl Papyru2App {
 
         trace_debug(format!(
             "transfer_up result sl_cursor={} focus={:?}",
-            result.new_singleline_cursor_char,
-            result.focus_target
+            result.new_singleline_cursor_char, result.focus_target
         ));
 
         self.singleline.update(cx, |singleline, cx| {
@@ -383,7 +379,11 @@ impl Render for Papyru2App {
                 div().flex_1().child(
                     h_resizable("bottom-split")
                         .with_state(&self.layout_split_state)
-                        .child(resizable_panel().size(px(320.)).child(self.file_tree.clone()))
+                        .child(
+                            resizable_panel()
+                                .size(px(320.))
+                                .child(self.file_tree.clone()),
+                        )
                         .child(resizable_panel().child(self.editor.clone())),
                 ),
             )
@@ -412,4 +412,3 @@ pub fn run() {
         .detach();
     });
 }
-

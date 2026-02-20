@@ -2,8 +2,7 @@ use std::path::PathBuf;
 
 use gpui::*;
 use gpui_component::{
-    IconName,
-    h_flex,
+    IconName, h_flex,
     list::ListItem,
     tree::{TreeItem, TreeState, tree},
 };
