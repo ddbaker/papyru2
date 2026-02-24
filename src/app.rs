@@ -39,10 +39,15 @@ pub struct Papyru2App {
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
     _subscriptions: Vec<Subscription>,
+    _app_paths: crate::path_resolver::AppPaths,
 }
 
 impl Papyru2App {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        window: &mut Window,
+        app_paths: crate::path_resolver::AppPaths,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let layout_split_state = cx.new(|_| ResizableState::default());
         let top_bars = cx.new(|cx| TopBars::new(window, layout_split_state.clone(), cx));
         let singleline = top_bars.read(cx).singleline();
@@ -98,6 +103,7 @@ impl Papyru2App {
             file_tree,
             layout_split_state,
             _subscriptions,
+            _app_paths: app_paths,
         }
     }
 
@@ -391,6 +397,48 @@ impl Render for Papyru2App {
 }
 
 pub fn run() {
+    let cli_override = match crate::path_resolver::parse_cli_mode_override(std::env::args()) {
+        Ok(override_mode) => override_mode,
+        Err(error) => {
+            trace_debug(format!("path_resolver CLI parse failed error={error}"));
+            eprintln!("papyru2 CLI override parsing failed: {error}");
+            eprintln!("use either --portable or --installed (not both)");
+            return;
+        }
+    };
+
+    trace_debug(format!("path_resolver cli_override={cli_override:?}"));
+
+    let resolved_paths = match cli_override {
+        Some(mode) => crate::path_resolver::AppPaths::resolve_with_cli_override(Some(mode)),
+        None => crate::path_resolver::AppPaths::resolve(),
+    };
+
+    let app_paths = match resolved_paths {
+        Ok(paths) => {
+            let config_file = paths.config_file_path("app.toml");
+            let log_file = paths.log_file_path("papyru2.log");
+            trace_debug(format!(
+                "path_resolver resolved mode={:?} reason={} app_home={} conf={} data={} log={} bin={} config_file={} app_log_file={}",
+                paths.mode,
+                paths.mode.reason(),
+                paths.app_home.display(),
+                paths.conf_dir.display(),
+                paths.data_dir.display(),
+                paths.log_dir.display(),
+                paths.bin_dir.display(),
+                config_file.display(),
+                log_file.display()
+            ));
+            paths
+        }
+        Err(error) => {
+            trace_debug(format!("path_resolver resolve failed error={error}"));
+            eprintln!("papyru2 path resolver failed: {error}");
+            return;
+        }
+    };
+
     let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
@@ -401,9 +449,11 @@ pub fn run() {
             ..Default::default()
         };
 
+        let app_paths = app_paths.clone();
         cx.spawn(async move |cx| {
-            cx.open_window(window_options, |window, cx| {
-                let view = cx.new(|cx| Papyru2App::new(window, cx));
+            cx.open_window(window_options, move |window, cx| {
+                let app_paths = app_paths.clone();
+                let view = cx.new(|cx| Papyru2App::new(window, app_paths, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })?;
 
