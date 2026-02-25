@@ -1,4 +1,9 @@
-use std::path::PathBuf;
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use gpui::*;
 use gpui_component::{
@@ -54,7 +59,13 @@ impl Papyru2App {
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
 
-        let _subscriptions = vec![
+        let window_position_path =
+            app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
+        let last_debounced_save = Rc::new(RefCell::new(None::<Instant>));
+        let debounced_save_clock = last_debounced_save.clone();
+        let debounced_save_path = window_position_path.clone();
+
+        let mut subscriptions = vec![
             cx.subscribe_in(
                 &file_tree,
                 window,
@@ -96,13 +107,37 @@ impl Papyru2App {
             ),
         ];
 
+        subscriptions.push(cx.observe_window_bounds(window, move |_, window, _cx| {
+            let now = Instant::now();
+            let should_save = debounced_save_clock
+                .borrow()
+                .map(|last_save| now.duration_since(last_save) >= Duration::from_secs(1))
+                .unwrap_or(true);
+            if !should_save {
+                return;
+            }
+
+            *debounced_save_clock.borrow_mut() = Some(now);
+            let state = crate::window_position::WindowPositionState::from_window_bounds(
+                window.window_bounds(),
+                None,
+                None,
+                Some(window.scale_factor()),
+            );
+            if let Err(error) =
+                crate::window_position::save_window_position_atomic(&debounced_save_path, &state)
+            {
+                trace_debug(format!("window_position debounced save failed error={error}"));
+            }
+        }));
+
         Self {
             top_bars,
             singleline,
             editor,
             file_tree,
             layout_split_state,
-            _subscriptions,
+            _subscriptions: subscriptions,
             _app_paths: app_paths,
         }
     }
@@ -439,19 +474,63 @@ pub fn run() {
         }
     };
 
+    let window_position_path =
+        app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
+    let persisted_window_position = match crate::window_position::load_window_position(&window_position_path)
+    {
+        Ok(state) => {
+            trace_debug(format!(
+                "window_position load path={} found={}",
+                window_position_path.display(),
+                state.is_some()
+            ));
+            state
+        }
+        Err(error) => {
+            trace_debug(format!(
+                "window_position load failed path={} error={error}",
+                window_position_path.display()
+            ));
+            None
+        }
+    };
+
     let app = Application::new().with_assets(Assets);
 
     app.run(move |cx| {
         gpui_component::init(cx);
 
+        let fallback_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
+        let startup_bounds = crate::window_position::resolve_startup_window_bounds(
+            persisted_window_position.as_ref(),
+            fallback_bounds,
+            cx.primary_display().map(|display| display.bounds()),
+            crate::window_position::should_ignore_exact_position_for_wayland(),
+        );
+
         let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::centered(size(px(1200.), px(800.)), cx)),
+            window_bounds: Some(startup_bounds),
             ..Default::default()
         };
 
         let app_paths = app_paths.clone();
+        let window_position_path = window_position_path.clone();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, move |window, cx| {
+                let close_save_path = window_position_path.clone();
+                window.on_window_should_close(cx, move |window, cx| {
+                    let state = crate::window_position::WindowPositionState::from_window(window, cx);
+                    if let Err(error) =
+                        crate::window_position::save_window_position_atomic(&close_save_path, &state)
+                    {
+                        trace_debug(format!(
+                            "window_position close save failed path={} error={error}",
+                            close_save_path.display()
+                        ));
+                    }
+                    true
+                });
+
                 let app_paths = app_paths.clone();
                 let view = cx.new(|cx| Papyru2App::new(window, app_paths, cx));
                 cx.new(|cx| Root::new(view, window, cx))
