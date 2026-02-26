@@ -70,40 +70,37 @@ impl AppPaths {
         if let Some(mode) = override_mode {
             match mode {
                 CliRunModeOverride::Portable => {
-                    let home = forced_portable_app_home(exe_dir)?;
-                    let paths = Self::from_home(RunEnvPattern::Portable, home);
-                    paths.ensure_dirs()?;
-                    return Ok(paths);
+                    return Self::build_paths(
+                        RunEnvPattern::Portable,
+                        forced_portable_app_home(exe_dir)?,
+                    );
                 }
                 CliRunModeOverride::Installed => {
-                    let home = installed_app_home(user_home)?;
-                    let paths = Self::from_home(RunEnvPattern::Installed, home);
-                    paths.ensure_dirs()?;
-                    return Ok(paths);
+                    return Self::build_paths(
+                        RunEnvPattern::Installed,
+                        installed_app_home(user_home)?,
+                    );
                 }
             }
         }
 
         if let Some(home) = env_home {
-            let paths = Self::from_home(RunEnvPattern::EnvOverride, home);
-            paths.ensure_dirs()?;
-            return Ok(paths);
+            return Self::build_paths(RunEnvPattern::EnvOverride, home);
         }
 
         if let Some(home) = detect_portable_app_home(exe_dir) {
-            let paths = Self::from_home(RunEnvPattern::Portable, home);
-            paths.ensure_dirs()?;
-            return Ok(paths);
+            return Self::build_paths(RunEnvPattern::Portable, home);
         }
 
         if let Some(home) = detect_dev_app_home(exe_dir) {
-            let paths = Self::from_home(RunEnvPattern::DevCargoRun, home);
-            paths.ensure_dirs()?;
-            return Ok(paths);
+            return Self::build_paths(RunEnvPattern::DevCargoRun, home);
         }
 
-        let home = installed_app_home(user_home)?;
-        let paths = Self::from_home(RunEnvPattern::Installed, home);
+        Self::build_paths(RunEnvPattern::Installed, installed_app_home(user_home)?)
+    }
+
+    fn build_paths(mode: RunEnvPattern, app_home: PathBuf) -> io::Result<Self> {
+        let paths = Self::from_home(mode, app_home);
         paths.ensure_dirs()?;
         Ok(paths)
     }
@@ -473,6 +470,24 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn path_test13_cli_override_precedes_env_override() {
+        let root = new_temp_root("path_test13");
+        let env_home = root.join("env_home");
+        let exe_path = root.join("portable").join("bin").join("papyru2.exe");
+        let user_home = root.join("user_home");
+        let cli_override =
+            parse_cli_mode_override(["papyru2.exe", "--portable"]).expect("parse override");
+
+        let result =
+            AppPaths::resolve_from_inputs(Some(env_home), exe_path, Some(user_home), cli_override)
+                .unwrap();
+
+        assert_eq!(result.mode, RunEnvPattern::Portable);
+        assert_eq!(result.app_home, root.join("portable"));
         remove_temp_root(&root);
     }
 }
