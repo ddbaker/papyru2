@@ -160,6 +160,13 @@ pub fn should_ignore_exact_position_for_wayland() -> bool {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_with_replace(path, bytes, replace_target_with_temp)
+}
+
+fn write_atomic_with_replace<F>(path: &Path, bytes: &[u8], replace_fn: F) -> io::Result<()>
+where
+    F: Fn(&Path, &Path) -> io::Result<()>,
+{
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -169,28 +176,103 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::create_dir_all(parent)?;
 
     let temp_path = temp_path_for_atomic_write(path)?;
-    fs::write(&temp_path, bytes)?;
+    if temp_path.is_file() {
+        fs::remove_file(&temp_path)?;
+    }
+    let mut temp_file = fs::File::create(&temp_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("atomic write stage failed (create temp): {error}"),
+        )
+    })?;
+    std::io::Write::write_all(&mut temp_file, bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("atomic write stage failed (write temp): {error}"),
+        )
+    })?;
+    temp_file.sync_all().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("atomic write stage failed (sync temp): {error}"),
+        )
+    })?;
+    drop(temp_file);
 
-    if let Err(first_rename_error) = fs::rename(&temp_path, path) {
-        if path.exists() {
-            fs::remove_file(path)?;
-            if let Err(second_rename_error) = fs::rename(&temp_path, path) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(io::Error::new(
-                    second_rename_error.kind(),
-                    format!(
-                        "atomic rename failed (first: {first_rename_error}, second: {second_rename_error})"
-                    ),
-                ));
-            }
-            return Ok(());
+    if let Err(replace_error) = replace_fn(&temp_path, path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("atomic write stage failed (replace target): {error}"),
+        )
+    }) {
+        if let Err(cleanup_error) = cleanup_temp_file(&temp_path) {
+            return Err(io::Error::new(
+                replace_error.kind(),
+                format!(
+                    "{replace_error}; cleanup temp failed: {cleanup_error}"
+                ),
+            ));
         }
 
-        let _ = fs::remove_file(&temp_path);
-        return Err(first_rename_error);
+        return Err(replace_error);
     }
 
     Ok(())
+}
+
+fn cleanup_temp_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn replace_target_with_temp(temp_path: &Path, target_path: &Path) -> io::Result<()> {
+    // Safety invariant: never delete the existing target before a replacement operation succeeds.
+    // On replace failure, caller keeps the last-good target file intact.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::{null, null_mut};
+
+        use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+        if !target_path.exists() {
+            return fs::rename(temp_path, target_path);
+        }
+
+        let mut target_wide = target_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>();
+        let mut temp_wide = temp_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>();
+
+        let result = unsafe {
+            ReplaceFileW(
+                target_wide.as_mut_ptr(),
+                temp_wide.as_mut_ptr(),
+                null(),
+                0,
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temp_path, target_path)
+    }
 }
 
 fn temp_path_for_atomic_write(path: &Path) -> io::Result<PathBuf> {
@@ -515,7 +597,7 @@ window_mode = "minimized"
     }
 
     #[test]
-    fn win_test9_atomic_write_failure_preserves_existing_valid_file() {
+    fn win_test9_replace_failure_preserves_existing_valid_file() {
         let root = new_temp_root("win_test9");
         let path = root.join("conf").join(WINDOW_POSITION_FILE_NAME);
         let old = WindowPositionState {
@@ -534,11 +616,86 @@ window_mode = "minimized"
         };
 
         save_window_position_atomic(&path, &old).expect("save old");
-        let temp_path = temp_path_for_atomic_write(&path).expect("temp path");
-        fs::create_dir_all(&temp_path).expect("block temp file path");
-
-        let result = save_window_position_atomic(&path, &new);
+        let new_bytes = toml::to_string_pretty(&new).expect("serialize new");
+        let result = write_atomic_with_replace(&path, new_bytes.as_bytes(), |_temp, _target| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "forced replace failure",
+            ))
+        });
         assert!(result.is_err());
+
+        let loaded = load_window_position(&path).expect("load old state");
+        assert_eq!(loaded, Some(old));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn win_test9_success_path_replaces_existing_content() {
+        let root = new_temp_root("win_test9_success");
+        let path = root.join("conf").join(WINDOW_POSITION_FILE_NAME);
+        let old = WindowPositionState {
+            x: 10.0,
+            y: 20.0,
+            width: 1200.0,
+            height: 800.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("old".to_string()),
+            dpi_scale: Some(1.0),
+        };
+        let new = WindowPositionState {
+            x: 33.0,
+            y: 44.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Maximized,
+            monitor_id: Some(2),
+            monitor_uuid: Some("new".to_string()),
+            dpi_scale: Some(2.0),
+        };
+
+        save_window_position_atomic(&path, &old).expect("save old");
+        save_window_position_atomic(&path, &new).expect("save new");
+
+        let loaded = load_window_position(&path).expect("load new state");
+        assert_eq!(loaded, Some(new));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn win_test9_cleanup_failure_is_non_destructive() {
+        let root = new_temp_root("win_test9_cleanup");
+        let path = root.join("conf").join(WINDOW_POSITION_FILE_NAME);
+        let old = WindowPositionState {
+            x: 10.0,
+            y: 20.0,
+            width: 1200.0,
+            height: 800.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("old".to_string()),
+            dpi_scale: Some(1.0),
+        };
+        let new = WindowPositionState {
+            monitor_uuid: Some("new".to_string()),
+            ..old.clone()
+        };
+
+        save_window_position_atomic(&path, &old).expect("save old");
+        let new_bytes = toml::to_string_pretty(&new).expect("serialize new");
+        let result = write_atomic_with_replace(&path, new_bytes.as_bytes(), |temp, _target| {
+            fs::remove_file(temp)?;
+            fs::create_dir_all(temp)?;
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "forced replace failure",
+            ))
+        });
+        assert!(result.is_err());
+        let error_text = result.err().expect("error").to_string();
+        assert!(error_text.contains("replace target"));
+        assert!(error_text.contains("cleanup temp failed"));
 
         let loaded = load_window_position(&path).expect("load old state");
         assert_eq!(loaded, Some(old));
