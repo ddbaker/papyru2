@@ -6,6 +6,7 @@ use gpui::{App, Bounds, Pixels, Window, WindowBounds, bounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
 pub const WINDOW_POSITION_FILE_NAME: &str = "window_position.toml";
+pub const FIRST_LAUNCH_DISPLAY_RATIO: f32 = 0.7;
 const MIN_WINDOW_DIMENSION: f32 = 120.0;
 const MAX_ABS_COORDINATE: f32 = 1_000_000.0;
 
@@ -114,6 +115,32 @@ pub fn resolve_startup_window_bounds(
     };
 
     sanitize_window_bounds(raw_bounds, fallback, display_bounds, ignore_exact_position)
+}
+
+pub fn first_launch_fallback_bounds(
+    primary_display_bounds: Option<Bounds<Pixels>>,
+    default_centered_bounds: WindowBounds,
+) -> WindowBounds {
+    let Some(display_bounds) = primary_display_bounds else {
+        return default_centered_bounds;
+    };
+
+    let display_x = f32::from(display_bounds.origin.x);
+    let display_y = f32::from(display_bounds.origin.y);
+    let display_w = f32::from(display_bounds.size.width).max(MIN_WINDOW_DIMENSION);
+    let display_h = f32::from(display_bounds.size.height).max(MIN_WINDOW_DIMENSION);
+
+    let width = (display_w * FIRST_LAUNCH_DISPLAY_RATIO)
+        .max(MIN_WINDOW_DIMENSION)
+        .min(display_w);
+    let height = (display_h * FIRST_LAUNCH_DISPLAY_RATIO)
+        .max(MIN_WINDOW_DIMENSION)
+        .min(display_h);
+
+    let x = display_x + ((display_w - width) / 2.0);
+    let y = display_y + ((display_h - height) / 2.0);
+
+    WindowBounds::Windowed(bounds(point(px(x), px(y)), size(px(width), px(height))))
 }
 
 pub fn should_ignore_exact_position_for_wayland() -> bool {
@@ -540,5 +567,19 @@ window_mode = "minimized"
         );
 
         assert_eq!(resolved, windowed(300.0, 200.0, 700.0, 500.0));
+    }
+
+    #[test]
+    fn win_test11_first_launch_without_persisted_geometry_uses_seventy_percent_and_centered() {
+        let default_bounds = windowed(0.0, 0.0, 1200.0, 800.0);
+        let fallback = first_launch_fallback_bounds(Some(display_bounds(2000.0, 1000.0)), default_bounds);
+        let resolved = resolve_startup_window_bounds(
+            None,
+            fallback,
+            Some(display_bounds(2000.0, 1000.0)),
+            false,
+        );
+
+        assert_eq!(resolved, windowed(300.0, 150.0, 1400.0, 700.0));
     }
 }

@@ -500,11 +500,16 @@ pub fn run() {
     app.run(move |cx| {
         gpui_component::init(cx);
 
-        let fallback_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
+        let primary_display_bounds = cx.primary_display().map(|display| display.bounds());
+        let default_centered_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
+        let fallback_bounds = crate::window_position::first_launch_fallback_bounds(
+            primary_display_bounds.clone(),
+            default_centered_bounds,
+        );
         let startup_bounds = crate::window_position::resolve_startup_window_bounds(
             persisted_window_position.as_ref(),
             fallback_bounds,
-            cx.primary_display().map(|display| display.bounds()),
+            primary_display_bounds,
             crate::window_position::should_ignore_exact_position_for_wayland(),
         );
 
