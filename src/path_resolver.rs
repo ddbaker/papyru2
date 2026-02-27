@@ -39,6 +39,7 @@ pub struct AppPaths {
     pub app_home: PathBuf,
     pub conf_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub user_document_dir: PathBuf,
     pub log_dir: PathBuf,
     pub bin_dir: PathBuf,
 }
@@ -109,6 +110,7 @@ impl AppPaths {
         fs::create_dir_all(&self.app_home)?;
         fs::create_dir_all(&self.conf_dir)?;
         fs::create_dir_all(&self.data_dir)?;
+        fs::create_dir_all(&self.user_document_dir)?;
         fs::create_dir_all(&self.log_dir)?;
         fs::create_dir_all(&self.bin_dir)?;
         Ok(())
@@ -123,9 +125,11 @@ impl AppPaths {
     }
 
     fn from_home(mode: RunEnvPattern, app_home: PathBuf) -> Self {
+        let data_dir = app_home.join("data");
         Self {
             conf_dir: app_home.join("conf"),
-            data_dir: app_home.join("data"),
+            user_document_dir: data_dir.join("user_document"),
+            data_dir,
             log_dir: app_home.join("log"),
             bin_dir: app_home.join("bin"),
             app_home,
@@ -387,6 +391,7 @@ mod tests {
         assert!(paths.app_home.is_dir());
         assert!(paths.conf_dir.is_dir());
         assert!(paths.data_dir.is_dir());
+        assert!(paths.user_document_dir.is_dir());
         assert!(paths.log_dir.is_dir());
         assert!(paths.bin_dir.is_dir());
         remove_temp_root(&root);
@@ -488,6 +493,28 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Portable);
         assert_eq!(result.app_home, root.join("portable"));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn path_test14_user_document_dir_resolves_under_data_dir() {
+        let root = new_temp_root("path_test14");
+        let paths = AppPaths::from_home(RunEnvPattern::Installed, root.join("app_home"));
+
+        assert_eq!(paths.user_document_dir, paths.data_dir.join("user_document"));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn path_test15_ensure_dirs_creates_user_document_dir_and_is_idempotent() {
+        let root = new_temp_root("path_test15");
+        let app_home = root.join("idempotent_user_document_home");
+        let paths = AppPaths::from_home(RunEnvPattern::Installed, app_home);
+
+        paths.ensure_dirs().expect("first ensure_dirs");
+        paths.ensure_dirs().expect("second ensure_dirs");
+
+        assert!(paths.user_document_dir.is_dir());
         remove_temp_root(&root);
     }
 }

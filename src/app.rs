@@ -454,12 +454,13 @@ pub fn run() {
             let config_file = paths.config_file_path("app.toml");
             let log_file = paths.log_file_path("papyru2.log");
             trace_debug(format!(
-                "path_resolver resolved mode={:?} reason={} app_home={} conf={} data={} log={} bin={} config_file={} app_log_file={}",
+                "path_resolver resolved mode={:?} reason={} app_home={} conf={} data={} user_document={} log={} bin={} config_file={} app_log_file={}",
                 paths.mode,
                 paths.mode.reason(),
                 paths.app_home.display(),
                 paths.conf_dir.display(),
                 paths.data_dir.display(),
+                paths.user_document_dir.display(),
                 paths.log_dir.display(),
                 paths.bin_dir.display(),
                 config_file.display(),
