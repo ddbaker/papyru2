@@ -11,6 +11,7 @@ use gpui_component::input::InputEvent;
 pub enum EditorEvent {
     BackspaceAtLineHead,
     PressUpAtFirstLine,
+    FocusGained,
 }
 
 #[derive(Clone, Debug)]
@@ -25,6 +26,7 @@ pub struct Papyru2Editor {
     last_value: String,
     last_cursor: gpui_component::input::Position,
     pending_programmatic_change_events: usize,
+    current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -100,6 +102,7 @@ impl Papyru2Editor {
                 }
                 InputEvent::Focus => {
                     crate::app::trace_debug("editor InputEvent::Focus");
+                    cx.emit(EditorEvent::FocusGained);
                 }
                 InputEvent::Blur => {
                     crate::app::trace_debug("editor InputEvent::Blur");
@@ -112,6 +115,7 @@ impl Papyru2Editor {
             last_value,
             last_cursor,
             pending_programmatic_change_events: 0,
+            current_editing_file_path: None,
             _subscriptions,
         }
     }
@@ -239,10 +243,10 @@ impl Papyru2Editor {
             .update(cx, |state, cx| state.focus(window, cx));
     }
 
-    pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
-            Err(_) => return,
+            Err(_) => return false,
         };
 
         let language = path
@@ -275,6 +279,15 @@ impl Papyru2Editor {
             line: 0,
             character: 0,
         };
+        true
+    }
+
+    pub fn set_current_editing_file_path(&mut self, path: Option<PathBuf>) {
+        self.current_editing_file_path = path;
+    }
+
+    pub fn current_editing_file_path(&self) -> Option<PathBuf> {
+        self.current_editing_file_path.clone()
     }
 }
 

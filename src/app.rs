@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::Local;
 use gpui::*;
 use gpui_component::{
     Root,
@@ -43,8 +44,9 @@ pub struct Papyru2App {
     editor: Entity<Papyru2Editor>,
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
+    file_workflow: crate::singleline_create_file::SinglelineCreateFileWorkflow,
     _subscriptions: Vec<Subscription>,
-    _app_paths: crate::path_resolver::AppPaths,
+    app_paths: crate::path_resolver::AppPaths,
 }
 
 impl Papyru2App {
@@ -58,6 +60,7 @@ impl Papyru2App {
         let singleline = top_bars.read(cx).singleline();
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
+        let file_workflow = crate::singleline_create_file::SinglelineCreateFileWorkflow::new();
 
         let window_position_path =
             app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
@@ -76,6 +79,16 @@ impl Papyru2App {
                 },
             ),
             cx.subscribe_in(
+                &top_bars,
+                window,
+                move |this, _, event: &crate::top_bars::TopBarsEvent, window, cx| match event {
+                    crate::top_bars::TopBarsEvent::PressPlus => {
+                        trace_debug("app received TopBarsEvent::PressPlus");
+                        this.handle_plus_button(window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
                 &singleline,
                 window,
                 move |this, _, event: &crate::singleline_input::SingleLineEvent, window, cx| {
@@ -86,7 +99,16 @@ impl Papyru2App {
                         }
                         crate::singleline_input::SingleLineEvent::PressDown => {
                             trace_debug("app received SingleLineEvent::PressDown");
+                            this.ensure_new_file_flow("singleline_down", window, cx);
                             this.transfer_singleline_down(window, cx);
+                        }
+                        crate::singleline_input::SingleLineEvent::ValueChanged { value, cursor_char } => {
+                            trace_debug(format!(
+                                "app received SingleLineEvent::ValueChanged cursor={} value='{}'",
+                                cursor_char,
+                                compact_text(value)
+                            ));
+                            this.on_singleline_value_changed(value, window, cx);
                         }
                     }
                 },
@@ -102,6 +124,10 @@ impl Papyru2App {
                     crate::editor::EditorEvent::PressUpAtFirstLine => {
                         trace_debug("app received EditorEvent::PressUpAtFirstLine");
                         this.transfer_editor_up(window, cx);
+                    }
+                    crate::editor::EditorEvent::FocusGained => {
+                        trace_debug("app received EditorEvent::FocusGained");
+                        this.ensure_new_file_flow("editor_focus", window, cx);
                     }
                 },
             ),
@@ -131,14 +157,25 @@ impl Papyru2App {
             }
         }));
 
+        file_workflow.reset_startup_to_neutral();
+        singleline.update(cx, |singleline, cx| {
+            singleline.apply_cursor(0, window, cx);
+            singleline.focus(window, cx);
+            singleline.set_current_editing_file_path(None);
+        });
+        editor.update(cx, |editor, _| {
+            editor.set_current_editing_file_path(None);
+        });
+
         Self {
             top_bars,
             singleline,
             editor,
             file_tree,
             layout_split_state,
+            file_workflow,
             _subscriptions: subscriptions,
-            _app_paths: app_paths,
+            app_paths,
         }
     }
 
@@ -160,6 +197,127 @@ impl Papyru2App {
                 });
             }
         }
+    }
+
+    fn sync_current_editing_path_to_components(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.singleline.update(cx, |singleline, _| {
+            singleline.set_current_editing_file_path(path.clone());
+        });
+        self.editor.update(cx, |editor, _| {
+            editor.set_current_editing_file_path(path);
+        });
+
+        let sl_path = self.singleline.read(cx).current_editing_file_path();
+        let ed_path = self.editor.read(cx).current_editing_file_path();
+        trace_debug(format!(
+            "current_edit_path sync singleline={} editor={}",
+            sl_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            ed_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+    }
+
+    fn ensure_new_file_flow(
+        &mut self,
+        trigger: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_workflow.state() != crate::singleline_create_file::SinglelineFileState::Neutral {
+            return;
+        }
+
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        trace_debug(format!(
+            "new_file_flow trigger={} state=NEUTRAL singleline='{}'",
+            trigger,
+            compact_text(&singleline_snapshot.value)
+        ));
+
+        match self.file_workflow.try_create_from_neutral(
+            &singleline_snapshot.value,
+            &self.app_paths.user_document_dir,
+            Instant::now(),
+            Local::now(),
+        ) {
+            Ok(Some(path)) => {
+                trace_debug(format!("new_file_flow created path={}", path.display()));
+                self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                self.editor.update(cx, |editor, cx| {
+                    let _ = editor.open_file(path, window, cx);
+                });
+            }
+            Ok(None) => {
+                trace_debug(format!(
+                    "new_file_flow trigger={} skipped (state/throttle gate)",
+                    trigger
+                ));
+            }
+            Err(error) => {
+                trace_debug(format!(
+                    "new_file_flow trigger={} failed error={error}",
+                    trigger
+                ));
+            }
+        }
+    }
+
+    fn on_singleline_value_changed(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.file_workflow.state() {
+            crate::singleline_create_file::SinglelineFileState::Neutral => {
+                self.ensure_new_file_flow("singleline_value_changed", window, cx);
+            }
+            crate::singleline_create_file::SinglelineFileState::Edit => {
+                match self.file_workflow.try_rename_in_edit(value, Local::now()) {
+                    Ok(Some(path)) => {
+                        trace_debug(format!(
+                            "rename_flow success new_path={} value='{}'",
+                            path.display(),
+                            compact_text(value)
+                        ));
+                        self.sync_current_editing_path_to_components(Some(path), cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        trace_debug(format!(
+                            "rename_flow failed value='{}' error={error}",
+                            compact_text(value)
+                        ));
+                    }
+                }
+            }
+            crate::singleline_create_file::SinglelineFileState::New => {}
+        }
+    }
+
+    fn handle_plus_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.file_workflow.transition_edit_to_neutral() {
+            trace_debug("plus_button no-op (state is not EDIT)");
+            return;
+        }
+
+        trace_debug("plus_button transition EDIT -> NEUTRAL");
+        let _ = self.file_workflow.current_edit_path();
+        self.sync_current_editing_path_to_components(None, cx);
+
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor("", 0, window, cx);
+            singleline.focus(window, cx);
+        });
+
+        self.editor.update(cx, |editor, cx| {
+            editor.apply_text_and_cursor("", 0, 0, window, cx);
+        });
     }
 
     fn transfer_singleline_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -402,9 +560,18 @@ impl Papyru2App {
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        self.editor.update(cx, move |editor, cx| {
-            editor.open_file(path, window, cx);
+        let opened = self.editor.update(cx, {
+            let path = path.clone();
+            move |editor, cx| editor.open_file(path, window, cx)
         });
+
+        if !opened {
+            trace_debug(format!("open_file failed path={}", path.display()));
+            return;
+        }
+
+        self.file_workflow.set_edit_from_open_file(path.clone());
+        self.sync_current_editing_path_to_components(Some(path), cx);
     }
 }
 

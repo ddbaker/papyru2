@@ -8,10 +8,17 @@ use gpui_component::{
 
 use crate::singleline_input::SingleLineInput;
 
+#[derive(Clone, Debug)]
+pub enum TopBarsEvent {
+    PressPlus,
+}
+
 pub struct TopBars {
     singleline: Entity<SingleLineInput>,
     layout_split_state: Entity<ResizableState>,
 }
+
+impl EventEmitter<TopBarsEvent> for TopBars {}
 
 impl TopBars {
     pub fn new(
@@ -30,16 +37,21 @@ impl TopBars {
         self.singleline.clone()
     }
 
-    fn render_round_button(
-        &self,
-        id: &'static str,
-        icon: IconName,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        Button::new(id)
+    fn render_plus_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        Button::new("round-button1")
             .ghost()
             .xsmall()
-            .icon(icon)
+            .icon(IconName::Plus)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(TopBarsEvent::PressPlus);
+            }))
+    }
+
+    fn render_search_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        Button::new("round-button2")
+            .ghost()
+            .xsmall()
+            .icon(IconName::Search)
             .on_click(cx.listener(|_, _, _, _| {
                 // Placeholder button (no-op)
             }))
@@ -56,8 +68,8 @@ impl Render for TopBars {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(self.render_round_button("round-button1", IconName::Plus, cx))
-                            .child(self.render_round_button("round-button2", IconName::Search, cx)),
+                            .child(self.render_plus_button(cx))
+                            .child(self.render_search_button(cx)),
                     ),
                 )
                 .child(resizable_panel().child(self.singleline.clone())),
