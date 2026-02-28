@@ -38,6 +38,13 @@ pub(crate) fn compact_text(text: &str) -> String {
     text.replace('\\', "\\\\").replace('\n', "\\n")
 }
 
+fn should_restore_singleline_focus_after_new_file(
+    singleline_was_focused: bool,
+    editor_was_focused: bool,
+) -> bool {
+    singleline_was_focused && !editor_was_focused
+}
+
 pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     singleline: Entity<crate::singleline_input::SingleLineInput>,
@@ -233,10 +240,14 @@ impl Papyru2App {
         }
 
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        let singleline_was_focused = self.singleline.read(cx).is_focused(window, cx);
+        let editor_was_focused = self.editor.read(cx).is_focused(window, cx);
         trace_debug(format!(
-            "new_file_flow trigger={} state=NEUTRAL singleline='{}'",
+            "new_file_flow trigger={} state=NEUTRAL singleline='{}' singleline_focused={} editor_focused={}",
             trigger,
-            compact_text(&singleline_snapshot.value)
+            compact_text(&singleline_snapshot.value),
+            singleline_was_focused,
+            editor_was_focused
         ));
 
         let now_local = Local::now();
@@ -270,6 +281,26 @@ impl Papyru2App {
                 self.editor.update(cx, |editor, cx| {
                     let _ = editor.open_file(path, window, cx);
                 });
+
+                if should_restore_singleline_focus_after_new_file(
+                    singleline_was_focused,
+                    editor_was_focused,
+                ) {
+                    let singleline_after = self.singleline.read(cx).snapshot(cx);
+                    let restore_cursor_char =
+                        singleline_snapshot.cursor_char.min(singleline_after.value.chars().count());
+
+                    trace_debug(format!(
+                        "new_file_flow restore singleline focus cursor={} (rule-1)",
+                        restore_cursor_char
+                    ));
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_cursor(restore_cursor_char, window, cx);
+                        singleline.focus(window, cx);
+                    });
+                } else {
+                    trace_debug("new_file_flow no focus restore (rule-2)");
+                }
             }
             Ok(None) => {
                 trace_debug(format!(
@@ -639,6 +670,22 @@ impl Render for Papyru2App {
                         .child(resizable_panel().child(self.editor.clone())),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_restore_singleline_focus_after_new_file;
+
+    #[test]
+    fn app_newfile_focus_test1_restore_when_singleline_had_focus_and_editor_did_not() {
+        assert!(should_restore_singleline_focus_after_new_file(true, false));
+    }
+
+    #[test]
+    fn app_newfile_focus_test2_no_restore_when_editor_already_had_focus() {
+        assert!(!should_restore_singleline_focus_after_new_file(false, true));
+        assert!(!should_restore_singleline_focus_after_new_file(true, true));
     }
 }
 

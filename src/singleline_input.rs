@@ -172,6 +172,13 @@ impl SingleLineInput {
             .update(cx, |state, cx| state.focus(window, cx));
     }
 
+    pub fn is_focused(&self, window: &Window, cx: &App) -> bool {
+        self.sl_input_state
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
     pub fn set_current_editing_file_path(&mut self, path: Option<PathBuf>) {
         self.current_editing_file_path = path;
     }
