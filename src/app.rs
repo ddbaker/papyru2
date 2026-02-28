@@ -313,7 +313,10 @@ impl Papyru2App {
                 Some(window.scale_factor()),
             );
             if let Err(error) =
-                crate::window_position::save_window_position_atomic(&debounced_save_path, &state)
+                crate::window_position::save_window_position_atomic(
+                    debounced_save_path.as_path(),
+                    &state,
+                )
             {
                 trace_debug(format!("window_position debounced save failed error={error}"));
             }
@@ -411,7 +414,7 @@ impl Papyru2App {
         let now_local = Local::now();
         match self.file_workflow.try_create_from_neutral(
             &singleline_snapshot.value,
-            &self.app_paths.user_document_dir,
+            self.app_paths.user_document_dir.as_path(),
             Instant::now(),
             now_local,
         ) {
@@ -420,7 +423,7 @@ impl Papyru2App {
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                 if let Some(forced_stem) = crate::singleline_create_file::forced_singleline_stem_after_create(
                     &singleline_snapshot.value,
-                    &path,
+                    path.as_path(),
                     now_local,
                 ) {
                     trace_debug(format!(
@@ -497,7 +500,7 @@ impl Papyru2App {
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                         if let Some(forced_stem) =
                             crate::singleline_create_file::forced_singleline_stem_after_rename(
-                                value, &path, now_local,
+                                value, path.as_path(), now_local,
                             )
                         {
                             trace_debug(format!(
@@ -1052,8 +1055,8 @@ pub fn run() {
 
     let window_position_path =
         app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
-    let persisted_window_position = match crate::window_position::load_window_position(&window_position_path)
-    {
+    let persisted_window_position =
+        match crate::window_position::load_window_position(window_position_path.as_path()) {
         Ok(state) => {
             trace_debug(format!(
                 "window_position load path={} found={}",
@@ -1102,7 +1105,10 @@ pub fn run() {
                 window.on_window_should_close(cx, move |window, cx| {
                     let state = crate::window_position::WindowPositionState::from_window(window, cx);
                     if let Err(error) =
-                        crate::window_position::save_window_position_atomic(&close_save_path, &state)
+                        crate::window_position::save_window_position_atomic(
+                            close_save_path.as_path(),
+                            &state,
+                        )
                     {
                         trace_debug(format!(
                             "window_position close save failed path={} error={error}",

@@ -414,13 +414,13 @@ mod tests {
         let path = root.join("conf").join(WINDOW_POSITION_FILE_NAME);
         let fallback = windowed(100.0, 120.0, 1200.0, 800.0);
 
-        let loaded = load_window_position(&path).expect("load state");
+        let loaded = load_window_position(path.as_path()).expect("load state");
         let resolved =
             resolve_startup_window_bounds(loaded.as_ref(), fallback, Some(display_bounds(3000.0, 2000.0)), false);
 
         assert!(loaded.is_none());
         assert_eq!(resolved, fallback);
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -438,14 +438,14 @@ mod tests {
             monitor_uuid: Some("display-uuid".to_string()),
             dpi_scale: Some(1.5),
         };
-        save_window_position_atomic(&path, &saved).expect("save state");
+        save_window_position_atomic(path.as_path(), &saved).expect("save state");
 
-        let loaded = load_window_position(&path).expect("load state");
+        let loaded = load_window_position(path.as_path()).expect("load state");
         let resolved =
             resolve_startup_window_bounds(loaded.as_ref(), fallback, Some(display_bounds(3000.0, 2000.0)), false);
 
         assert_eq!(resolved, windowed(300.0, 200.0, 900.0, 700.0));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -464,10 +464,10 @@ mod tests {
             dpi_scale: Some(1.0),
         };
 
-        save_window_position_atomic(&path, &state).expect("save state");
+        save_window_position_atomic(path.as_path(), &state).expect("save state");
 
         assert!(path.is_file());
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -485,11 +485,11 @@ mod tests {
             dpi_scale: Some(2.0),
         };
 
-        save_window_position_atomic(&path, &state).expect("save state");
-        let loaded = load_window_position(&path).expect("load state");
+        save_window_position_atomic(path.as_path(), &state).expect("save state");
+        let loaded = load_window_position(path.as_path()).expect("load state");
 
         assert_eq!(loaded, Some(state));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -543,9 +543,9 @@ window_mode = "minimized"
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(&path, raw).expect("write invalid state");
 
-        let loaded = load_window_position(&path);
+        let loaded = load_window_position(path.as_path());
         assert!(loaded.is_err());
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -615,7 +615,7 @@ window_mode = "minimized"
             ..old.clone()
         };
 
-        save_window_position_atomic(&path, &old).expect("save old");
+        save_window_position_atomic(path.as_path(), &old).expect("save old");
         let new_bytes = toml::to_string_pretty(&new).expect("serialize new");
         let result = write_atomic_with_replace(&path, new_bytes.as_bytes(), |_temp, _target| {
             Err(io::Error::new(
@@ -625,9 +625,9 @@ window_mode = "minimized"
         });
         assert!(result.is_err());
 
-        let loaded = load_window_position(&path).expect("load old state");
+        let loaded = load_window_position(path.as_path()).expect("load old state");
         assert_eq!(loaded, Some(old));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -655,12 +655,12 @@ window_mode = "minimized"
             dpi_scale: Some(2.0),
         };
 
-        save_window_position_atomic(&path, &old).expect("save old");
-        save_window_position_atomic(&path, &new).expect("save new");
+        save_window_position_atomic(path.as_path(), &old).expect("save old");
+        save_window_position_atomic(path.as_path(), &new).expect("save new");
 
-        let loaded = load_window_position(&path).expect("load new state");
+        let loaded = load_window_position(path.as_path()).expect("load new state");
         assert_eq!(loaded, Some(new));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -682,7 +682,7 @@ window_mode = "minimized"
             ..old.clone()
         };
 
-        save_window_position_atomic(&path, &old).expect("save old");
+        save_window_position_atomic(path.as_path(), &old).expect("save old");
         let new_bytes = toml::to_string_pretty(&new).expect("serialize new");
         let result = write_atomic_with_replace(&path, new_bytes.as_bytes(), |temp, _target| {
             fs::remove_file(temp)?;
@@ -697,9 +697,9 @@ window_mode = "minimized"
         assert!(error_text.contains("replace target"));
         assert!(error_text.contains("cleanup temp failed"));
 
-        let loaded = load_window_position(&path).expect("load old state");
+        let loaded = load_window_position(path.as_path()).expect("load old state");
         assert_eq!(loaded, Some(old));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]

@@ -444,11 +444,11 @@ fn resolve_unique_txt_path(dir: &Path, stem: &str, exclude_path: Option<&Path>) 
 }
 
 pub fn create_new_text_file(request: &CreateFileRequest) -> io::Result<PathBuf> {
-    let dir = daily_directory(&request.user_document_dir, request.now);
+    let dir = daily_directory(request.user_document_dir.as_path(), request.now);
     fs::create_dir_all(&dir)?;
 
     let stem = stem_from_singleline_value(&request.singleline_value, request.now);
-    let path = resolve_unique_txt_path(&dir, &stem, None);
+    let path = resolve_unique_txt_path(dir.as_path(), &stem, None);
 
     fs::OpenOptions::new()
         .create_new(true)
@@ -492,7 +492,7 @@ fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Resul
     let decoded: EditorAutoSavePayload = serde_json::from_slice(&serialized)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
 
-    write_editor_text_atomic(&decoded.current_path, decoded.editor_text.as_bytes())?;
+    write_editor_text_atomic(decoded.current_path.as_path(), decoded.editor_text.as_bytes())?;
     Ok(decoded.current_path)
 }
 
@@ -676,14 +676,14 @@ mod tests {
         let root = new_temp_root("newf_test3");
         let workflow = SinglelineCreateFileWorkflow::new();
         let created = workflow
-            .try_create_from_neutral("hello", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("hello", root.as_path(), Instant::now(), fixed_now())
             .expect("create from neutral");
 
         assert!(created.is_some());
         assert_eq!(workflow.state(), SinglelineFileState::Edit);
         assert!(workflow.current_edit_path().is_some());
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -693,7 +693,7 @@ mod tests {
         let now = Instant::now();
 
         let first = workflow
-            .try_create_from_neutral("hello", &root, now, fixed_now())
+            .try_create_from_neutral("hello", root.as_path(), now, fixed_now())
             .expect("first create");
         assert!(first.is_some());
 
@@ -703,7 +703,7 @@ mod tests {
         let second = workflow
             .try_create_from_neutral(
                 "world",
-                &root,
+                root.as_path(),
                 now + Duration::from_millis(500),
                 fixed_now(),
             )
@@ -711,7 +711,7 @@ mod tests {
         assert!(second.is_none());
         assert_eq!(workflow.state(), SinglelineFileState::New);
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -719,13 +719,13 @@ mod tests {
         let root = new_temp_root("newf_test5");
         let workflow = SinglelineCreateFileWorkflow::new();
         workflow
-            .try_create_from_neutral("hello", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("hello", root.as_path(), Instant::now(), fixed_now())
             .expect("create");
         assert!(workflow.transition_edit_to_neutral());
         assert_eq!(workflow.state(), SinglelineFileState::Neutral);
         assert_eq!(workflow.current_edit_path(), None);
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -736,16 +736,21 @@ mod tests {
 
         let now = Instant::now();
         workflow
-            .try_create_from_neutral("hello", &root, now, fixed_now())
+            .try_create_from_neutral("hello", root.as_path(), now, fixed_now())
             .expect("create");
         assert!(workflow.transition_edit_to_neutral());
         let blocked = workflow
-            .try_create_from_neutral("x", &root, now + Duration::from_millis(100), fixed_now())
+            .try_create_from_neutral(
+                "x",
+                root.as_path(),
+                now + Duration::from_millis(100),
+                fixed_now(),
+            )
             .expect("create blocked");
         assert!(blocked.is_none());
         assert!(!workflow.transition_edit_to_neutral());
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -761,14 +766,14 @@ mod tests {
     #[test]
     fn newf_test8_daily_directory_uses_yyyy_mm_dd() {
         let root = PathBuf::from("C:/tmp/root");
-        let dir = daily_directory(&root, fixed_now());
+        let dir = daily_directory(root.as_path(), fixed_now());
         assert!(dir.ends_with(Path::new("2026").join("02").join("28")));
     }
 
     #[test]
     fn newf_test9_collision_suffix_appends_before_txt() {
         let root = new_temp_root("newf_test9");
-        let dir = daily_directory(&root, fixed_now());
+        let dir = daily_directory(root.as_path(), fixed_now());
         fs::create_dir_all(&dir).expect("create daily directory");
         fs::write(dir.join("hello.txt"), "").expect("write hello.txt");
         fs::write(dir.join("hello_2.txt"), "").expect("write hello_2.txt");
@@ -781,7 +786,7 @@ mod tests {
         .expect("create new text file");
 
         assert!(created.ends_with(Path::new("hello_3.txt")));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -805,7 +810,7 @@ mod tests {
     #[test]
     fn newf_test13_filename_stem_is_trimmed_to_64_chars() {
         let source = "a".repeat(80);
-        let stem = stem_from_singleline_value(&source, fixed_now());
+        let stem = stem_from_singleline_value(source.as_str(), fixed_now());
         assert_eq!(stem.chars().count(), 64);
     }
 
@@ -824,7 +829,7 @@ mod tests {
         let root = new_temp_root("newf_test15");
         let workflow = SinglelineCreateFileWorkflow::new();
         let created = workflow
-            .try_create_from_neutral("start", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("start", root.as_path(), Instant::now(), fixed_now())
             .expect("create")
             .expect("path");
         assert!(created.exists());
@@ -837,7 +842,7 @@ mod tests {
         assert!(renamed.exists());
         assert_eq!(workflow.current_edit_path(), Some(renamed));
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -855,19 +860,19 @@ mod tests {
         let root = new_temp_root("newf_test17");
         let workflow = SinglelineCreateFileWorkflow::new();
         workflow
-            .try_create_from_neutral("hello", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("hello", root.as_path(), Instant::now(), fixed_now())
             .expect("create 1");
         let second = workflow
             .try_create_from_neutral(
                 "world",
-                &root,
+                root.as_path(),
                 Instant::now() + Duration::from_secs(2),
                 fixed_now(),
             )
             .expect("create 2");
         assert!(second.is_none());
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -901,7 +906,7 @@ mod tests {
         assert!(first_path.file_name().and_then(|n| n.to_str()) == Some("a.txt"));
         assert!(second_path.file_name().and_then(|n| n.to_str()) == Some("b.txt"));
         dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -927,11 +932,11 @@ mod tests {
             assert!(result.is_ok());
         }
 
-        let created_dir = daily_directory(&root, fixed_now());
+        let created_dir = daily_directory(root.as_path(), fixed_now());
         let count = fs::read_dir(created_dir).expect("read dir").count();
         assert_eq!(count, 4);
         dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -939,7 +944,7 @@ mod tests {
         let root = new_temp_root("newf_test20");
         let workflow = SinglelineCreateFileWorkflow::new();
         workflow
-            .try_create_from_neutral("こんにちは", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("こんにちは", root.as_path(), Instant::now(), fixed_now())
             .expect("create");
 
         let renamed = workflow
@@ -951,7 +956,7 @@ mod tests {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name == "こんにちは 世界.txt"));
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -959,7 +964,7 @@ mod tests {
         let root = new_temp_root("newf_test21");
         let workflow = SinglelineCreateFileWorkflow::new();
         let created = workflow
-            .try_create_from_neutral("base", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("base", root.as_path(), Instant::now(), fixed_now())
             .expect("create")
             .expect("path");
 
@@ -972,7 +977,7 @@ mod tests {
             .expect("path");
         assert!(renamed.ends_with(Path::new("renamed_2.txt")));
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -980,7 +985,7 @@ mod tests {
         let root = new_temp_root("newf_test22");
         let workflow = SinglelineCreateFileWorkflow::new();
         let created = workflow
-            .try_create_from_neutral("same", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("same", root.as_path(), Instant::now(), fixed_now())
             .expect("create")
             .expect("path");
 
@@ -990,7 +995,7 @@ mod tests {
             .expect("path");
         assert_eq!(created, renamed);
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1014,9 +1019,9 @@ mod tests {
         })
         .expect("create new file");
 
-        let daily = daily_directory(&root, fixed_now());
+        let daily = daily_directory(root.as_path(), fixed_now());
         assert!(path.starts_with(daily));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1037,9 +1042,10 @@ mod tests {
         .expect("create second file");
 
         let forced =
-            forced_singleline_stem_after_create("filename", &second, now).expect("forced stem");
+            forced_singleline_stem_after_create("filename", second.as_path(), now)
+                .expect("forced stem");
         assert_eq!(forced, "filename_2");
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1054,9 +1060,10 @@ mod tests {
         .expect("create sanitized file");
 
         let forced =
-            forced_singleline_stem_after_create("file:name", &created, now).expect("forced stem");
+            forced_singleline_stem_after_create("file:name", created.as_path(), now)
+                .expect("forced stem");
         assert_eq!(forced, "file_name");
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1064,7 +1071,7 @@ mod tests {
         let root = new_temp_root("aus_test1");
         let workflow = SinglelineCreateFileWorkflow::new();
         let path = workflow
-            .try_create_from_neutral("autosave", &root, Instant::now(), fixed_now())
+            .try_create_from_neutral("autosave", root.as_path(), Instant::now(), fixed_now())
             .expect("create")
             .expect("created path");
         let payload = EditorAutoSavePayload {
@@ -1079,7 +1086,7 @@ mod tests {
         let content = fs::read_to_string(&path).expect("read autosaved file");
         assert_eq!(content, "line-1\nline-2");
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1098,7 +1105,7 @@ mod tests {
         assert!(!saved);
         assert!(!path.exists());
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1123,7 +1130,7 @@ mod tests {
             .expect("autosave with missing edit path");
         assert!(!saved);
         workflow.dispatcher.shutdown();
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -1140,6 +1147,6 @@ mod tests {
 
         let content = fs::read_to_string(&path).expect("read old content");
         assert_eq!(content, "old");
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 }

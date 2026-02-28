@@ -293,7 +293,7 @@ mod tests {
         assert!(result.data_dir.is_dir());
         assert!(result.log_dir.is_dir());
         assert!(result.bin_dir.is_dir());
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
         let root = new_temp_root("path_test2");
         let app_home = root.join("portable");
         let exe_path = app_home.join("bin").join("papyru2.exe");
-        write_empty_file(&app_home.join(PORTABLE_MARKER_FILE));
+        write_empty_file(app_home.join(PORTABLE_MARKER_FILE).as_path());
 
         let result =
             AppPaths::resolve_from_inputs(None, exe_path, Some(root.join("user_home")), None)
@@ -309,7 +309,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Portable);
         assert_eq!(result.app_home, app_home);
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -324,14 +324,14 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
     fn path_test4_dev_detects_debug_and_release_layouts() {
         let root = new_temp_root("path_test4");
         let repo_root = root.join("repo");
-        write_empty_file(&repo_root.join("Cargo.toml"));
+        write_empty_file(repo_root.join("Cargo.toml").as_path());
 
         let debug_exe = repo_root.join("target").join("debug").join("papyru2.exe");
         let release_exe = repo_root.join("target").join("release").join("papyru2.exe");
@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(debug_result.app_home, repo_root);
         assert_eq!(release_result.mode, RunEnvPattern::DevCargoRun);
         assert_eq!(release_result.app_home, root.join("repo"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -362,7 +362,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -376,7 +376,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -394,7 +394,7 @@ mod tests {
         assert!(paths.user_document_dir.is_dir());
         assert!(paths.log_dir.is_dir());
         assert!(paths.bin_dir.is_dir());
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -404,7 +404,7 @@ mod tests {
         let exe_path = app_home.join("bin").join("papyru2.exe");
         let env_home = root.join("env_home");
 
-        write_empty_file(&app_home.join(PORTABLE_MARKER_FILE));
+        write_empty_file(app_home.join(PORTABLE_MARKER_FILE).as_path());
 
         let result = AppPaths::resolve_from_inputs(
             Some(env_home.clone()),
@@ -416,7 +416,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::EnvOverride);
         assert_eq!(result.app_home, env_home);
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -427,7 +427,7 @@ mod tests {
         let config_path = paths.config_file_path("app.toml");
 
         assert_eq!(config_path, paths.conf_dir.join("app.toml"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         let log_path = paths.log_file_path("papyru2.log");
 
         assert_eq!(log_path, paths.log_dir.join("papyru2.log"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -454,7 +454,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Portable);
         assert_eq!(result.app_home, root.join("portable"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -493,7 +493,7 @@ mod tests {
 
         assert_eq!(result.mode, RunEnvPattern::Portable);
         assert_eq!(result.app_home, root.join("portable"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -502,7 +502,7 @@ mod tests {
         let paths = AppPaths::from_home(RunEnvPattern::Installed, root.join("app_home"));
 
         assert_eq!(paths.user_document_dir, paths.data_dir.join("user_document"));
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 
     #[test]
@@ -515,6 +515,6 @@ mod tests {
         paths.ensure_dirs().expect("second ensure_dirs");
 
         assert!(paths.user_document_dir.is_dir());
-        remove_temp_root(&root);
+        remove_temp_root(root.as_path());
     }
 }
