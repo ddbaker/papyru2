@@ -9,6 +9,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
 
 pub const MAX_FILE_STEM_CHARS: usize = 64;
 pub const CREATE_EVENT_MIN_INTERVAL: Duration = Duration::from_secs(1);
@@ -40,16 +41,29 @@ pub struct RenameFileRequest {
     pub now: DateTime<Local>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EditorAutoSavePayload {
+    pub current_path: PathBuf,
+    pub editor_text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AutoSaveFileRequest {
+    pub payload: EditorAutoSavePayload,
+}
+
 #[derive(Debug, Clone)]
 pub enum FileWorkflowEvent {
     Create(CreateFileRequest),
     Rename(RenameFileRequest),
+    AutoSave(AutoSaveFileRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileWorkflowEventResult {
     Created { path: PathBuf },
     Renamed { path: PathBuf },
+    AutoSaved { path: PathBuf },
 }
 
 #[derive(Debug)]
@@ -147,6 +161,10 @@ fn process_event(event: FileWorkflowEvent) -> io::Result<FileWorkflowEventResult
         FileWorkflowEvent::Rename(request) => {
             let path = rename_text_file(&request)?;
             Ok(FileWorkflowEventResult::Renamed { path })
+        }
+        FileWorkflowEvent::AutoSave(request) => {
+            let path = save_editor_text_payload_atomic(&request.payload)?;
+            Ok(FileWorkflowEventResult::AutoSaved { path })
         }
     }
 }
@@ -260,7 +278,9 @@ impl SinglelineCreateFileWorkflow {
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
-            FileWorkflowEventResult::Renamed { .. } => Ok(None),
+            FileWorkflowEventResult::Renamed { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+                Ok(None)
+            }
         }
     }
 
@@ -292,7 +312,37 @@ impl SinglelineCreateFileWorkflow {
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
-            FileWorkflowEventResult::Created { .. } => Ok(None),
+            FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+                Ok(None)
+            }
+        }
+    }
+
+    pub fn try_autosave_in_edit(&self, payload: EditorAutoSavePayload) -> io::Result<bool> {
+        {
+            let state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.state != SinglelineFileState::Edit {
+                return Ok(false);
+            }
+            let Some(current_path) = state.current_edit_path.as_ref() else {
+                return Ok(false);
+            };
+            if *current_path != payload.current_path {
+                return Ok(false);
+            }
+        }
+
+        let result = self
+            .dispatcher
+            .dispatch_blocking(FileWorkflowEvent::AutoSave(AutoSaveFileRequest {
+                payload: payload.clone(),
+            }))?;
+
+        match result {
+            FileWorkflowEventResult::AutoSaved { .. } => Ok(true),
+            FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::Renamed { .. } => {
+                Ok(false)
+            }
         }
     }
 }
@@ -432,6 +482,148 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
 
     fs::rename(&request.current_path, &target)?;
     Ok(target)
+}
+
+fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Result<PathBuf> {
+    // Keep a serde round-trip in event handling to satisfy req-aus4 payload serialization contract,
+    // while persisting raw editor text as the file content.
+    let serialized = serde_json::to_vec(payload)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+    let decoded: EditorAutoSavePayload = serde_json::from_slice(&serialized)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+
+    write_editor_text_atomic(&decoded.current_path, decoded.editor_text.as_bytes())?;
+    Ok(decoded.current_path)
+}
+
+fn write_editor_text_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_editor_text_atomic_with_replace(path, bytes, replace_editor_target_with_temp)
+}
+
+fn write_editor_text_atomic_with_replace<F>(path: &Path, bytes: &[u8], replace_fn: F) -> io::Result<()>
+where
+    F: Fn(&Path, &Path) -> io::Result<()>,
+{
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "editor autosave path has no parent directory",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let temp_path = editor_temp_path_for_atomic_write(path)?;
+    if temp_path.is_file() {
+        fs::remove_file(&temp_path)?;
+    }
+    let mut temp_file = fs::File::create(&temp_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("editor autosave atomic write failed (create temp): {error}"),
+        )
+    })?;
+    std::io::Write::write_all(&mut temp_file, bytes).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("editor autosave atomic write failed (write temp): {error}"),
+        )
+    })?;
+    temp_file.sync_all().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("editor autosave atomic write failed (sync temp): {error}"),
+        )
+    })?;
+    drop(temp_file);
+
+    if let Err(replace_error) = replace_fn(&temp_path, path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("editor autosave atomic write failed (replace target): {error}"),
+        )
+    }) {
+        if let Err(cleanup_error) = cleanup_editor_temp_file(&temp_path) {
+            return Err(io::Error::new(
+                replace_error.kind(),
+                format!("{replace_error}; cleanup temp failed: {cleanup_error}"),
+            ));
+        }
+        return Err(replace_error);
+    }
+
+    Ok(())
+}
+
+fn cleanup_editor_temp_file(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn replace_editor_target_with_temp(temp_path: &Path, target_path: &Path) -> io::Result<()> {
+    // Safety invariant: do not delete existing target before replacement succeeds.
+    // A replace failure must keep the last-good autosave target file intact.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::{null, null_mut};
+
+        use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
+
+        if !target_path.exists() {
+            return fs::rename(temp_path, target_path);
+        }
+
+        let mut target_wide = target_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>();
+        let mut temp_wide = temp_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<u16>>();
+
+        let result = unsafe {
+            ReplaceFileW(
+                target_wide.as_mut_ptr(),
+                temp_wide.as_mut_ptr(),
+                null(),
+                0,
+                null_mut(),
+                null_mut(),
+            )
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        fs::rename(temp_path, target_path)
+    }
+}
+
+fn editor_temp_path_for_atomic_write(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "editor autosave path has no parent directory",
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "editor autosave path has no file name",
+        )
+    })?;
+
+    Ok(parent.join(format!("{}.tmp", file_name.to_string_lossy())))
 }
 
 #[cfg(test)]
@@ -864,6 +1056,90 @@ mod tests {
         let forced =
             forced_singleline_stem_after_create("file:name", &created, now).expect("forced stem");
         assert_eq!(forced, "file_name");
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn aus_test1_autosave_event_writes_latest_editor_text() {
+        let root = new_temp_root("aus_test1");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let path = workflow
+            .try_create_from_neutral("autosave", &root, Instant::now(), fixed_now())
+            .expect("create")
+            .expect("created path");
+        let payload = EditorAutoSavePayload {
+            current_path: path.clone(),
+            editor_text: "line-1\nline-2".to_string(),
+        };
+
+        let saved = workflow
+            .try_autosave_in_edit(payload)
+            .expect("dispatch autosave");
+        assert!(saved);
+        let content = fs::read_to_string(&path).expect("read autosaved file");
+        assert_eq!(content, "line-1\nline-2");
+        workflow.dispatcher.shutdown();
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn aus_test2_autosave_is_noop_when_not_in_edit_state() {
+        let root = new_temp_root("aus_test2");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let path = root.join("not_edit.txt");
+        let payload = EditorAutoSavePayload {
+            current_path: path.clone(),
+            editor_text: "content".to_string(),
+        };
+
+        let saved = workflow
+            .try_autosave_in_edit(payload)
+            .expect("autosave in non-edit");
+        assert!(!saved);
+        assert!(!path.exists());
+        workflow.dispatcher.shutdown();
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn aus_test3_autosave_is_noop_when_edit_path_is_missing() {
+        let root = new_temp_root("aus_test3");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        {
+            let mut state = workflow
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.state = SinglelineFileState::Edit;
+            state.current_edit_path = None;
+        }
+        let payload = EditorAutoSavePayload {
+            current_path: root.join("missing.txt"),
+            editor_text: "content".to_string(),
+        };
+
+        let saved = workflow
+            .try_autosave_in_edit(payload)
+            .expect("autosave with missing edit path");
+        assert!(!saved);
+        workflow.dispatcher.shutdown();
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn aus_test6_atomic_autosave_failure_preserves_last_good_file() {
+        let root = new_temp_root("aus_test6");
+        let path = root.join("atomic.txt");
+        fs::write(&path, "old").expect("seed old file");
+
+        let error = write_editor_text_atomic_with_replace(&path, b"new", |_temp, _target| {
+            Err(io::Error::other("forced replace failure"))
+        })
+        .expect_err("forced replace failure expected");
+        assert!(error.to_string().contains("replace target"));
+
+        let content = fs::read_to_string(&path).expect("read old content");
+        assert_eq!(content, "old");
         remove_temp_root(&root);
     }
 }

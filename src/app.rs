@@ -2,6 +2,8 @@ use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
+    sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -45,6 +47,87 @@ fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
+const EDITOR_AUTOSAVE_IDLE_DURATION: Duration = Duration::from_secs(6);
+const EDITOR_AUTOSAVE_TICK_DURATION: Duration = Duration::from_millis(200);
+
+#[derive(Debug, Default)]
+struct EditorAutoSaveState {
+    pinned_time: Option<Instant>,
+    pending_payload: Option<crate::singleline_create_file::EditorAutoSavePayload>,
+}
+
+#[derive(Clone, Debug)]
+struct EditorAutoSaveCoordinator {
+    inner: Arc<Mutex<EditorAutoSaveState>>,
+}
+
+impl EditorAutoSaveCoordinator {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(EditorAutoSaveState::default())),
+        }
+    }
+
+    fn mark_user_edit(
+        &self,
+        payload: crate::singleline_create_file::EditorAutoSavePayload,
+        now: Instant,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pinned_time = Some(now);
+        state.pending_payload = Some(payload);
+    }
+
+    fn on_edit_path_changed(&self, path: Option<PathBuf>) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match path {
+            Some(path) => {
+                if let Some(payload) = state.pending_payload.as_mut() {
+                    payload.current_path = path;
+                }
+            }
+            None => {
+                state.pinned_time = None;
+                state.pending_payload = None;
+            }
+        }
+    }
+
+    fn pop_due_payload(
+        &self,
+        now: Instant,
+        idle_duration: Duration,
+    ) -> Option<crate::singleline_create_file::EditorAutoSavePayload> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pinned_time = state.pinned_time?;
+        if now.duration_since(pinned_time) < idle_duration {
+            return None;
+        }
+
+        let payload = state.pending_payload.take();
+        state.pinned_time = None;
+        payload
+    }
+
+    #[cfg(test)]
+    fn has_pending_payload(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_payload
+            .is_some()
+    }
+}
+
 pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     singleline: Entity<crate::singleline_input::SingleLineInput>,
@@ -52,6 +135,7 @@ pub struct Papyru2App {
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
     file_workflow: crate::singleline_create_file::SinglelineCreateFileWorkflow,
+    editor_autosave: EditorAutoSaveCoordinator,
     _subscriptions: Vec<Subscription>,
     app_paths: crate::path_resolver::AppPaths,
 }
@@ -68,12 +152,61 @@ impl Papyru2App {
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
         let file_workflow = crate::singleline_create_file::SinglelineCreateFileWorkflow::new();
+        let editor_autosave = EditorAutoSaveCoordinator::new();
 
         let window_position_path =
             app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
         let last_debounced_save = Rc::new(RefCell::new(None::<Instant>));
         let debounced_save_clock = last_debounced_save.clone();
         let debounced_save_path = window_position_path.clone();
+
+        {
+            let autosave_coordinator = editor_autosave.clone();
+            let autosave_workflow = file_workflow.clone();
+            thread::spawn(move || {
+                trace_debug("autosave timer thread started");
+                loop {
+                    thread::sleep(EDITOR_AUTOSAVE_TICK_DURATION);
+                    let Some(payload) = autosave_coordinator
+                        .pop_due_payload(Instant::now(), EDITOR_AUTOSAVE_IDLE_DURATION)
+                    else {
+                        continue;
+                    };
+
+                    let target = payload.current_path.display().to_string();
+                    let editor_len = payload.editor_text.len();
+                    trace_debug(format!(
+                        "autosave step-5 raise event path={} text_len={}",
+                        target, editor_len
+                    ));
+
+                    match autosave_workflow.try_autosave_in_edit(payload) {
+                        Ok(true) => {
+                            trace_debug(format!(
+                                "autosave success path={} text_len={} (step-6 reset)",
+                                target, editor_len
+                            ));
+                        }
+                        Ok(false) => {
+                            trace_debug(format!(
+                                "autosave critical skipped (state/path invalid) path={}",
+                                target
+                            ));
+                            debug_assert!(
+                                false,
+                                "autosave invariant violation: event raised while state/path invalid"
+                            );
+                        }
+                        Err(error) => {
+                            trace_debug(format!(
+                                "autosave failure path={} error={error} (step-6 reset)",
+                                target
+                            ));
+                        }
+                    }
+                }
+            });
+        }
 
         let mut subscriptions = vec![
             cx.subscribe_in(
@@ -136,6 +269,9 @@ impl Papyru2App {
                         trace_debug("app received EditorEvent::FocusGained");
                         this.ensure_new_file_flow("editor_focus", window, cx);
                     }
+                    crate::editor::EditorEvent::UserBufferChanged { value } => {
+                        this.on_editor_user_buffer_changed(value, cx);
+                    }
                 },
             ),
         ];
@@ -181,6 +317,7 @@ impl Papyru2App {
             file_tree,
             layout_split_state,
             file_workflow,
+            editor_autosave,
             _subscriptions: subscriptions,
             app_paths,
         }
@@ -207,12 +344,14 @@ impl Papyru2App {
     }
 
     fn sync_current_editing_path_to_components(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let autosave_path = path.clone();
         self.singleline.update(cx, |singleline, _| {
             singleline.set_current_editing_file_path(path.clone());
         });
         self.editor.update(cx, |editor, _| {
             editor.set_current_editing_file_path(path);
         });
+        self.editor_autosave.on_edit_path_changed(autosave_path);
 
         let sl_path = self.singleline.read(cx).current_editing_file_path();
         let ed_path = self.editor.read(cx).current_editing_file_path();
@@ -367,6 +506,65 @@ impl Papyru2App {
             }
             crate::singleline_create_file::SinglelineFileState::New => {}
         }
+    }
+
+    fn on_editor_user_buffer_changed(&mut self, value: &str, cx: &mut Context<Self>) {
+        let snapshot = self.file_workflow.snapshot();
+        let Some(current_path) = snapshot.current_edit_path.clone() else {
+            trace_debug(format!(
+                "autosave critical invalid path on user edit state={:?} text_len={}",
+                snapshot.state,
+                value.len()
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: current_edit_path must be present on editor user edit"
+            );
+            return;
+        };
+
+        if snapshot.state != crate::singleline_create_file::SinglelineFileState::Edit {
+            trace_debug(format!(
+                "autosave critical invalid state on user edit state={:?} path={}",
+                snapshot.state,
+                current_path.display()
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: state must be EDIT on editor user edit"
+            );
+            return;
+        }
+
+        let editor_path = self.editor.read(cx).current_editing_file_path();
+        if editor_path.as_ref() != Some(&current_path) {
+            trace_debug(format!(
+                "autosave critical path mismatch workflow={} editor={}",
+                current_path.display(),
+                editor_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string())
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: editor path and workflow path mismatch"
+            );
+        }
+
+        trace_debug(format!(
+            "autosave step-2 pin user edit path={} text_len={}",
+            current_path.display(),
+            value.len()
+        ));
+
+        self.editor_autosave.mark_user_edit(
+            crate::singleline_create_file::EditorAutoSavePayload {
+                current_path,
+                editor_text: value.to_string(),
+            },
+            Instant::now(),
+        );
     }
 
     fn handle_plus_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -675,7 +873,23 @@ impl Render for Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::should_restore_singleline_focus_after_new_file;
+    use super::{
+        EditorAutoSaveCoordinator, should_restore_singleline_focus_after_new_file,
+    };
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
+
+    fn autosave_payload(
+        path: &str,
+        text: &str,
+    ) -> crate::singleline_create_file::EditorAutoSavePayload {
+        crate::singleline_create_file::EditorAutoSavePayload {
+            current_path: PathBuf::from(path),
+            editor_text: text.to_string(),
+        }
+    }
 
     #[test]
     fn app_newfile_focus_test1_restore_when_singleline_had_focus_and_editor_did_not() {
@@ -686,6 +900,53 @@ mod tests {
     fn app_newfile_focus_test2_no_restore_when_editor_already_had_focus() {
         assert!(!should_restore_singleline_focus_after_new_file(false, true));
         assert!(!should_restore_singleline_focus_after_new_file(true, true));
+    }
+
+    #[test]
+    fn aus_test4_timer_gate_raises_once_per_idle_burst() {
+        let coordinator = EditorAutoSaveCoordinator::new();
+        let base = Instant::now();
+        coordinator.mark_user_edit(autosave_payload("C:/tmp/a.txt", "first"), base);
+
+        let not_due = coordinator.pop_due_payload(
+            base + Duration::from_secs(5),
+            Duration::from_secs(6),
+        );
+        assert!(not_due.is_none());
+
+        let due = coordinator
+            .pop_due_payload(base + Duration::from_secs(6), Duration::from_secs(6))
+            .expect("due payload");
+        assert_eq!(due.editor_text, "first");
+        assert!(!coordinator.has_pending_payload());
+
+        let no_repeat = coordinator.pop_due_payload(
+            base + Duration::from_secs(7),
+            Duration::from_secs(6),
+        );
+        assert!(no_repeat.is_none());
+
+        coordinator.mark_user_edit(
+            autosave_payload("C:/tmp/a.txt", "second"),
+            base + Duration::from_secs(8),
+        );
+        let due_again = coordinator
+            .pop_due_payload(base + Duration::from_secs(14), Duration::from_secs(6))
+            .expect("due payload again");
+        assert_eq!(due_again.editor_text, "second");
+    }
+
+    #[test]
+    fn aus_test5_non_user_events_do_not_arm_autosave_timer() {
+        let coordinator = EditorAutoSaveCoordinator::new();
+        coordinator.on_edit_path_changed(Some(PathBuf::from("C:/tmp/a.txt")));
+        assert!(!coordinator.has_pending_payload());
+
+        let none = coordinator.pop_due_payload(
+            Instant::now() + Duration::from_secs(100),
+            Duration::from_secs(6),
+        );
+        assert!(none.is_none());
     }
 }
 

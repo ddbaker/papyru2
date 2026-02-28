@@ -12,6 +12,7 @@ pub enum EditorEvent {
     BackspaceAtLineHead,
     PressUpAtFirstLine,
     FocusGained,
+    UserBufferChanged { value: String },
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +91,18 @@ impl Papyru2Editor {
                             has_non_empty_tail_line
                         ));
                         cx.emit(EditorEvent::BackspaceAtLineHead);
+                    }
+
+                    if !is_noop_change {
+                        crate::app::trace_debug(format!(
+                            "editor emit UserBufferChanged len={} cursor=({}, {})",
+                            value.len(),
+                            cursor.line,
+                            cursor.character
+                        ));
+                        cx.emit(EditorEvent::UserBufferChanged {
+                            value: value.clone(),
+                        });
                     }
 
                     this.last_value = value;
