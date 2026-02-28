@@ -54,6 +54,7 @@ const EDITOR_AUTOSAVE_TICK_DURATION: Duration = Duration::from_millis(200);
 struct EditorAutoSaveState {
     pinned_time: Option<Instant>,
     pending_payload: Option<crate::singleline_create_file::EditorAutoSavePayload>,
+    last_delta_trace_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -77,7 +78,10 @@ impl EditorAutoSaveCoordinator {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.pinned_time = Some(now);
+        if state.pinned_time.is_none() {
+            state.pinned_time = Some(now);
+            state.last_delta_trace_secs = None;
+        }
         state.pending_payload = Some(payload);
     }
 
@@ -95,6 +99,7 @@ impl EditorAutoSaveCoordinator {
             None => {
                 state.pinned_time = None;
                 state.pending_payload = None;
+                state.last_delta_trace_secs = None;
             }
         }
     }
@@ -109,12 +114,26 @@ impl EditorAutoSaveCoordinator {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pinned_time = state.pinned_time?;
-        if now.duration_since(pinned_time) < idle_duration {
+        let delta = now.duration_since(pinned_time);
+        if state.pending_payload.is_some() {
+            let delta_secs = delta.as_secs();
+            if state.last_delta_trace_secs != Some(delta_secs) {
+                state.last_delta_trace_secs = Some(delta_secs);
+                trace_debug(format!(
+                    "autosave step-3 delta_ms={} threshold_ms={} armed=true",
+                    delta.as_millis(),
+                    idle_duration.as_millis()
+                ));
+            }
+        }
+
+        if delta < idle_duration {
             return None;
         }
 
         let payload = state.pending_payload.take();
         state.pinned_time = None;
+        state.last_delta_trace_secs = None;
         payload
     }
 
@@ -903,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn aus_test4_timer_gate_raises_once_per_idle_burst() {
+    fn aus_test4_timer_gate_rearms_between_cycles() {
         let coordinator = EditorAutoSaveCoordinator::new();
         let base = Instant::now();
         coordinator.mark_user_edit(autosave_payload("C:/tmp/a.txt", "first"), base);
@@ -947,6 +966,43 @@ mod tests {
             Duration::from_secs(6),
         );
         assert!(none.is_none());
+    }
+
+    #[test]
+    fn aus_test7_continuous_typing_keeps_six_second_periodic_cycle() {
+        let coordinator = EditorAutoSaveCoordinator::new();
+        let base = Instant::now();
+
+        coordinator.mark_user_edit(autosave_payload("C:/tmp/a.txt", "t0"), base);
+        coordinator.mark_user_edit(
+            autosave_payload("C:/tmp/a.txt", "t3"),
+            base + Duration::from_secs(3),
+        );
+        coordinator.mark_user_edit(
+            autosave_payload("C:/tmp/a.txt", "t5"),
+            base + Duration::from_secs(5),
+        );
+
+        let due = coordinator
+            .pop_due_payload(base + Duration::from_secs(6), Duration::from_secs(6))
+            .expect("due at first 6-second window");
+        assert_eq!(due.editor_text, "t5");
+        assert!(!coordinator.has_pending_payload());
+
+        coordinator.mark_user_edit(
+            autosave_payload("C:/tmp/a.txt", "t7"),
+            base + Duration::from_secs(7),
+        );
+        let not_due = coordinator.pop_due_payload(
+            base + Duration::from_secs(12),
+            Duration::from_secs(6),
+        );
+        assert!(not_due.is_none());
+
+        let due_again = coordinator
+            .pop_due_payload(base + Duration::from_secs(13), Duration::from_secs(6))
+            .expect("due at second 6-second window");
+        assert_eq!(due_again.editor_text, "t7");
     }
 }
 
