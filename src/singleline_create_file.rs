@@ -330,6 +330,48 @@ pub fn daily_directory(user_document_dir: &Path, now: DateTime<Local>) -> PathBu
     user_document_dir.join(now.format("%Y/%m/%d").to_string())
 }
 
+fn path_stem(path: &Path) -> Option<String> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(ToString::to_string)
+}
+
+pub fn forced_singleline_stem_after_create(
+    singleline_value: &str,
+    created_path: &Path,
+    now: DateTime<Local>,
+) -> Option<String> {
+    let resolved_stem = path_stem(created_path)?;
+    let base_stem = stem_from_singleline_value(singleline_value, now);
+    let had_collision = resolved_stem != base_stem;
+    let had_invalid_chars =
+        !singleline_value.is_empty() && singleline_value.chars().any(invalid_filename_char);
+
+    if had_collision || had_invalid_chars {
+        return Some(resolved_stem);
+    }
+
+    None
+}
+
+pub fn forced_singleline_stem_after_rename(
+    singleline_value: &str,
+    renamed_path: &Path,
+    now: DateTime<Local>,
+) -> Option<String> {
+    let resolved_stem = path_stem(renamed_path)?;
+    let base_stem = stem_from_singleline_value(singleline_value, now);
+    let had_collision = resolved_stem != base_stem;
+    let had_invalid_chars =
+        !singleline_value.is_empty() && singleline_value.chars().any(invalid_filename_char);
+
+    if had_collision || had_invalid_chars {
+        return Some(resolved_stem);
+    }
+
+    None
+}
+
 fn resolve_unique_txt_path(dir: &Path, stem: &str, exclude_path: Option<&Path>) -> PathBuf {
     let mut suffix = 1usize;
     loop {
@@ -782,6 +824,46 @@ mod tests {
 
         let daily = daily_directory(&root, fixed_now());
         assert!(path.starts_with(daily));
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn newf_test25_collision_forces_singleline_buffer_stem_update() {
+        let root = new_temp_root("newf_test25");
+        let now = fixed_now();
+        let _first = create_new_text_file(&CreateFileRequest {
+            user_document_dir: root.clone(),
+            singleline_value: "filename".to_string(),
+            now,
+        })
+        .expect("create first file");
+        let second = create_new_text_file(&CreateFileRequest {
+            user_document_dir: root.clone(),
+            singleline_value: "filename".to_string(),
+            now,
+        })
+        .expect("create second file");
+
+        let forced =
+            forced_singleline_stem_after_create("filename", &second, now).expect("forced stem");
+        assert_eq!(forced, "filename_2");
+        remove_temp_root(&root);
+    }
+
+    #[test]
+    fn newf_test26_sanitization_forces_singleline_buffer_stem_update() {
+        let root = new_temp_root("newf_test26");
+        let now = fixed_now();
+        let created = create_new_text_file(&CreateFileRequest {
+            user_document_dir: root.clone(),
+            singleline_value: "file:name".to_string(),
+            now,
+        })
+        .expect("create sanitized file");
+
+        let forced =
+            forced_singleline_stem_after_create("file:name", &created, now).expect("forced stem");
+        assert_eq!(forced, "file_name");
         remove_temp_root(&root);
     }
 }

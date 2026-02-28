@@ -239,15 +239,34 @@ impl Papyru2App {
             compact_text(&singleline_snapshot.value)
         ));
 
+        let now_local = Local::now();
         match self.file_workflow.try_create_from_neutral(
             &singleline_snapshot.value,
             &self.app_paths.user_document_dir,
             Instant::now(),
-            Local::now(),
+            now_local,
         ) {
             Ok(Some(path)) => {
                 trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                if let Some(forced_stem) = crate::singleline_create_file::forced_singleline_stem_after_create(
+                    &singleline_snapshot.value,
+                    &path,
+                    now_local,
+                ) {
+                    trace_debug(format!(
+                        "new_file_flow force singleline stem update='{}'",
+                        compact_text(&forced_stem)
+                    ));
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_text_and_cursor(
+                            forced_stem.clone(),
+                            forced_stem.chars().count(),
+                            window,
+                            cx,
+                        );
+                    });
+                }
                 self.editor.update(cx, |editor, cx| {
                     let _ = editor.open_file(path, window, cx);
                 });
@@ -278,14 +297,33 @@ impl Papyru2App {
                 self.ensure_new_file_flow("singleline_value_changed", window, cx);
             }
             crate::singleline_create_file::SinglelineFileState::Edit => {
-                match self.file_workflow.try_rename_in_edit(value, Local::now()) {
+                let now_local = Local::now();
+                match self.file_workflow.try_rename_in_edit(value, now_local) {
                     Ok(Some(path)) => {
                         trace_debug(format!(
                             "rename_flow success new_path={} value='{}'",
                             path.display(),
                             compact_text(value)
                         ));
-                        self.sync_current_editing_path_to_components(Some(path), cx);
+                        self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                        if let Some(forced_stem) =
+                            crate::singleline_create_file::forced_singleline_stem_after_rename(
+                                value, &path, now_local,
+                            )
+                        {
+                            trace_debug(format!(
+                                "rename_flow force singleline stem update='{}'",
+                                compact_text(&forced_stem)
+                            ));
+                            self.singleline.update(cx, |singleline, cx| {
+                                singleline.apply_text_and_cursor(
+                                    forced_stem.clone(),
+                                    forced_stem.chars().count(),
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -306,8 +344,14 @@ impl Papyru2App {
             return;
         }
 
-        trace_debug("plus_button transition EDIT -> NEUTRAL");
-        let _ = self.file_workflow.current_edit_path();
+        let previous_path = self.file_workflow.current_edit_path();
+        trace_debug(format!(
+            "plus_button transition EDIT -> NEUTRAL previous_path={}",
+            previous_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
         self.sync_current_editing_path_to_components(None, cx);
 
         self.singleline.update(cx, |singleline, cx| {
