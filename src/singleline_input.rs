@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::*;
-use gpui_component::input::{Input, InputState};
 use gpui_component::input::InputEvent;
+use gpui_component::input::{Input, InputState};
 
 #[derive(Clone, Debug)]
 pub enum SingleLineEvent {

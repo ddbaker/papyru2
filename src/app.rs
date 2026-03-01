@@ -2,8 +2,6 @@ use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -47,114 +45,14 @@ fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
-const EDITOR_AUTOSAVE_IDLE_DURATION: Duration = Duration::from_secs(6);
-const EDITOR_AUTOSAVE_TICK_DURATION: Duration = Duration::from_millis(200);
-
-#[derive(Debug, Default)]
-struct EditorAutoSaveState {
-    pinned_time: Option<Instant>,
-    pending_payload: Option<crate::singleline_create_file::EditorAutoSavePayload>,
-    last_delta_trace_secs: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-struct EditorAutoSaveCoordinator {
-    inner: Arc<Mutex<EditorAutoSaveState>>,
-}
-
-impl EditorAutoSaveCoordinator {
-    fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(EditorAutoSaveState::default())),
-        }
-    }
-
-    fn mark_user_edit(
-        &self,
-        payload: crate::singleline_create_file::EditorAutoSavePayload,
-        now: Instant,
-    ) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.pinned_time.is_none() {
-            state.pinned_time = Some(now);
-            state.last_delta_trace_secs = None;
-        }
-        state.pending_payload = Some(payload);
-    }
-
-    fn on_edit_path_changed(&self, path: Option<PathBuf>) {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match path {
-            Some(path) => {
-                if let Some(payload) = state.pending_payload.as_mut() {
-                    payload.current_path = path;
-                }
-            }
-            None => {
-                state.pinned_time = None;
-                state.pending_payload = None;
-                state.last_delta_trace_secs = None;
-            }
-        }
-    }
-
-    fn pop_due_payload(
-        &self,
-        now: Instant,
-        idle_duration: Duration,
-    ) -> Option<crate::singleline_create_file::EditorAutoSavePayload> {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let pinned_time = state.pinned_time?;
-        let delta = now.duration_since(pinned_time);
-        if state.pending_payload.is_some() {
-            let delta_secs = delta.as_secs();
-            if state.last_delta_trace_secs != Some(delta_secs) {
-                state.last_delta_trace_secs = Some(delta_secs);
-                trace_debug(format!(
-                    "autosave step-3 delta_ms={} threshold_ms={} armed=true",
-                    delta.as_millis(),
-                    idle_duration.as_millis()
-                ));
-            }
-        }
-
-        if delta < idle_duration {
-            return None;
-        }
-
-        let payload = state.pending_payload.take();
-        state.pinned_time = None;
-        state.last_delta_trace_secs = None;
-        payload
-    }
-
-    #[cfg(test)]
-    fn has_pending_payload(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pending_payload
-            .is_some()
-    }
-}
-
 pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     singleline: Entity<crate::singleline_input::SingleLineInput>,
     editor: Entity<Papyru2Editor>,
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
-    file_workflow: crate::singleline_create_file::SinglelineCreateFileWorkflow,
-    editor_autosave: EditorAutoSaveCoordinator,
+    file_workflow: crate::file_update_handler::SinglelineCreateFileWorkflow,
+    editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     _subscriptions: Vec<Subscription>,
     app_paths: crate::path_resolver::AppPaths,
 }
@@ -170,8 +68,8 @@ impl Papyru2App {
         let singleline = top_bars.read(cx).singleline();
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
-        let file_workflow = crate::singleline_create_file::SinglelineCreateFileWorkflow::new();
-        let editor_autosave = EditorAutoSaveCoordinator::new();
+        let file_workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::new();
+        let editor_autosave = crate::file_update_handler::EditorAutoSaveCoordinator::new();
 
         let window_position_path =
             app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
@@ -179,53 +77,10 @@ impl Papyru2App {
         let debounced_save_clock = last_debounced_save.clone();
         let debounced_save_path = window_position_path.clone();
 
-        {
-            let autosave_coordinator = editor_autosave.clone();
-            let autosave_workflow = file_workflow.clone();
-            thread::spawn(move || {
-                trace_debug("autosave timer thread started");
-                loop {
-                    thread::sleep(EDITOR_AUTOSAVE_TICK_DURATION);
-                    let Some(payload) = autosave_coordinator
-                        .pop_due_payload(Instant::now(), EDITOR_AUTOSAVE_IDLE_DURATION)
-                    else {
-                        continue;
-                    };
-
-                    let target = payload.current_path.display().to_string();
-                    let editor_len = payload.editor_text.len();
-                    trace_debug(format!(
-                        "autosave step-5 raise event path={} text_len={}",
-                        target, editor_len
-                    ));
-
-                    match autosave_workflow.try_autosave_in_edit(payload) {
-                        Ok(true) => {
-                            trace_debug(format!(
-                                "autosave success path={} text_len={} (step-6 reset)",
-                                target, editor_len
-                            ));
-                        }
-                        Ok(false) => {
-                            trace_debug(format!(
-                                "autosave critical skipped (state/path invalid) path={}",
-                                target
-                            ));
-                            debug_assert!(
-                                false,
-                                "autosave invariant violation: event raised while state/path invalid"
-                            );
-                        }
-                        Err(error) => {
-                            trace_debug(format!(
-                                "autosave failure path={} error={error} (step-6 reset)",
-                                target
-                            ));
-                        }
-                    }
-                }
-            });
-        }
+        crate::file_update_handler::spawn_editor_autosave_worker(
+            editor_autosave.clone(),
+            file_workflow.clone(),
+        );
 
         let mut subscriptions = vec![
             cx.subscribe_in(
@@ -261,7 +116,10 @@ impl Papyru2App {
                             this.ensure_new_file_flow("singleline_down", window, cx);
                             this.transfer_singleline_down(window, cx);
                         }
-                        crate::singleline_input::SingleLineEvent::ValueChanged { value, cursor_char } => {
+                        crate::singleline_input::SingleLineEvent::ValueChanged {
+                            value,
+                            cursor_char,
+                        } => {
                             trace_debug(format!(
                                 "app received SingleLineEvent::ValueChanged cursor={} value='{}'",
                                 cursor_char,
@@ -312,13 +170,13 @@ impl Papyru2App {
                 None,
                 Some(window.scale_factor()),
             );
-            if let Err(error) =
-                crate::window_position::save_window_position_atomic(
-                    debounced_save_path.as_path(),
-                    &state,
-                )
-            {
-                trace_debug(format!("window_position debounced save failed error={error}"));
+            if let Err(error) = crate::window_position::save_window_position_atomic(
+                debounced_save_path.as_path(),
+                &state,
+            ) {
+                trace_debug(format!(
+                    "window_position debounced save failed error={error}"
+                ));
             }
         }));
 
@@ -365,7 +223,11 @@ impl Papyru2App {
         }
     }
 
-    fn sync_current_editing_path_to_components(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+    fn sync_current_editing_path_to_components(
+        &mut self,
+        path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         let autosave_path = path.clone();
         self.singleline.update(cx, |singleline, _| {
             singleline.set_current_editing_file_path(path.clone());
@@ -390,13 +252,8 @@ impl Papyru2App {
         ));
     }
 
-    fn ensure_new_file_flow(
-        &mut self,
-        trigger: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.file_workflow.state() != crate::singleline_create_file::SinglelineFileState::Neutral {
+    fn ensure_new_file_flow(&mut self, trigger: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.file_workflow.state() != crate::file_update_handler::SinglelineFileState::Neutral {
             return;
         }
 
@@ -421,11 +278,13 @@ impl Papyru2App {
             Ok(Some(path)) => {
                 trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                if let Some(forced_stem) = crate::singleline_create_file::forced_singleline_stem_after_create(
-                    &singleline_snapshot.value,
-                    path.as_path(),
-                    now_local,
-                ) {
+                if let Some(forced_stem) =
+                    crate::file_update_handler::forced_singleline_stem_after_create(
+                        &singleline_snapshot.value,
+                        path.as_path(),
+                        now_local,
+                    )
+                {
                     trace_debug(format!(
                         "new_file_flow force singleline stem update='{}'",
                         compact_text(&forced_stem)
@@ -448,8 +307,9 @@ impl Papyru2App {
                     editor_was_focused,
                 ) {
                     let singleline_after = self.singleline.read(cx).snapshot(cx);
-                    let restore_cursor_char =
-                        singleline_snapshot.cursor_char.min(singleline_after.value.chars().count());
+                    let restore_cursor_char = singleline_snapshot
+                        .cursor_char
+                        .min(singleline_after.value.chars().count());
 
                     trace_debug(format!(
                         "new_file_flow restore singleline focus cursor={} (rule-1)",
@@ -485,10 +345,10 @@ impl Papyru2App {
         cx: &mut Context<Self>,
     ) {
         match self.file_workflow.state() {
-            crate::singleline_create_file::SinglelineFileState::Neutral => {
+            crate::file_update_handler::SinglelineFileState::Neutral => {
                 self.ensure_new_file_flow("singleline_value_changed", window, cx);
             }
-            crate::singleline_create_file::SinglelineFileState::Edit => {
+            crate::file_update_handler::SinglelineFileState::Edit => {
                 let now_local = Local::now();
                 match self.file_workflow.try_rename_in_edit(value, now_local) {
                     Ok(Some(path)) => {
@@ -499,8 +359,10 @@ impl Papyru2App {
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                         if let Some(forced_stem) =
-                            crate::singleline_create_file::forced_singleline_stem_after_rename(
-                                value, path.as_path(), now_local,
+                            crate::file_update_handler::forced_singleline_stem_after_rename(
+                                value,
+                                path.as_path(),
+                                now_local,
                             )
                         {
                             trace_debug(format!(
@@ -526,7 +388,7 @@ impl Papyru2App {
                     }
                 }
             }
-            crate::singleline_create_file::SinglelineFileState::New => {}
+            crate::file_update_handler::SinglelineFileState::New => {}
         }
     }
 
@@ -545,7 +407,7 @@ impl Papyru2App {
             return;
         };
 
-        if snapshot.state != crate::singleline_create_file::SinglelineFileState::Edit {
+        if snapshot.state != crate::file_update_handler::SinglelineFileState::Edit {
             trace_debug(format!(
                 "autosave critical invalid state on user edit state={:?} path={}",
                 snapshot.state,
@@ -581,7 +443,7 @@ impl Papyru2App {
         ));
 
         self.editor_autosave.mark_user_edit(
-            crate::singleline_create_file::EditorAutoSavePayload {
+            crate::file_update_handler::EditorAutoSavePayload {
                 current_path,
                 editor_text: value.to_string(),
             },
@@ -895,9 +757,8 @@ impl Render for Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EditorAutoSaveCoordinator, should_restore_singleline_focus_after_new_file,
-    };
+    use super::should_restore_singleline_focus_after_new_file;
+    use crate::file_update_handler::EditorAutoSaveCoordinator;
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -906,8 +767,8 @@ mod tests {
     fn autosave_payload(
         path: &str,
         text: &str,
-    ) -> crate::singleline_create_file::EditorAutoSavePayload {
-        crate::singleline_create_file::EditorAutoSavePayload {
+    ) -> crate::file_update_handler::EditorAutoSavePayload {
+        crate::file_update_handler::EditorAutoSavePayload {
             current_path: PathBuf::from(path),
             editor_text: text.to_string(),
         }
@@ -930,10 +791,8 @@ mod tests {
         let base = Instant::now();
         coordinator.mark_user_edit(autosave_payload("C:/tmp/a.txt", "first"), base);
 
-        let not_due = coordinator.pop_due_payload(
-            base + Duration::from_secs(5),
-            Duration::from_secs(6),
-        );
+        let not_due =
+            coordinator.pop_due_payload(base + Duration::from_secs(5), Duration::from_secs(6));
         assert!(not_due.is_none());
 
         let due = coordinator
@@ -942,10 +801,8 @@ mod tests {
         assert_eq!(due.editor_text, "first");
         assert!(!coordinator.has_pending_payload());
 
-        let no_repeat = coordinator.pop_due_payload(
-            base + Duration::from_secs(7),
-            Duration::from_secs(6),
-        );
+        let no_repeat =
+            coordinator.pop_due_payload(base + Duration::from_secs(7), Duration::from_secs(6));
         assert!(no_repeat.is_none());
 
         coordinator.mark_user_edit(
@@ -996,10 +853,8 @@ mod tests {
             autosave_payload("C:/tmp/a.txt", "t7"),
             base + Duration::from_secs(7),
         );
-        let not_due = coordinator.pop_due_payload(
-            base + Duration::from_secs(12),
-            Duration::from_secs(6),
-        );
+        let not_due =
+            coordinator.pop_due_payload(base + Duration::from_secs(12), Duration::from_secs(6));
         assert!(not_due.is_none());
 
         let due_again = coordinator
@@ -1057,22 +912,22 @@ pub fn run() {
         app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
     let persisted_window_position =
         match crate::window_position::load_window_position(window_position_path.as_path()) {
-        Ok(state) => {
-            trace_debug(format!(
-                "window_position load path={} found={}",
-                window_position_path.display(),
-                state.is_some()
-            ));
-            state
-        }
-        Err(error) => {
-            trace_debug(format!(
-                "window_position load failed path={} error={error}",
-                window_position_path.display()
-            ));
-            None
-        }
-    };
+            Ok(state) => {
+                trace_debug(format!(
+                    "window_position load path={} found={}",
+                    window_position_path.display(),
+                    state.is_some()
+                ));
+                state
+            }
+            Err(error) => {
+                trace_debug(format!(
+                    "window_position load failed path={} error={error}",
+                    window_position_path.display()
+                ));
+                None
+            }
+        };
 
     let app = Application::new().with_assets(Assets);
 
@@ -1103,13 +958,12 @@ pub fn run() {
             cx.open_window(window_options, move |window, cx| {
                 let close_save_path = window_position_path.clone();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let state = crate::window_position::WindowPositionState::from_window(window, cx);
-                    if let Err(error) =
-                        crate::window_position::save_window_position_atomic(
-                            close_save_path.as_path(),
-                            &state,
-                        )
-                    {
+                    let state =
+                        crate::window_position::WindowPositionState::from_window(window, cx);
+                    if let Err(error) = crate::window_position::save_window_position_atomic(
+                        close_save_path.as_path(),
+                        &state,
+                    ) {
                         trace_debug(format!(
                             "window_position close save failed path={} error={error}",
                             close_save_path.display()

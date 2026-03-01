@@ -49,7 +49,9 @@ impl AppPaths {
         Self::resolve_with_cli_override(None)
     }
 
-    pub fn resolve_with_cli_override(override_mode: Option<CliRunModeOverride>) -> io::Result<Self> {
+    pub fn resolve_with_cli_override(
+        override_mode: Option<CliRunModeOverride>,
+    ) -> io::Result<Self> {
         let env_home = env::var_os(APP_HOME_ENV).map(PathBuf::from);
         let exe_path = current_exe_path()?;
         Self::resolve_from_inputs(env_home, exe_path, os_home_dir(), override_mode)
@@ -193,11 +195,7 @@ fn detect_portable_app_home(exe_dir: &Path) -> Option<PathBuf> {
     let has_layout = app_home.join("conf").is_dir()
         && app_home.join("data").is_dir()
         && app_home.join("log").is_dir();
-    if has_layout {
-        Some(app_home)
-    } else {
-        None
-    }
+    if has_layout { Some(app_home) } else { None }
 }
 
 fn forced_portable_app_home(exe_dir: &Path) -> io::Result<PathBuf> {
@@ -260,7 +258,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        path.push(format!("gpui_papyru2_{name}_{}_{}", std::process::id(), stamp));
+        path.push(format!(
+            "gpui_papyru2_{name}_{}_{}",
+            std::process::id(),
+            stamp
+        ));
         fs::create_dir_all(&path).expect("create temp root");
         path
     }
@@ -465,13 +467,9 @@ mod tests {
 
         let cli_override =
             parse_cli_mode_override(["papyru2.exe", "--installed"]).expect("parse override");
-        let result = AppPaths::resolve_from_inputs(
-            None,
-            exe_path,
-            Some(user_home.clone()),
-            cli_override,
-        )
-        .unwrap();
+        let result =
+            AppPaths::resolve_from_inputs(None, exe_path, Some(user_home.clone()), cli_override)
+                .unwrap();
 
         assert_eq!(result.mode, RunEnvPattern::Installed);
         assert_eq!(result.app_home, user_home.join(format!(".{APP_NAME}")));
@@ -501,7 +499,10 @@ mod tests {
         let root = new_temp_root("path_test14");
         let paths = AppPaths::from_home(RunEnvPattern::Installed, root.join("app_home"));
 
-        assert_eq!(paths.user_document_dir, paths.data_dir.join("user_document"));
+        assert_eq!(
+            paths.user_document_dir,
+            paths.data_dir.join("user_document")
+        );
         remove_temp_root(root.as_path());
     }
 

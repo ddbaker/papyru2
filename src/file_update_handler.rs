@@ -1,7 +1,6 @@
 use std::{
     collections::VecDeque,
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
@@ -52,6 +51,151 @@ pub struct AutoSaveFileRequest {
     pub payload: EditorAutoSavePayload,
 }
 
+pub const EDITOR_AUTOSAVE_IDLE_DURATION: Duration = Duration::from_secs(6);
+pub const EDITOR_AUTOSAVE_TICK_DURATION: Duration = Duration::from_millis(200);
+
+#[derive(Debug, Default)]
+struct EditorAutoSaveState {
+    pinned_time: Option<Instant>,
+    pending_payload: Option<EditorAutoSavePayload>,
+    last_delta_trace_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EditorAutoSaveCoordinator {
+    inner: Arc<Mutex<EditorAutoSaveState>>,
+}
+
+impl EditorAutoSaveCoordinator {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(EditorAutoSaveState::default())),
+        }
+    }
+
+    pub fn mark_user_edit(&self, payload: EditorAutoSavePayload, now: Instant) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.pinned_time.is_none() {
+            state.pinned_time = Some(now);
+            state.last_delta_trace_secs = None;
+        }
+        state.pending_payload = Some(payload);
+    }
+
+    pub fn on_edit_path_changed(&self, path: Option<PathBuf>) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match path {
+            Some(path) => {
+                if let Some(payload) = state.pending_payload.as_mut() {
+                    payload.current_path = path;
+                }
+            }
+            None => {
+                state.pinned_time = None;
+                state.pending_payload = None;
+                state.last_delta_trace_secs = None;
+            }
+        }
+    }
+
+    pub fn pop_due_payload(
+        &self,
+        now: Instant,
+        idle_duration: Duration,
+    ) -> Option<EditorAutoSavePayload> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let pinned_time = state.pinned_time?;
+        let delta = now.duration_since(pinned_time);
+        if state.pending_payload.is_some() {
+            let delta_secs = delta.as_secs();
+            if state.last_delta_trace_secs != Some(delta_secs) {
+                state.last_delta_trace_secs = Some(delta_secs);
+                crate::app::trace_debug(format!(
+                    "autosave step-3 delta_ms={} threshold_ms={} armed=true",
+                    delta.as_millis(),
+                    idle_duration.as_millis()
+                ));
+            }
+        }
+
+        if delta < idle_duration {
+            return None;
+        }
+
+        let payload = state.pending_payload.take();
+        state.pinned_time = None;
+        state.last_delta_trace_secs = None;
+        payload
+    }
+
+    #[cfg(test)]
+    pub fn has_pending_payload(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_payload
+            .is_some()
+    }
+}
+
+pub fn spawn_editor_autosave_worker(
+    autosave_coordinator: EditorAutoSaveCoordinator,
+    autosave_workflow: SinglelineCreateFileWorkflow,
+) {
+    thread::spawn(move || {
+        crate::app::trace_debug("autosave timer thread started");
+        loop {
+            thread::sleep(EDITOR_AUTOSAVE_TICK_DURATION);
+            let Some(payload) =
+                autosave_coordinator.pop_due_payload(Instant::now(), EDITOR_AUTOSAVE_IDLE_DURATION)
+            else {
+                continue;
+            };
+
+            let target = payload.current_path.display().to_string();
+            let editor_len = payload.editor_text.len();
+            crate::app::trace_debug(format!(
+                "autosave step-5 raise event path={} text_len={}",
+                target, editor_len
+            ));
+
+            match autosave_workflow.try_autosave_in_edit(payload) {
+                Ok(true) => {
+                    crate::app::trace_debug(format!(
+                        "autosave success path={} text_len={} (step-6 reset)",
+                        target, editor_len
+                    ));
+                }
+                Ok(false) => {
+                    crate::app::trace_debug(format!(
+                        "autosave critical skipped (state/path invalid) path={}",
+                        target
+                    ));
+                    debug_assert!(
+                        false,
+                        "autosave invariant violation: event raised while state/path invalid"
+                    );
+                }
+                Err(error) => {
+                    crate::app::trace_debug(format!(
+                        "autosave failure path={} error={error} (step-6 reset)",
+                        target
+                    ));
+                }
+            }
+        }
+    });
+}
+
 #[derive(Debug, Clone)]
 pub enum FileWorkflowEvent {
     Create(CreateFileRequest),
@@ -93,12 +237,15 @@ impl FileWorkflowEventDispatcher {
         Self { shared }
     }
 
-    pub fn dispatch_blocking(&self, event: FileWorkflowEvent) -> io::Result<FileWorkflowEventResult> {
+    pub fn dispatch_blocking(
+        &self,
+        event: FileWorkflowEvent,
+    ) -> io::Result<FileWorkflowEventResult> {
         let (response_tx, response_rx) = mpsc::channel::<io::Result<FileWorkflowEventResult>>();
         {
             let (lock, wakeup) = &*self.shared;
             let mut state = lock.lock().map_err(|_| {
-                io::Error::other("singleline_create_file event queue lock poisoned on enqueue")
+                io::Error::other("file_update_handler event queue lock poisoned on enqueue")
             })?;
             state.queue.push_back(EventEnvelope { event, response_tx });
             wakeup.notify_one();
@@ -107,7 +254,7 @@ impl FileWorkflowEventDispatcher {
         response_rx.recv().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::BrokenPipe,
-                "singleline_create_file worker terminated before sending response",
+                "file_update_handler worker terminated before sending response",
             )
         })?
     }
@@ -199,7 +346,10 @@ impl SinglelineCreateFileWorkflow {
     }
 
     pub fn snapshot(&self) -> WorkflowSnapshot {
-        let state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         WorkflowSnapshot {
             state: state.state,
             current_edit_path: state.current_edit_path.clone(),
@@ -215,19 +365,28 @@ impl SinglelineCreateFileWorkflow {
     }
 
     pub fn reset_startup_to_neutral(&self) {
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.state = SinglelineFileState::Neutral;
         state.current_edit_path = None;
     }
 
     pub fn set_edit_from_open_file(&self, path: PathBuf) {
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.state = SinglelineFileState::Edit;
         state.current_edit_path = Some(path);
     }
 
     pub fn transition_edit_to_neutral(&self) -> bool {
-        let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.state != SinglelineFileState::Edit {
             return false;
         }
@@ -245,7 +404,10 @@ impl SinglelineCreateFileWorkflow {
         now_local: DateTime<Local>,
     ) -> io::Result<Option<PathBuf>> {
         {
-            let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.state != SinglelineFileState::Neutral {
                 return Ok(None);
             }
@@ -265,15 +427,20 @@ impl SinglelineCreateFileWorkflow {
             state.last_create_event_raised_at = Some(now_instant);
         }
 
-        let result = self.dispatcher.dispatch_blocking(FileWorkflowEvent::Create(CreateFileRequest {
-            user_document_dir: user_document_dir.to_path_buf(),
-            singleline_value: singleline_value.to_string(),
-            now: now_local,
-        }))?;
+        let result = self
+            .dispatcher
+            .dispatch_blocking(FileWorkflowEvent::Create(CreateFileRequest {
+                user_document_dir: user_document_dir.to_path_buf(),
+                singleline_value: singleline_value.to_string(),
+                now: now_local,
+            }))?;
 
         match result {
             FileWorkflowEventResult::Created { path } => {
-                let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut state = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.state = SinglelineFileState::Edit;
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
@@ -290,7 +457,10 @@ impl SinglelineCreateFileWorkflow {
         now_local: DateTime<Local>,
     ) -> io::Result<Option<PathBuf>> {
         let current_path = {
-            let state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.state != SinglelineFileState::Edit {
                 return Ok(None);
             }
@@ -300,15 +470,20 @@ impl SinglelineCreateFileWorkflow {
             path
         };
 
-        let result = self.dispatcher.dispatch_blocking(FileWorkflowEvent::Rename(RenameFileRequest {
-            current_path,
-            singleline_value: singleline_value.to_string(),
-            now: now_local,
-        }))?;
+        let result = self
+            .dispatcher
+            .dispatch_blocking(FileWorkflowEvent::Rename(RenameFileRequest {
+                current_path,
+                singleline_value: singleline_value.to_string(),
+                now: now_local,
+            }))?;
 
         match result {
             FileWorkflowEventResult::Renamed { path } => {
-                let mut state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut state = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
@@ -320,7 +495,10 @@ impl SinglelineCreateFileWorkflow {
 
     pub fn try_autosave_in_edit(&self, payload: EditorAutoSavePayload) -> io::Result<bool> {
         {
-            let state = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if state.state != SinglelineFileState::Edit {
                 return Ok(false);
             }
@@ -492,7 +670,10 @@ fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Resul
     let decoded: EditorAutoSavePayload = serde_json::from_slice(&serialized)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
 
-    write_editor_text_atomic(decoded.current_path.as_path(), decoded.editor_text.as_bytes())?;
+    write_editor_text_atomic(
+        decoded.current_path.as_path(),
+        decoded.editor_text.as_bytes(),
+    )?;
     Ok(decoded.current_path)
 }
 
@@ -500,7 +681,11 @@ fn write_editor_text_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_editor_text_atomic_with_replace(path, bytes, replace_editor_target_with_temp)
 }
 
-fn write_editor_text_atomic_with_replace<F>(path: &Path, bytes: &[u8], replace_fn: F) -> io::Result<()>
+fn write_editor_text_atomic_with_replace<F>(
+    path: &Path,
+    bytes: &[u8],
+    replace_fn: F,
+) -> io::Result<()>
 where
     F: Fn(&Path, &Path) -> io::Result<()>,
 {
@@ -758,9 +943,11 @@ mod tests {
         let stem = stem_from_singleline_value("", fixed_now());
         assert!(stem.starts_with("notitle-"));
         assert_eq!(stem.len(), "notitle-".len() + 17);
-        assert!(stem["notitle-".len()..]
-            .chars()
-            .all(|ch| ch.is_ascii_digit()));
+        assert!(
+            stem["notitle-".len()..]
+                .chars()
+                .all(|ch| ch.is_ascii_digit())
+        );
     }
 
     #[test]
@@ -951,10 +1138,12 @@ mod tests {
             .try_rename_in_edit("こんにちは 世界", fixed_now())
             .expect("rename")
             .expect("renamed path");
-        assert!(renamed
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name == "こんにちは 世界.txt"));
+        assert!(
+            renamed
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == "こんにちは 世界.txt")
+        );
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
@@ -1041,9 +1230,8 @@ mod tests {
         })
         .expect("create second file");
 
-        let forced =
-            forced_singleline_stem_after_create("filename", second.as_path(), now)
-                .expect("forced stem");
+        let forced = forced_singleline_stem_after_create("filename", second.as_path(), now)
+            .expect("forced stem");
         assert_eq!(forced, "filename_2");
         remove_temp_root(root.as_path());
     }
@@ -1059,9 +1247,8 @@ mod tests {
         })
         .expect("create sanitized file");
 
-        let forced =
-            forced_singleline_stem_after_create("file:name", created.as_path(), now)
-                .expect("forced stem");
+        let forced = forced_singleline_stem_after_create("file:name", created.as_path(), now)
+            .expect("forced stem");
         assert_eq!(forced, "file_name");
         remove_temp_root(root.as_path());
     }

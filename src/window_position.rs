@@ -208,9 +208,7 @@ where
         if let Err(cleanup_error) = cleanup_temp_file(&temp_path) {
             return Err(io::Error::new(
                 replace_error.kind(),
-                format!(
-                    "{replace_error}; cleanup temp failed: {cleanup_error}"
-                ),
+                format!("{replace_error}; cleanup temp failed: {cleanup_error}"),
             ));
         }
 
@@ -319,7 +317,9 @@ fn sanitize_window_bounds(
         let mut width = f32::from(restore.size.width);
         let mut height = f32::from(restore.size.height);
 
-        width = width.max(MIN_WINDOW_DIMENSION).min(display_w.max(MIN_WINDOW_DIMENSION));
+        width = width
+            .max(MIN_WINDOW_DIMENSION)
+            .min(display_w.max(MIN_WINDOW_DIMENSION));
         height = height
             .max(MIN_WINDOW_DIMENSION)
             .min(display_h.max(MIN_WINDOW_DIMENSION));
@@ -357,7 +357,10 @@ fn mode_from_window_bounds(window_bounds: WindowBounds) -> PersistedWindowMode {
     }
 }
 
-fn window_bounds_from_parts(mode: PersistedWindowMode, restore_bounds: Bounds<Pixels>) -> WindowBounds {
+fn window_bounds_from_parts(
+    mode: PersistedWindowMode,
+    restore_bounds: Bounds<Pixels>,
+) -> WindowBounds {
     match mode {
         PersistedWindowMode::Windowed => WindowBounds::Windowed(restore_bounds),
         PersistedWindowMode::Maximized => WindowBounds::Maximized(restore_bounds),
@@ -398,10 +401,7 @@ mod tests {
     }
 
     fn windowed(x: f32, y: f32, width: f32, height: f32) -> WindowBounds {
-        WindowBounds::Windowed(bounds(
-            point(px(x), px(y)),
-            size(px(width), px(height)),
-        ))
+        WindowBounds::Windowed(bounds(point(px(x), px(y)), size(px(width), px(height))))
     }
 
     fn display_bounds(width: f32, height: f32) -> Bounds<Pixels> {
@@ -415,8 +415,12 @@ mod tests {
         let fallback = windowed(100.0, 120.0, 1200.0, 800.0);
 
         let loaded = load_window_position(path.as_path()).expect("load state");
-        let resolved =
-            resolve_startup_window_bounds(loaded.as_ref(), fallback, Some(display_bounds(3000.0, 2000.0)), false);
+        let resolved = resolve_startup_window_bounds(
+            loaded.as_ref(),
+            fallback,
+            Some(display_bounds(3000.0, 2000.0)),
+            false,
+        );
 
         assert!(loaded.is_none());
         assert_eq!(resolved, fallback);
@@ -441,8 +445,12 @@ mod tests {
         save_window_position_atomic(path.as_path(), &saved).expect("save state");
 
         let loaded = load_window_position(path.as_path()).expect("load state");
-        let resolved =
-            resolve_startup_window_bounds(loaded.as_ref(), fallback, Some(display_bounds(3000.0, 2000.0)), false);
+        let resolved = resolve_startup_window_bounds(
+            loaded.as_ref(),
+            fallback,
+            Some(display_bounds(3000.0, 2000.0)),
+            false,
+        );
 
         assert_eq!(resolved, windowed(300.0, 200.0, 900.0, 700.0));
         remove_temp_root(root.as_path());
@@ -729,7 +737,8 @@ window_mode = "minimized"
     #[test]
     fn win_test11_first_launch_without_persisted_geometry_uses_seventy_percent_and_centered() {
         let default_bounds = windowed(0.0, 0.0, 1200.0, 800.0);
-        let fallback = first_launch_fallback_bounds(Some(display_bounds(2000.0, 1000.0)), default_bounds);
+        let fallback =
+            first_launch_fallback_bounds(Some(display_bounds(2000.0, 1000.0)), default_bounds);
         let resolved = resolve_startup_window_bounds(
             None,
             fallback,

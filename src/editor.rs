@@ -257,10 +257,18 @@ impl Papyru2Editor {
     }
 
     pub fn is_focused(&self, window: &Window, cx: &App) -> bool {
-        self.input_state.read(cx).focus_handle(cx).is_focused(window)
+        self.input_state
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
     }
 
-    pub fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn open_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(_) => return false,
