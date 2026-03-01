@@ -252,6 +252,31 @@ impl Papyru2App {
         ));
     }
 
+    fn apply_forced_singleline_stem(
+        &mut self,
+        forced_stem: Option<String>,
+        trace_label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(forced_stem) = forced_stem else {
+            return;
+        };
+
+        trace_debug(format!(
+            "{trace_label} force singleline stem update='{}'",
+            compact_text(&forced_stem)
+        ));
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor(
+                forced_stem.clone(),
+                forced_stem.chars().count(),
+                window,
+                cx,
+            );
+        });
+    }
+
     fn ensure_new_file_flow(&mut self, trigger: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.file_workflow.state() != crate::file_update_handler::SinglelineFileState::Neutral {
             return;
@@ -278,26 +303,16 @@ impl Papyru2App {
             Ok(Some(path)) => {
                 trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                if let Some(forced_stem) =
+                self.apply_forced_singleline_stem(
                     crate::file_update_handler::forced_singleline_stem_after_create(
                         &singleline_snapshot.value,
                         path.as_path(),
                         now_local,
-                    )
-                {
-                    trace_debug(format!(
-                        "new_file_flow force singleline stem update='{}'",
-                        compact_text(&forced_stem)
-                    ));
-                    self.singleline.update(cx, |singleline, cx| {
-                        singleline.apply_text_and_cursor(
-                            forced_stem.clone(),
-                            forced_stem.chars().count(),
-                            window,
-                            cx,
-                        );
-                    });
-                }
+                    ),
+                    "new_file_flow",
+                    window,
+                    cx,
+                );
                 self.editor.update(cx, |editor, cx| {
                     let _ = editor.open_file(path, window, cx);
                 });
@@ -358,26 +373,16 @@ impl Papyru2App {
                             compact_text(value)
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                        if let Some(forced_stem) =
+                        self.apply_forced_singleline_stem(
                             crate::file_update_handler::forced_singleline_stem_after_rename(
                                 value,
                                 path.as_path(),
                                 now_local,
-                            )
-                        {
-                            trace_debug(format!(
-                                "rename_flow force singleline stem update='{}'",
-                                compact_text(&forced_stem)
-                            ));
-                            self.singleline.update(cx, |singleline, cx| {
-                                singleline.apply_text_and_cursor(
-                                    forced_stem.clone(),
-                                    forced_stem.chars().count(),
-                                    window,
-                                    cx,
-                                );
-                            });
-                        }
+                            ),
+                            "rename_flow",
+                            window,
+                            cx,
+                        );
                     }
                     Ok(None) => {}
                     Err(error) => {

@@ -92,8 +92,17 @@ impl EditorAutoSaveCoordinator {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match path {
             Some(path) => {
-                if let Some(payload) = state.pending_payload.as_mut() {
-                    payload.current_path = path;
+                if let Some(payload) = state.pending_payload.as_ref()
+                    && payload.current_path != path
+                {
+                    crate::app::trace_debug(format!(
+                        "autosave drop pending on path switch old={} new={}",
+                        payload.current_path.display(),
+                        path.display()
+                    ));
+                    state.pinned_time = None;
+                    state.pending_payload = None;
+                    state.last_delta_trace_secs = None;
                 }
             }
             None => {
@@ -323,6 +332,11 @@ struct WorkflowStateInner {
     last_create_event_raised_at: Option<Instant>,
 }
 
+fn rollback_new_to_neutral(state: &mut WorkflowStateInner) {
+    state.state = SinglelineFileState::Neutral;
+    state.current_edit_path = None;
+}
+
 #[derive(Clone, Debug)]
 pub struct SinglelineCreateFileWorkflow {
     inner: Arc<Mutex<WorkflowStateInner>>,
@@ -403,49 +417,57 @@ impl SinglelineCreateFileWorkflow {
         now_instant: Instant,
         now_local: DateTime<Local>,
     ) -> io::Result<Option<PathBuf>> {
-        {
-            let mut state = self
-                .inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.state != SinglelineFileState::Neutral {
-                return Ok(None);
-            }
-
-            state.state = SinglelineFileState::New;
-
-            if let Some(last) = state.last_create_event_raised_at {
-                let ready = now_instant
-                    .checked_duration_since(last)
-                    .map(|elapsed| elapsed > CREATE_EVENT_MIN_INTERVAL)
-                    .unwrap_or(false);
-                if !ready {
-                    return Ok(None);
-                }
-            }
-
-            state.last_create_event_raised_at = Some(now_instant);
+        // Keep workflow-state lock across dispatch to serialize workflow transitions
+        // with file-update side effects. This lock does not participate in queue-state
+        // lock ordering and therefore does not introduce lock cycles.
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.state != SinglelineFileState::Neutral {
+            return Ok(None);
         }
 
-        let result = self
-            .dispatcher
-            .dispatch_blocking(FileWorkflowEvent::Create(CreateFileRequest {
-                user_document_dir: user_document_dir.to_path_buf(),
-                singleline_value: singleline_value.to_string(),
-                now: now_local,
-            }))?;
+        if let Some(last) = state.last_create_event_raised_at {
+            let ready = now_instant
+                .checked_duration_since(last)
+                .map(|elapsed| elapsed > CREATE_EVENT_MIN_INTERVAL)
+                .unwrap_or(false);
+            if !ready {
+                return Ok(None);
+            }
+        }
+
+        state.state = SinglelineFileState::New;
+        state.last_create_event_raised_at = Some(now_instant);
+
+        let result =
+            match self
+                .dispatcher
+                .dispatch_blocking(FileWorkflowEvent::Create(CreateFileRequest {
+                    user_document_dir: user_document_dir.to_path_buf(),
+                    singleline_value: singleline_value.to_string(),
+                    now: now_local,
+                })) {
+                Ok(result) => result,
+                Err(error) => {
+                    rollback_new_to_neutral(&mut state);
+                    return Err(error);
+                }
+            };
 
         match result {
             FileWorkflowEventResult::Created { path } => {
-                let mut state = self
-                    .inner
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.state = SinglelineFileState::Edit;
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
             FileWorkflowEventResult::Renamed { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+                rollback_new_to_neutral(&mut state);
+                debug_assert!(
+                    false,
+                    "create invariant violation: create event must only return Created"
+                );
                 Ok(None)
             }
         }
@@ -456,18 +478,15 @@ impl SinglelineCreateFileWorkflow {
         singleline_value: &str,
         now_local: DateTime<Local>,
     ) -> io::Result<Option<PathBuf>> {
-        let current_path = {
-            let state = self
-                .inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.state != SinglelineFileState::Edit {
-                return Ok(None);
-            }
-            let Some(path) = state.current_edit_path.clone() else {
-                return Ok(None);
-            };
-            path
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.state != SinglelineFileState::Edit {
+            return Ok(None);
+        }
+        let Some(current_path) = state.current_edit_path.clone() else {
+            return Ok(None);
         };
 
         let result = self
@@ -480,34 +499,32 @@ impl SinglelineCreateFileWorkflow {
 
         match result {
             FileWorkflowEventResult::Renamed { path } => {
-                let mut state = self
-                    .inner
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
             FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+                debug_assert!(
+                    false,
+                    "rename invariant violation: rename event must only return Renamed"
+                );
                 Ok(None)
             }
         }
     }
 
     pub fn try_autosave_in_edit(&self, payload: EditorAutoSavePayload) -> io::Result<bool> {
-        {
-            let state = self
-                .inner
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.state != SinglelineFileState::Edit {
-                return Ok(false);
-            }
-            let Some(current_path) = state.current_edit_path.as_ref() else {
-                return Ok(false);
-            };
-            if *current_path != payload.current_path {
-                return Ok(false);
-            }
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.state != SinglelineFileState::Edit {
+            return Ok(false);
+        }
+        let Some(current_path) = state.current_edit_path.as_ref() else {
+            return Ok(false);
+        };
+        if *current_path != payload.current_path {
+            return Ok(false);
         }
 
         let result = self
@@ -519,6 +536,10 @@ impl SinglelineCreateFileWorkflow {
         match result {
             FileWorkflowEventResult::AutoSaved { .. } => Ok(true),
             FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::Renamed { .. } => {
+                debug_assert!(
+                    false,
+                    "autosave invariant violation: autosave event must only return AutoSaved"
+                );
                 Ok(false)
             }
         }
@@ -569,17 +590,7 @@ pub fn forced_singleline_stem_after_create(
     created_path: &Path,
     now: DateTime<Local>,
 ) -> Option<String> {
-    let resolved_stem = path_stem(created_path)?;
-    let base_stem = stem_from_singleline_value(singleline_value, now);
-    let had_collision = resolved_stem != base_stem;
-    let had_invalid_chars =
-        !singleline_value.is_empty() && singleline_value.chars().any(invalid_filename_char);
-
-    if had_collision || had_invalid_chars {
-        return Some(resolved_stem);
-    }
-
-    None
+    forced_singleline_stem_after_resolution(singleline_value, created_path, now)
 }
 
 pub fn forced_singleline_stem_after_rename(
@@ -587,7 +598,15 @@ pub fn forced_singleline_stem_after_rename(
     renamed_path: &Path,
     now: DateTime<Local>,
 ) -> Option<String> {
-    let resolved_stem = path_stem(renamed_path)?;
+    forced_singleline_stem_after_resolution(singleline_value, renamed_path, now)
+}
+
+fn forced_singleline_stem_after_resolution(
+    singleline_value: &str,
+    resolved_path: &Path,
+    now: DateTime<Local>,
+) -> Option<String> {
+    let resolved_stem = path_stem(resolved_path)?;
     let base_stem = stem_from_singleline_value(singleline_value, now);
     let had_collision = resolved_stem != base_stem;
     let had_invalid_chars =
@@ -600,25 +619,29 @@ pub fn forced_singleline_stem_after_rename(
     None
 }
 
-fn resolve_unique_txt_path(dir: &Path, stem: &str, exclude_path: Option<&Path>) -> PathBuf {
-    let mut suffix = 1usize;
-    loop {
-        let file_name = if suffix == 1 {
-            format!("{stem}.txt")
-        } else {
-            format!("{stem}_{suffix}.txt")
-        };
-        let candidate = dir.join(file_name);
-
-        if exclude_path.is_some_and(|path| path == candidate) {
-            return candidate;
-        }
-        if !candidate.exists() {
-            return candidate;
-        }
-
-        suffix += 1;
+fn is_retryable_name_conflict_error(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        return true;
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        return error.raw_os_error() == Some(183);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+fn txt_candidate_path(dir: &Path, stem: &str, suffix: usize) -> PathBuf {
+    let file_name = if suffix == 1 {
+        format!("{stem}.txt")
+    } else {
+        format!("{stem}_{suffix}.txt")
+    };
+    dir.join(file_name)
 }
 
 pub fn create_new_text_file(request: &CreateFileRequest) -> io::Result<PathBuf> {
@@ -626,14 +649,22 @@ pub fn create_new_text_file(request: &CreateFileRequest) -> io::Result<PathBuf> 
     fs::create_dir_all(&dir)?;
 
     let stem = stem_from_singleline_value(&request.singleline_value, request.now);
-    let path = resolve_unique_txt_path(dir.as_path(), &stem, None);
-
-    fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)?;
-
-    Ok(path)
+    let mut suffix = 1usize;
+    loop {
+        let path = txt_candidate_path(dir.as_path(), &stem, suffix);
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if is_retryable_name_conflict_error(&error) => {
+                suffix += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
@@ -652,14 +683,26 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
     })?;
 
     let stem = stem_from_singleline_value(&request.singleline_value, request.now);
-    let target = resolve_unique_txt_path(parent, &stem, Some(&request.current_path));
+    let mut suffix = 1usize;
+    loop {
+        let target = txt_candidate_path(parent, &stem, suffix);
+        if target == request.current_path {
+            return Ok(target);
+        }
+        if target.exists() {
+            suffix += 1;
+            continue;
+        }
 
-    if target == request.current_path {
-        return Ok(target);
+        match fs::rename(&request.current_path, &target) {
+            Ok(_) => return Ok(target),
+            Err(error) if is_retryable_name_conflict_error(&error) || target.exists() => {
+                suffix += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
     }
-
-    fs::rename(&request.current_path, &target)?;
-    Ok(target)
 }
 
 fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Result<PathBuf> {
@@ -894,7 +937,7 @@ mod tests {
             )
             .expect("second create");
         assert!(second.is_none());
-        assert_eq!(workflow.state(), SinglelineFileState::New);
+        assert_eq!(workflow.state(), SinglelineFileState::Neutral);
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
@@ -1254,6 +1297,90 @@ mod tests {
     }
 
     #[test]
+    fn newf_test27_create_error_rolls_back_to_neutral() {
+        let root = new_temp_root("newf_test27");
+        let blocked = root.join("blocked");
+        fs::write(&blocked, "not a directory").expect("create blocking file");
+        let workflow = SinglelineCreateFileWorkflow::new();
+
+        let create_error = workflow
+            .try_create_from_neutral("hello", blocked.as_path(), Instant::now(), fixed_now())
+            .expect_err("create should fail");
+        assert!(
+            create_error.kind() == io::ErrorKind::NotADirectory
+                || create_error.kind() == io::ErrorKind::AlreadyExists
+                || create_error.kind() == io::ErrorKind::PermissionDenied
+                || create_error.kind() == io::ErrorKind::Other
+        );
+        assert_eq!(workflow.state(), SinglelineFileState::Neutral);
+        assert!(workflow.current_edit_path().is_none());
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test28_create_success_still_transitions_to_edit() {
+        let root = new_temp_root("newf_test28");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let created = workflow
+            .try_create_from_neutral("hello", root.as_path(), Instant::now(), fixed_now())
+            .expect("create should succeed")
+            .expect("created path");
+        assert!(created.exists());
+        assert_eq!(workflow.state(), SinglelineFileState::Edit);
+        assert_eq!(workflow.current_edit_path(), Some(created));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test29_create_retries_on_name_conflict() {
+        let root = new_temp_root("newf_test29");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        fs::write(daily.join("race.txt"), "existing").expect("seed existing file");
+
+        let created = create_new_text_file(&CreateFileRequest {
+            user_document_dir: root.clone(),
+            singleline_value: "race".to_string(),
+            now,
+        })
+        .expect("create with conflict retry");
+        assert!(created.ends_with(Path::new("race_2.txt")));
+        assert_eq!(
+            fs::read_to_string(daily.join("race.txt")).expect("read seed"),
+            "existing"
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test30_rename_retries_on_name_conflict() {
+        let root = new_temp_root("newf_test30");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let source = daily.join("source.txt");
+        fs::write(&source, "source").expect("seed source");
+        fs::write(daily.join("target.txt"), "target").expect("seed conflict target");
+
+        let renamed = rename_text_file(&RenameFileRequest {
+            current_path: source.clone(),
+            singleline_value: "target".to_string(),
+            now,
+        })
+        .expect("rename with conflict retry");
+        assert!(renamed.ends_with(Path::new("target_2.txt")));
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(daily.join("target.txt")).expect("read target"),
+            "target"
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
     fn aus_test1_autosave_event_writes_latest_editor_text() {
         let root = new_temp_root("aus_test1");
         let workflow = SinglelineCreateFileWorkflow::new();
@@ -1334,6 +1461,109 @@ mod tests {
 
         let content = fs::read_to_string(&path).expect("read old content");
         assert_eq!(content, "old");
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_test8_path_switch_drops_pending_payload() {
+        let coordinator = EditorAutoSaveCoordinator::new();
+        let now = Instant::now();
+        let path_a = PathBuf::from("C:/tmp/a.txt");
+        let path_b = PathBuf::from("C:/tmp/b.txt");
+        coordinator.mark_user_edit(
+            EditorAutoSavePayload {
+                current_path: path_a,
+                editor_text: "stale".to_string(),
+            },
+            now,
+        );
+
+        coordinator.on_edit_path_changed(Some(path_b));
+        assert!(!coordinator.has_pending_payload());
+        let due =
+            coordinator.pop_due_payload(now + Duration::from_secs(10), Duration::from_secs(6));
+        assert!(due.is_none());
+    }
+
+    #[test]
+    fn aus_test9_same_path_keeps_pending_payload() {
+        let coordinator = EditorAutoSaveCoordinator::new();
+        let now = Instant::now();
+        let path_a = PathBuf::from("C:/tmp/a.txt");
+        coordinator.mark_user_edit(
+            EditorAutoSavePayload {
+                current_path: path_a.clone(),
+                editor_text: "keep".to_string(),
+            },
+            now,
+        );
+
+        coordinator.on_edit_path_changed(Some(path_a.clone()));
+        assert!(coordinator.has_pending_payload());
+        let due = coordinator
+            .pop_due_payload(now + Duration::from_secs(6), Duration::from_secs(6))
+            .expect("due payload should remain");
+        assert_eq!(due.current_path, path_a);
+        assert_eq!(due.editor_text, "keep");
+    }
+
+    #[test]
+    fn aus_test10_autosave_and_path_transition_are_serialized() {
+        use std::sync::{Arc, Barrier, mpsc};
+
+        let root = new_temp_root("aus_test10");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let path_a = daily.join("fileA.txt");
+        let path_b = daily.join("fileB.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        fs::write(&path_b, "B-old").expect("seed fileB");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let payload = EditorAutoSavePayload {
+            current_path: path_a.clone(),
+            editor_text: "A-new".to_string(),
+        };
+
+        let barrier = Arc::new(Barrier::new(3));
+        let (autosave_tx, autosave_rx) = mpsc::channel();
+        let workflow_for_autosave = workflow.clone();
+        let barrier_for_autosave = barrier.clone();
+        let autosave_thread = thread::spawn(move || {
+            barrier_for_autosave.wait();
+            let result = workflow_for_autosave
+                .try_autosave_in_edit(payload)
+                .expect("autosave call");
+            autosave_tx.send(result).expect("send autosave result");
+        });
+
+        let workflow_for_switch = workflow.clone();
+        let barrier_for_switch = barrier.clone();
+        let path_b_for_switch = path_b.clone();
+        let switch_thread = thread::spawn(move || {
+            barrier_for_switch.wait();
+            workflow_for_switch.set_edit_from_open_file(path_b_for_switch);
+        });
+
+        barrier.wait();
+        autosave_thread.join().expect("join autosave thread");
+        switch_thread.join().expect("join switch thread");
+        let autosaved = autosave_rx.recv().expect("receive autosave result");
+
+        let content_b = fs::read_to_string(&path_b).expect("read fileB");
+        assert_eq!(content_b, "B-old");
+
+        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        if autosaved {
+            assert_eq!(content_a, "A-new");
+        } else {
+            assert_eq!(content_a, "A-old");
+        }
+
+        workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
 }
