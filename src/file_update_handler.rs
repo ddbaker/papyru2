@@ -604,12 +604,6 @@ pub fn daily_directory(user_document_dir: &Path, now: DateTime<Local>) -> PathBu
     user_document_dir.join(now.format("%Y/%m/%d").to_string())
 }
 
-fn path_stem(path: &Path) -> Option<String> {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .map(ToString::to_string)
-}
-
 pub fn forced_singleline_stem_after_create(
     singleline_value: &str,
     created_path: &Path,
@@ -627,20 +621,12 @@ pub fn forced_singleline_stem_after_rename(
 }
 
 fn forced_singleline_stem_after_resolution(
-    singleline_value: &str,
-    resolved_path: &Path,
-    now: DateTime<Local>,
+    _singleline_value: &str,
+    _resolved_path: &Path,
+    _now: DateTime<Local>,
 ) -> Option<String> {
-    let resolved_stem = path_stem(resolved_path)?;
-    let base_stem = stem_from_singleline_value(singleline_value, now);
-    let had_collision = resolved_stem != base_stem;
-    let had_invalid_chars =
-        !singleline_value.is_empty() && singleline_value.chars().any(invalid_filename_char);
-
-    if had_collision || had_invalid_chars {
-        return Some(resolved_stem);
-    }
-
+    // req-newf32: disabled forced singleline buffer rewrite even when
+    // create/rename resolution applies collision suffix or sanitization.
     None
 }
 
@@ -1282,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn newf_test25_collision_forces_singleline_buffer_stem_update() {
+    fn newf_test25_collision_does_not_force_singleline_buffer_stem_update() {
         let root = new_temp_root("newf_test25");
         let now = fixed_now();
         let _first = create_new_text_file(&CreateFileRequest {
@@ -1298,14 +1284,14 @@ mod tests {
         })
         .expect("create second file");
 
-        let forced = forced_singleline_stem_after_create("filename", second.as_path(), now)
-            .expect("forced stem");
-        assert_eq!(forced, "filename_2");
+        assert!(second.ends_with(Path::new("filename_2.txt")));
+        let forced = forced_singleline_stem_after_create("filename", second.as_path(), now);
+        assert!(forced.is_none());
         remove_temp_root(root.as_path());
     }
 
     #[test]
-    fn newf_test26_sanitization_forces_singleline_buffer_stem_update() {
+    fn newf_test26_sanitization_does_not_force_singleline_buffer_stem_update() {
         let root = new_temp_root("newf_test26");
         let now = fixed_now();
         let created = create_new_text_file(&CreateFileRequest {
@@ -1315,9 +1301,9 @@ mod tests {
         })
         .expect("create sanitized file");
 
-        let forced = forced_singleline_stem_after_create("file:name", created.as_path(), now)
-            .expect("forced stem");
-        assert_eq!(forced, "file_name");
+        assert!(created.ends_with(Path::new("file_name.txt")));
+        let forced = forced_singleline_stem_after_create("file:name", created.as_path(), now);
+        assert!(forced.is_none());
         remove_temp_root(root.as_path());
     }
 
@@ -1402,6 +1388,100 @@ mod tests {
             fs::read_to_string(daily.join("target.txt")).expect("read target"),
             "target"
         );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test31_req_newf33_create_collision_keeps_existing_file_and_uses_suffix() {
+        let root = new_temp_root("newf_test31");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let existing = daily.join("same.txt");
+        fs::write(&existing, "existing").expect("seed existing file");
+
+        let created = create_new_text_file(&CreateFileRequest {
+            user_document_dir: root.clone(),
+            singleline_value: "same".to_string(),
+            now,
+        })
+        .expect("create with collision suffix");
+
+        assert!(created.ends_with(Path::new("same_2.txt")));
+        assert_eq!(
+            fs::read_to_string(&existing).expect("read existing content"),
+            "existing"
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test32_req_newf33_rename_collision_preserves_existing_target_content() {
+        let root = new_temp_root("newf_test32");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let source = daily.join("source.txt");
+        let target = daily.join("target.txt");
+        fs::write(&source, "source-content").expect("seed source");
+        fs::write(&target, "target-content").expect("seed target");
+
+        let renamed = rename_text_file(&RenameFileRequest {
+            current_path: source.clone(),
+            singleline_value: "target".to_string(),
+            now,
+        })
+        .expect("rename with suffix");
+
+        assert!(renamed.ends_with(Path::new("target_2.txt")));
+        assert_eq!(
+            fs::read_to_string(&target).expect("read original target"),
+            "target-content"
+        );
+        assert_eq!(
+            fs::read_to_string(&renamed).expect("read renamed source"),
+            "source-content"
+        );
+        assert!(!source.exists());
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test33_req_newf32_forced_singleline_stem_is_disabled_for_rename_resolution() {
+        let root = new_temp_root("newf_test33");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let source_collision = daily.join("source_collision.txt");
+        fs::write(&source_collision, "source-collision").expect("seed collision source");
+        fs::write(daily.join("conflict.txt"), "existing").expect("seed conflict");
+
+        let renamed_collision = rename_text_file(&RenameFileRequest {
+            current_path: source_collision,
+            singleline_value: "conflict".to_string(),
+            now,
+        })
+        .expect("rename collision");
+        assert!(renamed_collision.ends_with(Path::new("conflict_2.txt")));
+        assert!(
+            forced_singleline_stem_after_rename("conflict", renamed_collision.as_path(), now)
+                .is_none()
+        );
+
+        let source_sanitize = daily.join("source_sanitize.txt");
+        fs::write(&source_sanitize, "source-sanitize").expect("seed sanitize source");
+        let renamed_sanitize = rename_text_file(&RenameFileRequest {
+            current_path: source_sanitize,
+            singleline_value: "file:name".to_string(),
+            now,
+        })
+        .expect("rename sanitize");
+        assert!(renamed_sanitize.ends_with(Path::new("file_name.txt")));
+        assert!(
+            forced_singleline_stem_after_rename("file:name", renamed_sanitize.as_path(), now)
+                .is_none()
+        );
+
         remove_temp_root(root.as_path());
     }
 

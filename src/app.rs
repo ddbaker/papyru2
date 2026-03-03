@@ -260,6 +260,9 @@ impl Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let Some(forced_stem) = forced_stem else {
+            trace_debug(format!(
+                "{trace_label} force singleline stem update skipped (req-newf32)"
+            ));
             return;
         };
 
