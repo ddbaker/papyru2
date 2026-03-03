@@ -456,7 +456,79 @@ impl Papyru2App {
         );
     }
 
+    fn flush_editor_content_before_context_switch(
+        &mut self,
+        trigger: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let snapshot = self.file_workflow.snapshot();
+        if snapshot.state != crate::file_update_handler::SinglelineFileState::Edit {
+            trace_debug(format!(
+                "autosave pre-switch trigger={} skipped state={:?}",
+                trigger, snapshot.state
+            ));
+            return true;
+        }
+
+        let Some(current_path) = snapshot.current_edit_path.clone() else {
+            trace_debug(format!(
+                "autosave pre-switch trigger={} critical missing path state={:?}",
+                trigger, snapshot.state
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: current_edit_path must be present for pre-switch flush"
+            );
+            return false;
+        };
+
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+        trace_debug(format!(
+            "autosave pre-switch trigger={} raise path={} text_len={}",
+            trigger,
+            current_path.display(),
+            editor_snapshot.value.len()
+        ));
+
+        let flush_result = self
+            .file_workflow
+            .flush_editor_content_in_edit(&editor_snapshot.value);
+        self.editor_autosave.reset_cycle();
+
+        match flush_result {
+            Ok(true) => {
+                trace_debug(format!(
+                    "autosave pre-switch trigger={} consumed path={}",
+                    trigger,
+                    current_path.display()
+                ));
+                true
+            }
+            Ok(false) => {
+                trace_debug(format!(
+                    "autosave pre-switch trigger={} no-op by workflow gate path={}",
+                    trigger,
+                    current_path.display()
+                ));
+                true
+            }
+            Err(error) => {
+                trace_debug(format!(
+                    "autosave pre-switch trigger={} failed path={} error={error}",
+                    trigger,
+                    current_path.display()
+                ));
+                false
+            }
+        }
+    }
+
     fn handle_plus_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush_editor_content_before_context_switch("req-aus6-plus", cx) {
+            trace_debug("plus_button aborted (pre-switch autosave failed)");
+            return;
+        }
+
         if !self.file_workflow.transition_edit_to_neutral() {
             trace_debug("plus_button no-op (state is not EDIT)");
             return;
@@ -722,6 +794,14 @@ impl Papyru2App {
     }
 
     fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush_editor_content_before_context_switch("req-aus8-open-file", cx) {
+            trace_debug(format!(
+                "open_file aborted path={} (pre-switch autosave failed)",
+                path.display()
+            ));
+            return;
+        }
+
         let opened = self.editor.update(cx, {
             let path = path.clone();
             move |editor, cx| editor.open_file(path, window, cx)
@@ -961,8 +1041,20 @@ pub fn run() {
         let window_position_path = window_position_path.clone();
         cx.spawn(async move |cx| {
             cx.open_window(window_options, move |window, cx| {
+                let app_paths = app_paths.clone();
+                let view = cx.new(|cx| Papyru2App::new(window, app_paths, cx));
+
                 let close_save_path = window_position_path.clone();
+                let close_view = view.clone();
                 window.on_window_should_close(cx, move |window, cx| {
+                    let pre_close_saved = cx.update_entity(&close_view, |app, cx| {
+                        app.flush_editor_content_before_context_switch("req-aus7-window-close", cx)
+                    });
+                    if !pre_close_saved {
+                        trace_debug("autosave pre-close aborted close");
+                        return false;
+                    }
+
                     let state =
                         crate::window_position::WindowPositionState::from_window(window, cx);
                     if let Err(error) = crate::window_position::save_window_position_atomic(
@@ -977,8 +1069,6 @@ pub fn run() {
                     true
                 });
 
-                let app_paths = app_paths.clone();
-                let view = cx.new(|cx| Papyru2App::new(window, app_paths, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })?;
 

@@ -113,6 +113,16 @@ impl EditorAutoSaveCoordinator {
         }
     }
 
+    pub fn reset_cycle(&self) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.pinned_time = None;
+        state.pending_payload = None;
+        state.last_delta_trace_secs = None;
+    }
+
     pub fn pop_due_payload(
         &self,
         now: Instant,
@@ -543,6 +553,21 @@ impl SinglelineCreateFileWorkflow {
                 Ok(false)
             }
         }
+    }
+
+    pub fn flush_editor_content_in_edit(&self, editor_text: &str) -> io::Result<bool> {
+        let snapshot = self.snapshot();
+        if snapshot.state != SinglelineFileState::Edit {
+            return Ok(false);
+        }
+        let Some(current_path) = snapshot.current_edit_path else {
+            return Ok(false);
+        };
+
+        self.try_autosave_in_edit(EditorAutoSavePayload {
+            current_path,
+            editor_text: editor_text.to_string(),
+        })
     }
 }
 
@@ -1563,6 +1588,81 @@ mod tests {
             assert_eq!(content_a, "A-old");
         }
 
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_test11_req_aus6_pre_new_file_flushes_before_edit_to_neutral() {
+        let root = new_temp_root("aus_test11");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let path_a = workflow
+            .try_create_from_neutral("fileA", root.as_path(), Instant::now(), fixed_now())
+            .expect("create")
+            .expect("created path");
+
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        let flushed = workflow
+            .flush_editor_content_in_edit("A-new")
+            .expect("flush before plus");
+        assert!(flushed);
+        let moved = workflow.transition_edit_to_neutral();
+        assert!(moved);
+
+        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        assert_eq!(content_a, "A-new");
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_test12_req_aus8_pre_open_file_flushes_previous_file_before_switch() {
+        let root = new_temp_root("aus_test12");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let path_a = daily.join("fileA.txt");
+        let path_b = daily.join("fileB.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        fs::write(&path_b, "B-old").expect("seed fileB");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let flushed = workflow
+            .flush_editor_content_in_edit("A-new")
+            .expect("flush before open fileB");
+        assert!(flushed);
+        workflow.set_edit_from_open_file(path_b.clone());
+
+        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        let content_b = fs::read_to_string(&path_b).expect("read fileB");
+        assert_eq!(content_a, "A-new");
+        assert_eq!(content_b, "B-old");
+        assert_eq!(workflow.current_edit_path(), Some(path_b));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_test13_req_aus7_pre_close_flushes_without_path_transition() {
+        let root = new_temp_root("aus_test13");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let path_a = daily.join("fileA.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let flushed = workflow
+            .flush_editor_content_in_edit("A-new")
+            .expect("flush before close");
+        assert!(flushed);
+        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        assert_eq!(content_a, "A-new");
+        assert_eq!(workflow.current_edit_path(), Some(path_a));
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
