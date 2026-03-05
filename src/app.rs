@@ -16,7 +16,7 @@ use gpui_component_assets::Assets;
 
 use crate::editor::Papyru2Editor;
 use crate::file_tree::{FileTreeEvent, FileTreeView};
-use crate::top_bars::TopBars;
+use crate::top_bars::{SHARED_INTER_PANEL_SPACING_PX, TopBars};
 
 pub(crate) fn trace_debug(message: impl AsRef<str>) {
     let now = std::time::SystemTime::now()
@@ -837,7 +837,14 @@ impl Render for Papyru2App {
                                 .size(px(320.))
                                 .child(self.file_tree.clone()),
                         )
-                        .child(resizable_panel().child(self.editor.clone())),
+                        .child(
+                            resizable_panel().child(
+                                div()
+                                    .size_full()
+                                    .pl(px(SHARED_INTER_PANEL_SPACING_PX))
+                                    .child(self.editor.clone()),
+                            ),
+                        ),
                 ),
             )
     }
@@ -847,6 +854,7 @@ impl Render for Papyru2App {
 mod tests {
     use super::should_restore_singleline_focus_after_new_file;
     use crate::file_update_handler::EditorAutoSaveCoordinator;
+    use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -949,6 +957,11 @@ mod tests {
             .pop_due_payload(base + Duration::from_secs(13), Duration::from_secs(6))
             .expect("due at second 6-second window");
         assert_eq!(due_again.editor_text, "t7");
+    }
+
+    #[test]
+    fn lo_test2_req_lo3_shared_inter_panel_spacing_is_10px() {
+        assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
     }
 }
 

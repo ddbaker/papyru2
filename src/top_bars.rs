@@ -8,6 +8,8 @@ use gpui_component::{
 
 use crate::singleline_input::SingleLineInput;
 
+pub(crate) const SHARED_INTER_PANEL_SPACING_PX: f32 = 10.0;
+
 #[derive(Clone, Debug)]
 pub enum TopBarsEvent {
     PressPlus,
@@ -72,7 +74,24 @@ impl Render for TopBars {
                             .child(self.render_search_button(cx)),
                     ),
                 )
-                .child(resizable_panel().child(self.singleline.clone())),
+                .child(
+                    resizable_panel().child(
+                        div()
+                            .w_full()
+                            .pl(px(SHARED_INTER_PANEL_SPACING_PX))
+                            .child(self.singleline.clone()),
+                    ),
+                ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SHARED_INTER_PANEL_SPACING_PX;
+
+    #[test]
+    fn lo_test1_req_lo2_singleline_left_spacing_is_10px() {
+        assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
     }
 }
