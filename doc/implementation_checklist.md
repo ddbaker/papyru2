@@ -374,6 +374,26 @@ Related debug note:
   - Center computed first-launch bounds before `open_window(...)`.
   - Keep fallback deterministic when primary display is unavailable.
 
+- [x] req-win16: Save splitter position information into `conf/window_position.toml`
+  - Source: `doc/papyru2_requirements_save_window_pos.md` (Date: 2026 March 5th update).
+  - Persist horizontal splitter sizes from shared `ResizableState` into the existing window-position payload.
+  - Save on splitter drag completion (`ResizablePanelEvent::Resized`) and keep save-on-close/save-on-debounced-window-update paths consistent.
+  - Implemented save paths:
+    - splitter resize event subscription (`ResizablePanelEvent::Resized`) in `src/app.rs`
+    - debounced `observe_window_bounds` save path in `src/app.rs`
+    - window close save path in `run()` close callback
+  - Add trace logs for splitter-size persistence decisions and failures.
+
+- [x] req-win17: Restore splitter position information from `conf/window_position.toml` at startup
+  - Source: `doc/papyru2_requirements_save_window_pos.md` (Date: 2026 March 5th update).
+  - Read persisted splitter sizes during startup load and apply initial splitter panel sizing before first render.
+  - Implemented restore path:
+    - `WindowPositionState::splitter_left_size()` for safe startup extraction
+    - `Papyru2App::new(..., restored_splitter_left_size, ...)` applies restored initial left panel size
+    - top/bottom split panels share the same restored left-size baseline
+  - Keep behavior non-fatal: invalid/missing splitter data falls back to default splitter sizing.
+  - Add trace logs for restore path (applied/fallback).
+
 ### Window Position Tests
 
 - [x] win-test1: First run without file uses centered/default bounds.
@@ -387,6 +407,8 @@ Related debug note:
 - [x] win-test9: Atomic write path leaves either old valid file or new valid file on failure.
 - [x] win-test10: Wayland-unsupported exact positioning is handled gracefully (non-fatal path).
 - [x] win-test11: No persisted geometry => first-launch bounds use ~70% of primary display and are centered.
+- [x] win-test12: Splitter sizes are serialized/deserialized in `window_position.toml` and left-panel restore value is available.
+- [x] win-test13: Invalid/missing splitter-size payload is ignored safely and falls back to default splitter sizing behavior.
 
 ## Singleline Create-File Mapping (`req-newf*`)
 
@@ -678,4 +700,3 @@ Related debug note:
 - [x] ref-fuh-verify2: `src/file_update_handler.rs` contains create/rename/autosave workflow and worker logic.
 - [x] ref-fuh-verify3: `src/app.rs` no longer defines autosave coordinator structs/constants.
 - [x] ref-fuh-verify4: Existing debug trace checkpoints still appear in `debug_assoc_trace.log` during manual smoke test.
-

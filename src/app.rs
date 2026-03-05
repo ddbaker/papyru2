@@ -9,7 +9,7 @@ use chrono::Local;
 use gpui::*;
 use gpui_component::{
     Root,
-    resizable::{ResizableState, h_resizable, resizable_panel},
+    resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
 use gpui_component_assets::Assets;
@@ -45,12 +45,15 @@ fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
+const DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX: f32 = 320.0;
+
 pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     singleline: Entity<crate::singleline_input::SingleLineInput>,
     editor: Entity<Papyru2Editor>,
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
+    initial_split_left_panel_size: Pixels,
     file_workflow: crate::file_update_handler::SinglelineCreateFileWorkflow,
     editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     _subscriptions: Vec<Subscription>,
@@ -61,10 +64,27 @@ impl Papyru2App {
     fn new(
         window: &mut Window,
         app_paths: crate::path_resolver::AppPaths,
+        restored_splitter_left_size: Option<f32>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let initial_split_left_panel_size = px(restored_splitter_left_size
+            .filter(|size| size.is_finite() && *size > 0.0)
+            .unwrap_or(DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX));
+        trace_debug(format!(
+            "window_position splitter restore left_size={} applied={}",
+            f32::from(initial_split_left_panel_size),
+            restored_splitter_left_size.is_some()
+        ));
+
         let layout_split_state = cx.new(|_| ResizableState::default());
-        let top_bars = cx.new(|cx| TopBars::new(window, layout_split_state.clone(), cx));
+        let top_bars = cx.new(|cx| {
+            TopBars::new(
+                window,
+                layout_split_state.clone(),
+                initial_split_left_panel_size,
+                cx,
+            )
+        });
         let singleline = top_bars.read(cx).singleline();
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
         let file_tree = cx.new(|cx| FileTreeView::new(cx));
@@ -76,6 +96,7 @@ impl Papyru2App {
         let last_debounced_save = Rc::new(RefCell::new(None::<Instant>));
         let debounced_save_clock = last_debounced_save.clone();
         let debounced_save_path = window_position_path.clone();
+        let splitter_resize_save_path = window_position_path.clone();
 
         crate::file_update_handler::spawn_editor_autosave_worker(
             editor_autosave.clone(),
@@ -151,9 +172,32 @@ impl Papyru2App {
                     }
                 },
             ),
+            cx.subscribe_in(
+                &layout_split_state,
+                window,
+                move |this, _, event: &ResizablePanelEvent, window, cx| match event {
+                    ResizablePanelEvent::Resized => {
+                        let state = this.capture_window_position_state(window, cx);
+                        trace_debug(format!(
+                            "window_position splitter resize save path={} splitter_sizes={:?}",
+                            splitter_resize_save_path.display(),
+                            state.splitter_sizes
+                        ));
+                        if let Err(error) = crate::window_position::save_window_position_atomic(
+                            splitter_resize_save_path.as_path(),
+                            &state,
+                        ) {
+                            trace_debug(format!(
+                                "window_position splitter resize save failed path={} error={error}",
+                                splitter_resize_save_path.display()
+                            ));
+                        }
+                    }
+                },
+            ),
         ];
 
-        subscriptions.push(cx.observe_window_bounds(window, move |_, window, _cx| {
+        subscriptions.push(cx.observe_window_bounds(window, move |this, window, cx| {
             let now = Instant::now();
             let should_save = debounced_save_clock
                 .borrow()
@@ -164,12 +208,7 @@ impl Papyru2App {
             }
 
             *debounced_save_clock.borrow_mut() = Some(now);
-            let state = crate::window_position::WindowPositionState::from_window_bounds(
-                window.window_bounds(),
-                None,
-                None,
-                Some(window.scale_factor()),
-            );
+            let state = this.capture_window_position_state(window, cx);
             if let Err(error) = crate::window_position::save_window_position_atomic(
                 debounced_save_path.as_path(),
                 &state,
@@ -196,11 +235,22 @@ impl Papyru2App {
             editor,
             file_tree,
             layout_split_state,
+            initial_split_left_panel_size,
             file_workflow,
             editor_autosave,
             _subscriptions: subscriptions,
             app_paths,
         }
+    }
+
+    fn capture_window_position_state(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> crate::window_position::WindowPositionState {
+        let splitter_sizes = self.layout_split_state.read(cx).sizes().clone();
+        crate::window_position::WindowPositionState::from_window(window, cx)
+            .with_splitter_sizes(&splitter_sizes)
     }
 
     fn apply_focus_target(
@@ -834,7 +884,7 @@ impl Render for Papyru2App {
                         .with_state(&self.layout_split_state)
                         .child(
                             resizable_panel()
-                                .size(px(320.))
+                                .size(self.initial_split_left_panel_size)
                                 .child(self.file_tree.clone()),
                         )
                         .child(
@@ -1029,6 +1079,13 @@ pub fn run() {
                 None
             }
         };
+    let restored_splitter_left_size = persisted_window_position
+        .as_ref()
+        .and_then(|state| state.splitter_left_size());
+    trace_debug(format!(
+        "window_position splitter startup restore left_size={:?}",
+        restored_splitter_left_size
+    ));
 
     let app = Application::new().with_assets(Assets);
 
@@ -1055,10 +1112,12 @@ pub fn run() {
 
         let app_paths = app_paths.clone();
         let window_position_path = window_position_path.clone();
+        let restored_splitter_left_size = restored_splitter_left_size;
         cx.spawn(async move |cx| {
             cx.open_window(window_options, move |window, cx| {
                 let app_paths = app_paths.clone();
-                let view = cx.new(|cx| Papyru2App::new(window, app_paths, cx));
+                let view = cx
+                    .new(|cx| Papyru2App::new(window, app_paths, restored_splitter_left_size, cx));
 
                 let close_save_path = window_position_path.clone();
                 let close_view = view.clone();
@@ -1071,8 +1130,14 @@ pub fn run() {
                         return false;
                     }
 
-                    let state =
-                        crate::window_position::WindowPositionState::from_window(window, cx);
+                    let state = cx.update_entity(&close_view, |app, cx| {
+                        app.capture_window_position_state(window, cx)
+                    });
+                    trace_debug(format!(
+                        "window_position close save path={} splitter_sizes={:?}",
+                        close_save_path.display(),
+                        state.splitter_sizes
+                    ));
                     if let Err(error) = crate::window_position::save_window_position_atomic(
                         close_save_path.as_path(),
                         &state,

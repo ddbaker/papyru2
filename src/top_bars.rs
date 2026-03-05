@@ -18,6 +18,7 @@ pub enum TopBarsEvent {
 pub struct TopBars {
     singleline: Entity<SingleLineInput>,
     layout_split_state: Entity<ResizableState>,
+    left_panel_size: Pixels,
 }
 
 impl EventEmitter<TopBarsEvent> for TopBars {}
@@ -26,12 +27,14 @@ impl TopBars {
     pub fn new(
         window: &mut Window,
         layout_split_state: Entity<ResizableState>,
+        left_panel_size: Pixels,
         cx: &mut Context<Self>,
     ) -> Self {
         let singleline = cx.new(|cx| SingleLineInput::new(window, cx));
         Self {
             singleline,
             layout_split_state,
+            left_panel_size,
         }
     }
 
@@ -66,7 +69,7 @@ impl Render for TopBars {
             h_resizable("top-split")
                 .with_state(&self.layout_split_state)
                 .child(
-                    resizable_panel().size(px(320.)).child(
+                    resizable_panel().size(self.left_panel_size).child(
                         h_flex()
                             .gap_2()
                             .items_center()

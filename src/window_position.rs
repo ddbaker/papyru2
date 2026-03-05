@@ -28,6 +28,8 @@ pub struct WindowPositionState {
     pub monitor_id: Option<u32>,
     pub monitor_uuid: Option<String>,
     pub dpi_scale: Option<f32>,
+    #[serde(default)]
+    pub splitter_sizes: Option<Vec<f32>>,
 }
 
 impl WindowPositionState {
@@ -63,7 +65,21 @@ impl WindowPositionState {
             monitor_id,
             monitor_uuid,
             dpi_scale,
+            splitter_sizes: None,
         }
+    }
+
+    pub fn with_splitter_sizes(mut self, sizes: &[Pixels]) -> Self {
+        let raw_sizes: Vec<f32> = sizes.iter().map(|size| f32::from(*size)).collect();
+        self.splitter_sizes = normalize_splitter_sizes(&raw_sizes);
+        self
+    }
+
+    pub fn splitter_left_size(&self) -> Option<f32> {
+        self.splitter_sizes
+            .as_ref()
+            .and_then(|sizes| normalize_splitter_sizes(sizes))
+            .and_then(|sizes| sizes.first().copied())
     }
 
     pub fn to_window_bounds(&self) -> Option<WindowBounds> {
@@ -376,6 +392,22 @@ fn is_valid_coordinate(value: f32) -> bool {
     value.is_finite() && value.abs() <= MAX_ABS_COORDINATE
 }
 
+fn is_valid_splitter_size(value: f32) -> bool {
+    value.is_finite() && value > 0.0 && value <= MAX_ABS_COORDINATE
+}
+
+fn normalize_splitter_sizes(sizes: &[f32]) -> Option<Vec<f32>> {
+    if sizes.len() < 2 {
+        return None;
+    }
+
+    if sizes.iter().any(|size| !is_valid_splitter_size(*size)) {
+        return None;
+    }
+
+    Some(sizes.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +473,7 @@ mod tests {
             monitor_id: Some(1),
             monitor_uuid: Some("display-uuid".to_string()),
             dpi_scale: Some(1.5),
+            splitter_sizes: None,
         };
         save_window_position_atomic(path.as_path(), &saved).expect("save state");
 
@@ -470,6 +503,7 @@ mod tests {
             monitor_id: None,
             monitor_uuid: None,
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
 
         save_window_position_atomic(path.as_path(), &state).expect("save state");
@@ -491,6 +525,7 @@ mod tests {
             monitor_id: Some(3),
             monitor_uuid: Some("monitor-3".to_string()),
             dpi_scale: Some(2.0),
+            splitter_sizes: None,
         };
 
         save_window_position_atomic(path.as_path(), &state).expect("save state");
@@ -568,6 +603,7 @@ window_mode = "minimized"
             monitor_id: None,
             monitor_uuid: None,
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
 
         let resolved = resolve_startup_window_bounds(
@@ -592,6 +628,7 @@ window_mode = "minimized"
             monitor_id: None,
             monitor_uuid: None,
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
 
         let resolved = resolve_startup_window_bounds(
@@ -617,6 +654,7 @@ window_mode = "minimized"
             monitor_id: Some(1),
             monitor_uuid: Some("old".to_string()),
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
         let new = WindowPositionState {
             monitor_uuid: Some("new".to_string()),
@@ -651,6 +689,7 @@ window_mode = "minimized"
             monitor_id: Some(1),
             monitor_uuid: Some("old".to_string()),
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
         let new = WindowPositionState {
             x: 33.0,
@@ -661,6 +700,7 @@ window_mode = "minimized"
             monitor_id: Some(2),
             monitor_uuid: Some("new".to_string()),
             dpi_scale: Some(2.0),
+            splitter_sizes: None,
         };
 
         save_window_position_atomic(path.as_path(), &old).expect("save old");
@@ -684,6 +724,7 @@ window_mode = "minimized"
             monitor_id: Some(1),
             monitor_uuid: Some("old".to_string()),
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
         let new = WindowPositionState {
             monitor_uuid: Some("new".to_string()),
@@ -722,6 +763,7 @@ window_mode = "minimized"
             monitor_id: Some(1),
             monitor_uuid: None,
             dpi_scale: Some(1.0),
+            splitter_sizes: None,
         };
 
         let resolved = resolve_startup_window_bounds(
@@ -747,5 +789,54 @@ window_mode = "minimized"
         );
 
         assert_eq!(resolved, windowed(300.0, 150.0, 1400.0, 700.0));
+    }
+
+    #[test]
+    fn win_test12_splitter_sizes_round_trip_and_left_restore_value_is_available() {
+        let root = new_temp_root("win_test12");
+        let path = root.join("conf").join(WINDOW_POSITION_FILE_NAME);
+        let state = WindowPositionState::from_window_bounds(
+            windowed(20.0, 40.0, 1200.0, 800.0),
+            Some(1),
+            Some("display-1".to_string()),
+            Some(1.0),
+        )
+        .with_splitter_sizes(&[px(420.0), px(980.0)]);
+
+        save_window_position_atomic(path.as_path(), &state).expect("save state with splitter");
+        let loaded = load_window_position(path.as_path())
+            .expect("load state with splitter")
+            .expect("existing state");
+
+        assert_eq!(loaded.splitter_sizes, Some(vec![420.0, 980.0]));
+        assert_eq!(loaded.splitter_left_size(), Some(420.0));
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn win_test13_invalid_splitter_payload_is_ignored_safely() {
+        let invalid_nan = WindowPositionState {
+            x: 0.0,
+            y: 0.0,
+            width: 1200.0,
+            height: 800.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: None,
+            monitor_uuid: None,
+            dpi_scale: Some(1.0),
+            splitter_sizes: Some(vec![f32::NAN, 980.0]),
+        };
+        let invalid_count = WindowPositionState {
+            splitter_sizes: Some(vec![420.0]),
+            ..invalid_nan.clone()
+        };
+        let missing = WindowPositionState {
+            splitter_sizes: None,
+            ..invalid_nan.clone()
+        };
+
+        assert_eq!(invalid_nan.splitter_left_size(), None);
+        assert_eq!(invalid_count.splitter_left_size(), None);
+        assert_eq!(missing.splitter_left_size(), None);
     }
 }
