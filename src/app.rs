@@ -47,6 +47,15 @@ fn should_restore_singleline_focus_after_new_file(
 
 const DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX: f32 = 320.0;
 
+fn build_startup_window_options(startup_bounds: WindowBounds) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(startup_bounds),
+        focus: true,
+        show: true,
+        ..Default::default()
+    }
+}
+
 pub struct Papyru2App {
     top_bars: Entity<TopBars>,
     singleline: Entity<crate::singleline_input::SingleLineInput>,
@@ -902,9 +911,10 @@ impl Render for Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::should_restore_singleline_focus_after_new_file;
+    use super::{build_startup_window_options, should_restore_singleline_focus_after_new_file};
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
+    use gpui::{WindowBounds, bounds, point, px, size};
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -1013,6 +1023,19 @@ mod tests {
     fn lo_test2_req_lo3_shared_inter_panel_spacing_is_10px() {
         assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
     }
+
+    #[test]
+    fn win_test14_req_win18_startup_window_options_enable_focus_and_show() {
+        let startup_bounds = WindowBounds::Windowed(bounds(
+            point(px(50.0), px(60.0)),
+            size(px(1200.0), px(800.0)),
+        ));
+        let options = build_startup_window_options(startup_bounds);
+
+        assert!(options.focus);
+        assert!(options.show);
+        assert_eq!(options.window_bounds, Some(startup_bounds));
+    }
 }
 
 pub fn run() {
@@ -1105,10 +1128,13 @@ pub fn run() {
             crate::window_position::should_ignore_exact_position_for_wayland(),
         );
 
-        let window_options = WindowOptions {
-            window_bounds: Some(startup_bounds),
-            ..Default::default()
-        };
+        let window_options = build_startup_window_options(startup_bounds);
+        trace_debug(format!(
+            "window_options startup focus={} show={} has_bounds={}",
+            window_options.focus,
+            window_options.show,
+            window_options.window_bounds.is_some()
+        ));
 
         let app_paths = app_paths.clone();
         let window_position_path = window_position_path.clone();
