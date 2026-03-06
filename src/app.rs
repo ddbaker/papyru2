@@ -15,7 +15,7 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use crate::editor::Papyru2Editor;
-use crate::file_tree::{FileTreeEvent, FileTreeView};
+use crate::file_tree::{FileTreeEvent, FileTreeView, move_entries_to_recyclebin};
 use crate::top_bars::{SHARED_INTER_PANEL_SPACING_PX, TopBars};
 
 pub(crate) fn trace_debug(message: impl AsRef<str>) {
@@ -113,6 +113,53 @@ pub struct Papyru2App {
 }
 
 impl Papyru2App {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.is_held {
+            cx.propagate();
+            return;
+        }
+
+        let key = event.keystroke.key.as_str().to_ascii_lowercase();
+        if key != "delete" {
+            cx.propagate();
+            return;
+        }
+
+        let editor_focused = self.editor.read(cx).is_focused(window, cx);
+        let singleline_focused = self.singleline.read(cx).is_focused(window, cx);
+        let file_tree_focused = self.file_tree.read(cx).is_focused(window, cx);
+        if editor_focused || singleline_focused {
+            trace_debug(format!(
+                "app keydown delete propagate editor_focused={} singleline_focused={} file_tree_focused={}",
+                editor_focused, singleline_focused, file_tree_focused
+            ));
+            cx.propagate();
+            return;
+        }
+
+        if !file_tree_focused {
+            trace_debug(format!(
+                "app keydown delete ignored file_tree_focused={} editor_focused={} singleline_focused={}",
+                file_tree_focused, editor_focused, singleline_focused
+            ));
+            cx.propagate();
+            return;
+        }
+
+        let requested = self
+            .file_tree
+            .update(cx, |file_tree, cx| file_tree.request_recyclebin_delete(cx));
+        trace_debug(format!(
+            "app keydown delete requested_by_file_tree={} editor_focused={} singleline_focused={} file_tree_focused={}",
+            requested, editor_focused, singleline_focused, file_tree_focused
+        ));
+        if requested {
+            cx.stop_propagation();
+        } else {
+            cx.propagate();
+        }
+    }
+
     fn subscribe_layout_split_state(
         layout_split_state: &Entity<ResizableState>,
         splitter_resize_save_path: PathBuf,
@@ -213,7 +260,11 @@ impl Papyru2App {
         });
         let singleline = top_bars.read(cx).singleline();
         let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
-        let file_tree = cx.new(|cx| FileTreeView::new(cx));
+        let protected_delete_roots = vec![
+            app_paths.data_dir.clone(),
+            app_paths.user_document_dir.clone(),
+        ];
+        let file_tree = cx.new(move |cx| FileTreeView::new(protected_delete_roots, cx));
         let file_workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::new();
         let editor_autosave = crate::file_update_handler::EditorAutoSaveCoordinator::new();
 
@@ -244,6 +295,9 @@ impl Papyru2App {
                 move |this, _, event: &FileTreeEvent, window, cx| match event {
                     FileTreeEvent::OpenFile(path) => {
                         this.open_file(path.clone(), window, cx);
+                    }
+                    FileTreeEvent::RecyclebinDeleteRequested(paths) => {
+                        this.on_file_tree_delete_requested(paths.clone(), cx);
                     }
                 },
             ),
@@ -440,6 +494,35 @@ impl Papyru2App {
         ));
     }
 
+    fn refresh_file_tree(&mut self, reason: &str, cx: &mut Context<Self>) {
+        trace_debug(format!("file_tree refresh requested reason={reason}"));
+        self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.refresh_from_filesystem(cx);
+        });
+    }
+
+    fn on_file_tree_delete_requested(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        trace_debug(format!(
+            "file_tree delete request selected_count={} recyclebin={}",
+            paths.len(),
+            self.app_paths.recyclebin_dir.display()
+        ));
+
+        match move_entries_to_recyclebin(&paths, self.app_paths.recyclebin_dir.as_path()) {
+            Ok(moved) => {
+                trace_debug(format!(
+                    "file_tree delete move success moved_count={} selected_count={}",
+                    moved.len(),
+                    paths.len()
+                ));
+                self.refresh_file_tree("req-ftr3-delete", cx);
+            }
+            Err(error) => {
+                trace_debug(format!("file_tree delete move failed error={error}"));
+            }
+        }
+    }
+
     fn apply_forced_singleline_stem(
         &mut self,
         forced_stem: Option<String>,
@@ -494,6 +577,7 @@ impl Papyru2App {
             Ok(Some(path)) => {
                 trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                self.refresh_file_tree("req-ftr1-create", cx);
                 self.apply_forced_singleline_stem(
                     crate::file_update_handler::forced_singleline_stem_after_create(
                         &singleline_snapshot.value,
@@ -564,6 +648,7 @@ impl Papyru2App {
                             compact_text(value)
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                        self.refresh_file_tree("req-ftr1-rename", cx);
                         self.apply_forced_singleline_stem(
                             crate::file_update_handler::forced_singleline_stem_after_rename(
                                 value,
@@ -1009,10 +1094,11 @@ impl Papyru2App {
 }
 
 impl Render for Papyru2App {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("papyru2")
             .size_full()
+            .capture_key_down(cx.listener(Self::on_key_down))
             .gap_2()
             .p_2()
             .child(self.top_bars.clone())
