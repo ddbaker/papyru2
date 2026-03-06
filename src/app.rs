@@ -640,6 +640,7 @@ impl Papyru2App {
             }
             crate::file_update_handler::SinglelineFileState::Edit => {
                 let now_local = Local::now();
+                let previous_path = self.file_workflow.current_edit_path();
                 match self.file_workflow.try_rename_in_edit(value, now_local) {
                     Ok(Some(path)) => {
                         trace_debug(format!(
@@ -648,7 +649,26 @@ impl Papyru2App {
                             compact_text(value)
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                        self.refresh_file_tree("req-ftr1-rename", cx);
+                        if let Some(previous_path) = previous_path {
+                            let patched = self.file_tree.update(cx, |file_tree, cx| {
+                                file_tree.apply_renamed_path(
+                                    previous_path.as_path(),
+                                    path.as_path(),
+                                    cx,
+                                )
+                            });
+                            if !patched {
+                                trace_debug(
+                                    "rename_flow fallback to full file_tree refresh after missed patch",
+                                );
+                                self.refresh_file_tree("req-ftr1-rename-fallback", cx);
+                            }
+                        } else {
+                            trace_debug(
+                                "rename_flow missing previous_path; fallback to full file_tree refresh",
+                            );
+                            self.refresh_file_tree("req-ftr1-rename-missing-path", cx);
+                        }
                         self.apply_forced_singleline_stem(
                             crate::file_update_handler::forced_singleline_stem_after_rename(
                                 value,

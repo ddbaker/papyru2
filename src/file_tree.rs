@@ -20,6 +20,7 @@ pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     focus_handle: FocusHandle,
     workspace_root: PathBuf,
+    root_items: Vec<TreeItem>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
     suppress_next_row_click_item_id: Option<String>,
@@ -37,6 +38,7 @@ impl FileTreeView {
             tree_state,
             focus_handle,
             workspace_root,
+            root_items: Vec::new(),
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
             suppress_next_row_click_item_id: None,
@@ -78,6 +80,38 @@ impl FileTreeView {
         self.focus_handle.contains_focused(window, cx)
     }
 
+    pub fn apply_renamed_path(
+        &mut self,
+        old_path: &Path,
+        new_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let renamed = rename_tree_item_path(&mut self.root_items, old_path, new_path);
+        if !renamed {
+            crate::app::trace_debug(format!(
+                "file_tree rename patch missed old_path={} new_path={}",
+                old_path.display(),
+                new_path.display()
+            ));
+            return false;
+        }
+
+        rewrite_selected_item_ids_for_rename(&mut self.selected_item_ids, old_path, new_path);
+        if self.suppress_next_row_click_item_id.as_deref()
+            == Some(old_path.to_string_lossy().as_ref())
+        {
+            self.suppress_next_row_click_item_id =
+                Some(comparable_path(new_path).to_string_lossy().to_string());
+        }
+        crate::app::trace_debug(format!(
+            "file_tree rename patch applied old_path={} new_path={}",
+            old_path.display(),
+            new_path.display()
+        ));
+        self.set_items_from_model(cx);
+        true
+    }
+
     pub fn request_recyclebin_delete(&mut self, cx: &mut Context<Self>) -> bool {
         let mut removed_protected_count = 0usize;
         let protected_delete_roots = self.protected_delete_roots.clone();
@@ -110,10 +144,15 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
-        let items = build_file_items(&self.workspace_root, &self.workspace_root);
+        self.root_items = build_file_items(&self.workspace_root, &self.workspace_root);
+        self.set_items_from_model(cx);
+    }
+
+    fn set_items_from_model(&mut self, cx: &mut Context<Self>) {
         let mut valid_item_ids = HashSet::new();
-        collect_tree_item_ids(&items, &mut valid_item_ids);
+        collect_tree_item_ids(&self.root_items, &mut valid_item_ids);
         retain_existing_selections(&mut self.selected_item_ids, &valid_item_ids);
+        let items = self.root_items.clone();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
         });
@@ -296,12 +335,82 @@ fn build_file_items(root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
         }
     }
 
+    sort_tree_items(&mut items);
+    items
+}
+
+fn sort_tree_items(items: &mut [TreeItem]) {
     items.sort_by(|a, b| {
         b.is_folder()
             .cmp(&a.is_folder())
             .then(a.label.cmp(&b.label))
     });
-    items
+}
+
+fn rename_tree_item_path(items: &mut [TreeItem], old_path: &Path, new_path: &Path) -> bool {
+    for index in 0..items.len() {
+        if is_same_path(Path::new(items[index].id.as_ref()), old_path) {
+            rewrite_tree_item_subtree_paths(&mut items[index], old_path, new_path);
+            sort_tree_items(items);
+            return true;
+        }
+
+        if rename_tree_item_path(&mut items[index].children, old_path, new_path) {
+            sort_tree_items(items);
+            return true;
+        }
+    }
+
+    false
+}
+
+fn rewrite_tree_item_subtree_paths(item: &mut TreeItem, old_root: &Path, new_root: &Path) {
+    if let Some(rebased_path) = rebase_tree_path(Path::new(item.id.as_ref()), old_root, new_root) {
+        item.id = rebased_path.to_string_lossy().to_string().into();
+        item.label = item_label_from_path(&rebased_path).into();
+    }
+
+    for child in item.children.iter_mut() {
+        rewrite_tree_item_subtree_paths(child, old_root, new_root);
+    }
+}
+
+fn rebase_tree_path(path: &Path, old_root: &Path, new_root: &Path) -> Option<PathBuf> {
+    let comparable = comparable_path(path);
+    let comparable_old_root = comparable_path(old_root);
+    let comparable_new_root = comparable_path(new_root);
+    if comparable == comparable_old_root {
+        return Some(comparable_new_root);
+    }
+
+    comparable
+        .strip_prefix(&comparable_old_root)
+        .ok()
+        .map(|relative| comparable_new_root.join(relative))
+}
+
+fn item_label_from_path(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Unknown")
+        .to_string()
+}
+
+fn rewrite_selected_item_ids_for_rename(
+    selected_item_ids: &mut HashSet<String>,
+    old_path: &Path,
+    new_path: &Path,
+) {
+    let mut updated = HashSet::new();
+    for selected in selected_item_ids.drain() {
+        let selected_path = PathBuf::from(&selected);
+        let next = rebase_tree_path(selected_path.as_path(), old_path, new_path)
+            .unwrap_or(selected_path)
+            .to_string_lossy()
+            .to_string();
+        updated.insert(next);
+    }
+    *selected_item_ids = updated;
 }
 
 fn toggle_item_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) -> bool {
@@ -433,8 +542,9 @@ pub(crate) fn move_entries_to_recyclebin(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_file_items, collect_tree_item_ids, is_delete_protected_path,
-        move_entries_to_recyclebin, retain_existing_selections, toggle_item_selection,
+        TreeItem, build_file_items, collect_tree_item_ids, is_delete_protected_path,
+        move_entries_to_recyclebin, rename_tree_item_path, retain_existing_selections,
+        rewrite_selected_item_ids_for_rename, toggle_item_selection,
     };
     use std::{
         collections::HashSet,
@@ -633,6 +743,35 @@ mod tests {
             &protected
         ));
         assert!(!is_delete_protected_path(sample_file.as_path(), &protected));
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test9_rename_patch_updates_tree_item_and_selection_in_place() {
+        let root = new_temp_root("ftr_test9");
+        let old_path = root.join("alpha.txt");
+        let new_path = root.join("beta.txt");
+        let sibling_path = root.join("gamma.txt");
+
+        let mut items = vec![
+            TreeItem::new(old_path.to_string_lossy().to_string(), "alpha.txt"),
+            TreeItem::new(sibling_path.to_string_lossy().to_string(), "gamma.txt"),
+        ];
+        let mut selected = HashSet::from([old_path.to_string_lossy().to_string()]);
+
+        assert!(rename_tree_item_path(
+            &mut items,
+            old_path.as_path(),
+            new_path.as_path()
+        ));
+        rewrite_selected_item_ids_for_rename(&mut selected, old_path.as_path(), new_path.as_path());
+
+        let mut ids = HashSet::new();
+        collect_tree_item_ids(&items, &mut ids);
+        assert!(ids.contains(new_path.to_string_lossy().as_ref()));
+        assert!(!ids.contains(old_path.to_string_lossy().as_ref()));
+        assert!(selected.contains(new_path.to_string_lossy().as_ref()));
+        assert_eq!(items[0].label.as_ref(), "beta.txt");
         remove_temp_root(root.as_path());
     }
 }
