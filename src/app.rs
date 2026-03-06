@@ -46,6 +46,47 @@ fn should_restore_singleline_focus_after_new_file(
 }
 
 const DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX: f32 = 320.0;
+const SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX: f32 = 1.0;
+
+fn is_valid_split_panel_size(size: Pixels) -> bool {
+    let size = f32::from(size);
+    size.is_finite() && size > 0.0
+}
+
+fn normalize_split_left_panel_size(restored_splitter_left_size: Option<f32>) -> Pixels {
+    px(restored_splitter_left_size
+        .filter(|size| size.is_finite() && *size > 0.0)
+        .unwrap_or(DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX))
+}
+
+fn current_window_width(window: &Window) -> Pixels {
+    window.window_bounds().get_bounds().size.width
+}
+
+fn should_recreate_layout_split_state(
+    previous_window_width: Pixels,
+    current_window_width: Pixels,
+) -> bool {
+    previous_window_width != current_window_width
+}
+
+fn persisted_splitter_sizes(
+    actual_sizes: &[Pixels],
+    preserved_left_panel_size: Pixels,
+) -> Vec<Pixels> {
+    if actual_sizes.len() >= 2
+        && actual_sizes
+            .iter()
+            .all(|size| is_valid_split_panel_size(*size))
+    {
+        return actual_sizes.to_vec();
+    }
+
+    vec![
+        preserved_left_panel_size,
+        px(SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX),
+    ]
+}
 
 fn build_startup_window_options(startup_bounds: WindowBounds) -> WindowOptions {
     WindowOptions {
@@ -62,7 +103,9 @@ pub struct Papyru2App {
     editor: Entity<Papyru2Editor>,
     file_tree: Entity<FileTreeView>,
     layout_split_state: Entity<ResizableState>,
-    initial_split_left_panel_size: Pixels,
+    split_left_panel_size: Pixels,
+    last_window_width: Pixels,
+    layout_split_subscription: Subscription,
     file_workflow: crate::file_update_handler::SinglelineCreateFileWorkflow,
     editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     _subscriptions: Vec<Subscription>,
@@ -70,18 +113,92 @@ pub struct Papyru2App {
 }
 
 impl Papyru2App {
+    fn subscribe_layout_split_state(
+        layout_split_state: &Entity<ResizableState>,
+        splitter_resize_save_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            layout_split_state,
+            window,
+            move |this, _, event: &ResizablePanelEvent, window, cx| match event {
+                ResizablePanelEvent::Resized => {
+                    let next_left_panel_size = this
+                        .layout_split_state
+                        .read(cx)
+                        .sizes()
+                        .first()
+                        .copied()
+                        .filter(|size| is_valid_split_panel_size(*size))
+                        .unwrap_or(this.split_left_panel_size);
+                    this.split_left_panel_size = next_left_panel_size;
+
+                    let layout_split_state = this.layout_split_state.clone();
+                    this.top_bars.update(cx, |top_bars, _| {
+                        top_bars.sync_layout_split(layout_split_state, next_left_panel_size);
+                    });
+
+                    trace_debug(format!(
+                        "layout split resized left_size={}",
+                        f32::from(next_left_panel_size)
+                    ));
+
+                    let state = this.capture_window_position_state(window, cx);
+                    trace_debug(format!(
+                        "window_position splitter resize save path={} splitter_sizes={:?}",
+                        splitter_resize_save_path.display(),
+                        state.splitter_sizes
+                    ));
+                    if let Err(error) = crate::window_position::save_window_position_atomic(
+                        splitter_resize_save_path.as_path(),
+                        &state,
+                    ) {
+                        trace_debug(format!(
+                            "window_position splitter resize save failed path={} error={error}",
+                            splitter_resize_save_path.display()
+                        ));
+                    }
+                }
+            },
+        )
+    }
+
+    fn reset_layout_split_state(
+        &mut self,
+        window: &mut Window,
+        splitter_resize_save_path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let new_layout_split_state = cx.new(|_| ResizableState::default());
+        self.layout_split_subscription = Self::subscribe_layout_split_state(
+            &new_layout_split_state,
+            splitter_resize_save_path,
+            window,
+            cx,
+        );
+        self.layout_split_state = new_layout_split_state.clone();
+        let split_left_panel_size = self.split_left_panel_size;
+        self.top_bars.update(cx, |top_bars, _| {
+            top_bars.sync_layout_split(new_layout_split_state, split_left_panel_size);
+        });
+        trace_debug(format!(
+            "layout split state reset for window resize left_size={}",
+            f32::from(self.split_left_panel_size)
+        ));
+        cx.notify();
+    }
+
     fn new(
         window: &mut Window,
         app_paths: crate::path_resolver::AppPaths,
         restored_splitter_left_size: Option<f32>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let initial_split_left_panel_size = px(restored_splitter_left_size
-            .filter(|size| size.is_finite() && *size > 0.0)
-            .unwrap_or(DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX));
+        let split_left_panel_size = normalize_split_left_panel_size(restored_splitter_left_size);
         trace_debug(format!(
             "window_position splitter restore left_size={} applied={}",
-            f32::from(initial_split_left_panel_size),
+            f32::from(split_left_panel_size),
             restored_splitter_left_size.is_some()
         ));
 
@@ -90,7 +207,7 @@ impl Papyru2App {
             TopBars::new(
                 window,
                 layout_split_state.clone(),
-                initial_split_left_panel_size,
+                split_left_panel_size,
                 cx,
             )
         });
@@ -106,6 +223,14 @@ impl Papyru2App {
         let debounced_save_clock = last_debounced_save.clone();
         let debounced_save_path = window_position_path.clone();
         let splitter_resize_save_path = window_position_path.clone();
+        let observe_splitter_resize_save_path = window_position_path.clone();
+
+        let layout_split_subscription = Self::subscribe_layout_split_state(
+            &layout_split_state,
+            splitter_resize_save_path,
+            window,
+            cx,
+        );
 
         crate::file_update_handler::spawn_editor_autosave_worker(
             editor_autosave.clone(),
@@ -181,32 +306,25 @@ impl Papyru2App {
                     }
                 },
             ),
-            cx.subscribe_in(
-                &layout_split_state,
-                window,
-                move |this, _, event: &ResizablePanelEvent, window, cx| match event {
-                    ResizablePanelEvent::Resized => {
-                        let state = this.capture_window_position_state(window, cx);
-                        trace_debug(format!(
-                            "window_position splitter resize save path={} splitter_sizes={:?}",
-                            splitter_resize_save_path.display(),
-                            state.splitter_sizes
-                        ));
-                        if let Err(error) = crate::window_position::save_window_position_atomic(
-                            splitter_resize_save_path.as_path(),
-                            &state,
-                        ) {
-                            trace_debug(format!(
-                                "window_position splitter resize save failed path={} error={error}",
-                                splitter_resize_save_path.display()
-                            ));
-                        }
-                    }
-                },
-            ),
         ];
 
         subscriptions.push(cx.observe_window_bounds(window, move |this, window, cx| {
+            let current_width = current_window_width(window);
+            if should_recreate_layout_split_state(this.last_window_width, current_width) {
+                trace_debug(format!(
+                    "layout split window resize detected previous_width={} current_width={} preserved_left_size={}",
+                    f32::from(this.last_window_width),
+                    f32::from(current_width),
+                    f32::from(this.split_left_panel_size)
+                ));
+                this.reset_layout_split_state(
+                    window,
+                    observe_splitter_resize_save_path.clone(),
+                    cx,
+                );
+            }
+            this.last_window_width = current_width;
+
             let now = Instant::now();
             let should_save = debounced_save_clock
                 .borrow()
@@ -244,7 +362,9 @@ impl Papyru2App {
             editor,
             file_tree,
             layout_split_state,
-            initial_split_left_panel_size,
+            split_left_panel_size,
+            last_window_width: current_window_width(window),
+            layout_split_subscription,
             file_workflow,
             editor_autosave,
             _subscriptions: subscriptions,
@@ -257,7 +377,16 @@ impl Papyru2App {
         window: &Window,
         cx: &App,
     ) -> crate::window_position::WindowPositionState {
-        let splitter_sizes = self.layout_split_state.read(cx).sizes().clone();
+        let actual_splitter_sizes = self.layout_split_state.read(cx).sizes().clone();
+        let splitter_sizes =
+            persisted_splitter_sizes(&actual_splitter_sizes, self.split_left_panel_size);
+        if splitter_sizes != actual_splitter_sizes {
+            trace_debug(format!(
+                "window_position splitter persistence fallback left_size={} actual_sizes={:?}",
+                f32::from(self.split_left_panel_size),
+                actual_splitter_sizes
+            ));
+        }
         crate::window_position::WindowPositionState::from_window(window, cx)
             .with_splitter_sizes(&splitter_sizes)
     }
@@ -893,7 +1022,7 @@ impl Render for Papyru2App {
                         .with_state(&self.layout_split_state)
                         .child(
                             resizable_panel()
-                                .size(self.initial_split_left_panel_size)
+                                .size(self.split_left_panel_size)
                                 .child(self.file_tree.clone()),
                         )
                         .child(
@@ -911,7 +1040,11 @@ impl Render for Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_startup_window_options, should_restore_singleline_focus_after_new_file};
+    use super::{
+        DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX, SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX,
+        build_startup_window_options, persisted_splitter_sizes, should_recreate_layout_split_state,
+        should_restore_singleline_focus_after_new_file,
+    };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
     use gpui::{WindowBounds, bounds, point, px, size};
@@ -1022,6 +1155,26 @@ mod tests {
     #[test]
     fn lo_test2_req_lo3_shared_inter_panel_spacing_is_10px() {
         assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
+    }
+
+    #[test]
+    fn lo_test3_req_lo4_persistence_fallback_preserves_left_panel_width() {
+        let preserved_left_panel_size = px(DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX);
+
+        let persisted = persisted_splitter_sizes(&[], preserved_left_panel_size);
+
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(f32::from(persisted[0]), DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX);
+        assert_eq!(
+            f32::from(persisted[1]),
+            SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX
+        );
+    }
+
+    #[test]
+    fn lo_test4_req_lo4_window_width_change_requires_split_state_reset() {
+        assert!(should_recreate_layout_split_state(px(1200.0), px(1400.0)));
+        assert!(!should_recreate_layout_split_state(px(1200.0), px(1200.0)));
     }
 
     #[test]

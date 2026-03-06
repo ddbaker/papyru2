@@ -42,6 +42,15 @@ impl TopBars {
         self.singleline.clone()
     }
 
+    pub fn sync_layout_split(
+        &mut self,
+        layout_split_state: Entity<ResizableState>,
+        left_panel_size: Pixels,
+    ) {
+        self.layout_split_state = layout_split_state;
+        self.left_panel_size = left_panel_size;
+    }
+
     fn render_plus_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("round-button1")
             .ghost()
