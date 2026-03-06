@@ -40,6 +40,7 @@ pub struct AppPaths {
     pub conf_dir: PathBuf,
     pub data_dir: PathBuf,
     pub user_document_dir: PathBuf,
+    pub recyclebin_dir: PathBuf,
     pub log_dir: PathBuf,
     pub bin_dir: PathBuf,
 }
@@ -113,6 +114,7 @@ impl AppPaths {
         fs::create_dir_all(&self.conf_dir)?;
         fs::create_dir_all(&self.data_dir)?;
         fs::create_dir_all(&self.user_document_dir)?;
+        fs::create_dir_all(&self.recyclebin_dir)?;
         fs::create_dir_all(&self.log_dir)?;
         fs::create_dir_all(&self.bin_dir)?;
         Ok(())
@@ -128,9 +130,12 @@ impl AppPaths {
 
     fn from_home(mode: RunEnvPattern, app_home: PathBuf) -> Self {
         let data_dir = app_home.join("data");
+        let user_document_dir = data_dir.join("user_document");
+        let recyclebin_dir = user_document_dir.join("recyclebin");
         Self {
             conf_dir: app_home.join("conf"),
-            user_document_dir: data_dir.join("user_document"),
+            user_document_dir,
+            recyclebin_dir,
             data_dir,
             log_dir: app_home.join("log"),
             bin_dir: app_home.join("bin"),
@@ -394,6 +399,7 @@ mod tests {
         assert!(paths.conf_dir.is_dir());
         assert!(paths.data_dir.is_dir());
         assert!(paths.user_document_dir.is_dir());
+        assert!(paths.recyclebin_dir.is_dir());
         assert!(paths.log_dir.is_dir());
         assert!(paths.bin_dir.is_dir());
         remove_temp_root(root.as_path());
@@ -516,6 +522,31 @@ mod tests {
         paths.ensure_dirs().expect("second ensure_dirs");
 
         assert!(paths.user_document_dir.is_dir());
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn path_test16_recyclebin_dir_resolves_under_user_document_dir() {
+        let root = new_temp_root("path_test16");
+        let paths = AppPaths::from_home(RunEnvPattern::Installed, root.join("app_home"));
+
+        assert_eq!(
+            paths.recyclebin_dir,
+            paths.user_document_dir.join("recyclebin")
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn path_test17_ensure_dirs_creates_recyclebin_dir_and_is_idempotent() {
+        let root = new_temp_root("path_test17");
+        let app_home = root.join("idempotent_recyclebin_home");
+        let paths = AppPaths::from_home(RunEnvPattern::Installed, app_home);
+
+        paths.ensure_dirs().expect("first ensure_dirs");
+        paths.ensure_dirs().expect("second ensure_dirs");
+
+        assert!(paths.recyclebin_dir.is_dir());
         remove_temp_root(root.as_path());
     }
 }
