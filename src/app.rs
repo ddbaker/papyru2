@@ -308,6 +308,7 @@ impl Papyru2App {
                 window,
                 move |this, _, event: &FileTreeEvent, window, cx| match event {
                     FileTreeEvent::OpenFile(path) => {
+                        this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
                         this.open_file(path.clone(), window, cx);
                     }
                     FileTreeEvent::RecyclebinDeleteRequested(paths) => {

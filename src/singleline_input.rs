@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use gpui::*;
@@ -198,7 +198,39 @@ impl Render for SingleLineInput {
     }
 }
 
+pub(crate) fn singleline_stem_from_file_tree_selection(path: &Path) -> Option<String> {
+    let file_name = path.file_name()?.to_string_lossy().to_string();
+    if let Some(stem) = file_name.strip_suffix(".txt") {
+        return Some(stem.to_string());
+    }
+    Some(file_name)
+}
+
 impl crate::app::Papyru2App {
+    pub(crate) fn sync_singleline_from_file_tree_selection(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(stem) = singleline_stem_from_file_tree_selection(path) else {
+            crate::app::trace_debug(format!(
+                "file_tree selection sync skipped path={} (no filename)",
+                path.display()
+            ));
+            return;
+        };
+
+        crate::app::trace_debug(format!(
+            "file_tree selection sync path={} stem='{}'",
+            path.display(),
+            crate::app::compact_text(&stem)
+        ));
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor(stem.clone(), stem.chars().count(), window, cx);
+        });
+    }
+
     pub(crate) fn on_singleline_value_changed(
         &mut self,
         value: &str,
@@ -262,5 +294,24 @@ impl crate::app::Papyru2App {
             }
             crate::file_update_handler::SinglelineFileState::New => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::singleline_stem_from_file_tree_selection;
+    use std::path::Path;
+
+    #[test]
+    fn ftr_test10_req_ftr5_ascii_txt_selection_maps_to_singleline_stem() {
+        let actual = singleline_stem_from_file_tree_selection(Path::new("C:/tmp/fileA.txt"));
+        assert_eq!(actual.as_deref(), Some("fileA"));
+    }
+
+    #[test]
+    fn ftr_test11_req_ftr5_multibyte_txt_selection_maps_to_singleline_stem() {
+        let actual =
+            singleline_stem_from_file_tree_selection(Path::new("C:/tmp/こんにちは 世界.txt"));
+        assert_eq!(actual.as_deref(), Some("こんにちは 世界"));
     }
 }
