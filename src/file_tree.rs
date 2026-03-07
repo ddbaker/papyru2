@@ -23,7 +23,8 @@ pub struct FileTreeView {
     root_items: Vec<TreeItem>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
-    suppress_next_row_click_item_id: Option<String>,
+    selection_anchor_item_id: Option<String>,
+    visible_item_ids: Vec<String>,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
@@ -41,7 +42,8 @@ impl FileTreeView {
             root_items: Vec::new(),
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
-            suppress_next_row_click_item_id: None,
+            selection_anchor_item_id: None,
+            visible_item_ids: Vec::new(),
         };
         this.load_files(cx);
         this
@@ -54,17 +56,32 @@ impl FileTreeView {
         }
 
         let key = event.keystroke.key.as_str().to_ascii_lowercase();
-        if key != "delete" {
-            cx.propagate();
-            return;
-        }
-
-        let requested = self.request_recyclebin_delete(cx);
-        crate::app::trace_debug(format!("file_tree keydown delete requested={requested}"));
-        if requested {
-            cx.stop_propagation();
-        } else {
-            cx.propagate();
+        match key.as_str() {
+            "delete" => {
+                let requested = self.request_recyclebin_delete(cx);
+                crate::app::trace_debug(format!("file_tree keydown delete requested={requested}"));
+                if requested {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }
+            "up" | "down" => {
+                let shift = event.keystroke.modifiers.shift;
+                let handled = self.move_selection_with_arrow_key(key.as_str(), shift, cx);
+                if handled {
+                    cx.stop_propagation();
+                } else {
+                    cx.propagate();
+                }
+            }
+            "enter" => {
+                self.handle_enter_key(cx);
+                cx.propagate();
+            }
+            _ => {
+                cx.propagate();
+            }
         }
     }
 
@@ -97,11 +114,13 @@ impl FileTreeView {
         }
 
         rewrite_selected_item_ids_for_rename(&mut self.selected_item_ids, old_path, new_path);
-        if self.suppress_next_row_click_item_id.as_deref()
-            == Some(old_path.to_string_lossy().as_ref())
-        {
-            self.suppress_next_row_click_item_id =
-                Some(comparable_path(new_path).to_string_lossy().to_string());
+        if let Some(anchor_item_id) = self.selection_anchor_item_id.take() {
+            let anchor_path = PathBuf::from(anchor_item_id);
+            let rewritten_anchor = rebase_tree_path(anchor_path.as_path(), old_path, new_path)
+                .unwrap_or(anchor_path)
+                .to_string_lossy()
+                .to_string();
+            self.selection_anchor_item_id = Some(rewritten_anchor);
         }
         crate::app::trace_debug(format!(
             "file_tree rename patch applied old_path={} new_path={}",
@@ -152,10 +171,18 @@ impl FileTreeView {
         let mut valid_item_ids = HashSet::new();
         collect_tree_item_ids(&self.root_items, &mut valid_item_ids);
         retain_existing_selections(&mut self.selected_item_ids, &valid_item_ids);
+        if self
+            .selection_anchor_item_id
+            .as_ref()
+            .is_some_and(|anchor| !valid_item_ids.contains(anchor))
+        {
+            self.selection_anchor_item_id = None;
+        }
         let items = self.root_items.clone();
         self.tree_state.update(cx, |state, cx| {
             state.set_items(items, cx);
         });
+        self.rebuild_visible_item_ids();
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -164,17 +191,218 @@ impl FileTreeView {
         selected_ids.into_iter().map(PathBuf::from).collect()
     }
 
-    fn consume_suppressed_row_click(&mut self, item_id: &str) -> bool {
-        if self.suppress_next_row_click_item_id.as_deref() == Some(item_id) {
-            self.suppress_next_row_click_item_id = None;
-            return true;
+    fn handle_enter_key(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_visible_item_ids();
+        if self.visible_item_ids.is_empty() {
+            return;
         }
-        false
+
+        let has_selected_index = self.tree_state.read(cx).selected_index().is_some();
+        if !has_selected_index {
+            self.tree_state
+                .update(cx, |state, cx| state.set_selected_index(Some(0), cx));
+        }
+
+        let Some((_, item_id, is_folder)) = self.current_tree_selection_snapshot(cx) else {
+            return;
+        };
+
+        self.apply_single_selection_by_id(item_id.as_str(), "enter_key", cx);
+        crate::app::trace_debug(format!(
+            "file_tree enter select item={} folder={} total_selected={}",
+            item_id,
+            is_folder,
+            self.selected_item_ids.len()
+        ));
+        if is_folder {
+            return;
+        }
+
+        crate::app::trace_debug(format!("file_tree enter open file item={item_id}"));
+        cx.emit(FileTreeEvent::OpenFile(PathBuf::from(item_id)));
+    }
+
+    fn move_selection_with_arrow_key(
+        &mut self,
+        key: &str,
+        shift_range: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.rebuild_visible_item_ids();
+        if self.visible_item_ids.is_empty() {
+            return false;
+        }
+
+        let len = self.visible_item_ids.len();
+        let current_index = self.tree_state.read(cx).selected_index().unwrap_or(0);
+        let next_index = if key == "up" {
+            if current_index > 0 {
+                current_index - 1
+            } else {
+                len.saturating_sub(1)
+            }
+        } else if current_index + 1 < len {
+            current_index + 1
+        } else {
+            0
+        };
+
+        self.tree_state.update(cx, |state, cx| {
+            state.set_selected_index(Some(next_index), cx);
+            let strategy = if key == "up" {
+                gpui::ScrollStrategy::Top
+            } else {
+                gpui::ScrollStrategy::Bottom
+            };
+            state.scroll_to_item(next_index, strategy);
+        });
+
+        if shift_range {
+            self.apply_shift_range_selection_to_index(
+                next_index,
+                Some(current_index),
+                "shift_arrow",
+                cx,
+            );
+            crate::app::trace_debug(format!(
+                "file_tree keydown {key} shift_range=true current_index={} next_index={} selected_count={}",
+                current_index,
+                next_index,
+                self.selected_item_ids.len()
+            ));
+        } else if let Some(item_id) = self.visible_item_ids.get(next_index).cloned() {
+            self.apply_single_selection_by_id(item_id.as_str(), "arrow_key", cx);
+            crate::app::trace_debug(format!(
+                "file_tree keydown {key} shift_range=false current_index={} next_index={} selected_item={}",
+                current_index, next_index, item_id
+            ));
+        }
+
+        true
+    }
+
+    fn on_row_click(
+        &mut self,
+        item: &TreeItem,
+        row_index: usize,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus(window);
+        self.rebuild_visible_item_ids();
+
+        if event.modifiers().shift {
+            self.apply_shift_range_selection_to_index(
+                row_index,
+                Some(row_index),
+                "shift_click",
+                cx,
+            );
+            crate::app::trace_debug(format!(
+                "file_tree row click shift_range=true item={} index={} selected_count={}",
+                item.id,
+                row_index,
+                self.selected_item_ids.len()
+            ));
+            return;
+        }
+
+        self.apply_single_selection_by_id(item.id.as_ref(), "row_click", cx);
+        crate::app::trace_debug(format!(
+            "file_tree row click select item={} folder={} index={} focused={}",
+            item.id,
+            item.is_folder(),
+            row_index,
+            self.is_focused(window, cx)
+        ));
+        if item.is_folder() {
+            return;
+        }
+
+        crate::app::trace_debug(format!("file_tree row click open file item={}", item.id));
+        cx.emit(FileTreeEvent::OpenFile(PathBuf::from(item.id.as_ref())));
+    }
+
+    fn current_tree_selection_snapshot(&self, cx: &App) -> Option<(usize, String, bool)> {
+        let state = self.tree_state.read(cx);
+        let selected_index = state.selected_index()?;
+        let entry = state.selected_entry()?;
+        Some((
+            selected_index,
+            entry.item().id.to_string(),
+            entry.is_folder(),
+        ))
+    }
+
+    fn rebuild_visible_item_ids(&mut self) {
+        self.visible_item_ids.clear();
+        collect_visible_item_ids(&self.root_items, &mut self.visible_item_ids);
+    }
+
+    fn apply_single_selection_by_id(
+        &mut self,
+        item_id: &str,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        replace_single_selection(&mut self.selected_item_ids, item_id);
+        self.selection_anchor_item_id = Some(item_id.to_string());
+        crate::app::trace_debug(format!(
+            "file_tree selection single reason={reason} item={} total_selected={}",
+            item_id,
+            self.selected_item_ids.len()
+        ));
+        cx.notify();
+    }
+
+    fn apply_shift_range_selection_to_index(
+        &mut self,
+        target_index: usize,
+        fallback_anchor_index: Option<usize>,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if target_index >= self.visible_item_ids.len() {
+            return;
+        }
+
+        let derived_anchor_item_id = self
+            .selection_anchor_item_id
+            .as_ref()
+            .filter(|id| {
+                self.visible_item_ids
+                    .iter()
+                    .any(|visible_id| visible_id == *id)
+            })
+            .cloned()
+            .or_else(|| fallback_anchor_index.and_then(|ix| self.visible_item_ids.get(ix).cloned()))
+            .unwrap_or_else(|| self.visible_item_ids[target_index].clone());
+
+        let anchor_index =
+            find_visible_index(&self.visible_item_ids, derived_anchor_item_id.as_str())
+                .unwrap_or(target_index);
+        select_range_items(
+            &mut self.selected_item_ids,
+            &self.visible_item_ids,
+            anchor_index,
+            target_index,
+        );
+        self.selection_anchor_item_id = Some(derived_anchor_item_id.clone());
+        crate::app::trace_debug(format!(
+            "file_tree selection range reason={reason} anchor_item={} anchor_index={} target_index={} total_selected={}",
+            derived_anchor_item_id,
+            anchor_index,
+            target_index,
+            self.selected_item_ids.len()
+        ));
+        cx.notify();
     }
 }
 
 impl Render for FileTreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rebuild_visible_item_ids();
         let view = cx.entity();
 
         div()
@@ -197,102 +425,34 @@ impl Render for FileTreeView {
                             } else {
                                 IconName::Folder
                             };
+                            let row_content = if use_checkbox_selection_markers() {
+                                h_flex()
+                                    .gap_2()
+                                    .child(if is_selected { "[x]" } else { "[ ]" })
+                                    .child(icon)
+                                    .child(item.label.clone())
+                            } else {
+                                h_flex().gap_2().child(icon).child(item.label.clone())
+                            };
 
-                            ListItem::new(ix)
+                            let row = ListItem::new(ix)
                                 .selected(is_selected)
                                 .w_full()
                                 .py_0p5()
                                 .px_2()
                                 .pl(px(16.) * entry.depth() + px(8.))
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .w(px(22.))
-                                                .text_center()
-                                                .child(if is_selected { "[x]" } else { "[ ]" })
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener({
-                                                        let item = item.clone();
-                                                        let item_id = item_id.clone();
-                                                        move |this, _, window, cx| {
-                                                            cx.stop_propagation();
-                                                            this.focus(window);
-                                                            this.suppress_next_row_click_item_id =
-                                                                Some(item_id.clone());
-                                                            crate::app::trace_debug(format!(
-                                                                "file_tree focus selector item={} focused={}",
-                                                                item.id,
-                                                                this.is_focused(window, cx)
-                                                            ));
-                                                            if is_delete_protected_path(
-                                                                Path::new(item.id.as_ref()),
-                                                                &this.protected_delete_roots,
-                                                            ) {
-                                                                let _ = this
-                                                                    .selected_item_ids
-                                                                    .remove(&item_id);
-                                                                crate::app::trace_debug(format!(
-                                                                    "file_tree selection guard blocked protected root item={}",
-                                                                    item.id
-                                                                ));
-                                                                cx.notify();
-                                                                return;
-                                                            }
-
-                                                            let is_now_selected =
-                                                                toggle_item_selection(
-                                                                    &mut this.selected_item_ids,
-                                                                    &item_id,
-                                                                );
-                                                            crate::app::trace_debug(format!(
-                                                                "file_tree selector toggle item={} selected_now={} total_selected={}",
-                                                                item.id,
-                                                                is_now_selected,
-                                                                this.selected_item_ids.len()
-                                                            ));
-                                                            cx.notify();
-                                                        }
-                                                    }),
-                                                )
-                                        )
-                                        .child(icon)
-                                        .child(item.label.clone()),
-                                )
+                                .child(row_content)
                                 .on_click(cx.listener({
                                     let item = item.clone();
-                                    let item_id = item_id.clone();
-                                    move |this, _, window, cx| {
-                                        if this.consume_suppressed_row_click(&item_id) {
-                                            crate::app::trace_debug(format!(
-                                                "file_tree row click suppressed item={}",
-                                                item.id
-                                            ));
-                                            return;
-                                        }
-
-                                        if item.is_folder() {
-                                            this.focus(window);
-                                            crate::app::trace_debug(format!(
-                                                "file_tree row click folder item={} focused={} (expand/collapse handled by tree)",
-                                                item.id,
-                                                this.is_focused(window, cx)
-                                            ));
-                                            return;
-                                        }
-
-                                        crate::app::trace_debug(format!(
-                                            "file_tree row click open file item={}",
-                                            item.id
-                                        ));
-                                        cx.emit(FileTreeEvent::OpenFile(PathBuf::from(
-                                            item.id.as_str(),
-                                        )));
-                                        cx.notify();
+                                    move |this, event, window, cx| {
+                                        this.on_row_click(&item, ix, event, window, cx);
                                     }
-                                }))
+                                }));
+                            if let Some(color) = selected_row_highlight_color(is_selected) {
+                                row.bg(color)
+                            } else {
+                                row
+                            }
                         })
                     },
                 )
@@ -413,6 +573,7 @@ fn rewrite_selected_item_ids_for_rename(
     *selected_item_ids = updated;
 }
 
+#[cfg(test)]
 fn toggle_item_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) -> bool {
     if selected_item_ids.contains(item_id) {
         selected_item_ids.remove(item_id);
@@ -430,6 +591,15 @@ fn retain_existing_selections(
     selected_item_ids.retain(|id| valid_item_ids.contains(id));
 }
 
+fn collect_visible_item_ids(items: &[TreeItem], ids: &mut Vec<String>) {
+    for item in items {
+        ids.push(item.id.to_string());
+        if item.is_folder() && item.is_expanded() {
+            collect_visible_item_ids(&item.children, ids);
+        }
+    }
+}
+
 fn collect_tree_item_ids(items: &[TreeItem], ids: &mut HashSet<String>) {
     for item in items {
         ids.insert(item.id.to_string());
@@ -437,6 +607,46 @@ fn collect_tree_item_ids(items: &[TreeItem], ids: &mut HashSet<String>) {
             collect_tree_item_ids(&item.children, ids);
         }
     }
+}
+
+fn find_visible_index(visible_item_ids: &[String], item_id: &str) -> Option<usize> {
+    visible_item_ids
+        .iter()
+        .position(|visible_item_id| visible_item_id == item_id)
+}
+
+fn select_range_items(
+    selected_item_ids: &mut HashSet<String>,
+    visible_item_ids: &[String],
+    start_index: usize,
+    end_index: usize,
+) {
+    let (from, to) = if start_index <= end_index {
+        (start_index, end_index)
+    } else {
+        (end_index, start_index)
+    };
+
+    selected_item_ids.clear();
+    for item_id in visible_item_ids.iter().skip(from).take(to - from + 1) {
+        selected_item_ids.insert(item_id.clone());
+    }
+}
+
+fn replace_single_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) {
+    selected_item_ids.clear();
+    selected_item_ids.insert(item_id.to_string());
+}
+
+fn selected_row_highlight_color(is_selected: bool) -> Option<Hsla> {
+    if !is_selected {
+        return None;
+    }
+    Some(hsla(0.58, 0.65, 0.88, 1.0))
+}
+
+fn use_checkbox_selection_markers() -> bool {
+    false
 }
 
 fn recyclebin_target_path(source_path: &Path, recyclebin_dir: &Path) -> Option<PathBuf> {
@@ -698,10 +908,13 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        TreeItem, build_file_items, collect_tree_item_ids, delete_entries_for_file_tree,
-        is_delete_protected_path, move_entries_to_recyclebin, rename_tree_item_path,
-        retain_existing_selections, rewrite_selected_item_ids_for_rename, toggle_item_selection,
+        TreeItem, build_file_items, collect_tree_item_ids, collect_visible_item_ids,
+        delete_entries_for_file_tree, find_visible_index, is_delete_protected_path,
+        move_entries_to_recyclebin, rename_tree_item_path, replace_single_selection,
+        retain_existing_selections, rewrite_selected_item_ids_for_rename, select_range_items,
+        selected_row_highlight_color, toggle_item_selection, use_checkbox_selection_markers,
     };
+    use gpui::hsla;
     use std::{
         collections::HashSet,
         fs,
@@ -995,5 +1208,106 @@ mod tests {
                 .starts_with(&recyclebin_dir)
         );
         remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test15_req_ftr7_checkbox_selection_markers_are_disabled() {
+        assert!(
+            !use_checkbox_selection_markers(),
+            "req-ftr7 expects file-tree checkbox markers to be removed"
+        );
+    }
+
+    #[test]
+    fn ftr_test16_req_ftr8_single_selection_replaces_previous_selection() {
+        let mut selected = HashSet::from([
+            "C:/tmp/fileA.txt".to_string(),
+            "C:/tmp/fileB.txt".to_string(),
+        ]);
+        replace_single_selection(&mut selected, "C:/tmp/fileC.txt");
+
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains("C:/tmp/fileC.txt"));
+        assert!(!selected.contains("C:/tmp/fileA.txt"));
+        assert!(!selected.contains("C:/tmp/fileB.txt"));
+    }
+
+    #[test]
+    fn ftr_test17_req_ftr8_visible_order_supports_arrow_enter_navigation() {
+        let root = TreeItem::new("/root", "root").expanded(true).children([
+            TreeItem::new("/root/2026", "2026")
+                .expanded(true)
+                .children([
+                    TreeItem::new("/root/2026/fileA.txt", "fileA.txt"),
+                    TreeItem::new("/root/2026/fileB.txt", "fileB.txt"),
+                ]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ]);
+
+        let mut visible = Vec::new();
+        collect_visible_item_ids(&[root], &mut visible);
+
+        assert_eq!(
+            visible,
+            vec![
+                "/root".to_string(),
+                "/root/2026".to_string(),
+                "/root/2026/fileA.txt".to_string(),
+                "/root/2026/fileB.txt".to_string(),
+                "/root/recyclebin".to_string()
+            ]
+        );
+        assert_eq!(find_visible_index(&visible, "/root/2026"), Some(1));
+        assert_eq!(
+            find_visible_index(&visible, "/root/2026/fileA.txt"),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn ftr_test18_req_ftr9_shift_click_selects_contiguous_range() {
+        let visible = vec![
+            "/root/a.txt".to_string(),
+            "/root/b.txt".to_string(),
+            "/root/c.txt".to_string(),
+            "/root/d.txt".to_string(),
+        ];
+        let mut selected = HashSet::new();
+
+        select_range_items(&mut selected, &visible, 1, 3);
+
+        assert_eq!(selected.len(), 3);
+        assert!(selected.contains("/root/b.txt"));
+        assert!(selected.contains("/root/c.txt"));
+        assert!(selected.contains("/root/d.txt"));
+        assert!(!selected.contains("/root/a.txt"));
+    }
+
+    #[test]
+    fn ftr_test19_req_ftr9_shift_arrow_range_selection_supports_reverse_direction() {
+        let visible = vec![
+            "/root/a.txt".to_string(),
+            "/root/b.txt".to_string(),
+            "/root/c.txt".to_string(),
+            "/root/d.txt".to_string(),
+        ];
+        let mut selected = HashSet::new();
+
+        select_range_items(&mut selected, &visible, 3, 1);
+
+        assert_eq!(selected.len(), 3);
+        assert!(selected.contains("/root/b.txt"));
+        assert!(selected.contains("/root/c.txt"));
+        assert!(selected.contains("/root/d.txt"));
+        assert!(!selected.contains("/root/a.txt"));
+    }
+
+    #[test]
+    fn ftr_test20_req_ftr10_selected_rows_use_pale_blue_highlight() {
+        assert_eq!(
+            selected_row_highlight_color(true),
+            Some(hsla(0.58, 0.65, 0.88, 1.0))
+        );
+        assert_eq!(selected_row_highlight_color(false), None);
     }
 }
