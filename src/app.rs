@@ -45,6 +45,21 @@ fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlusButtonResetStep {
+    ClearEditor,
+    ClearSingleline,
+    FocusSingleline,
+}
+
+fn req_newf34_plus_button_reset_steps() -> [PlusButtonResetStep; 3] {
+    [
+        PlusButtonResetStep::ClearEditor,
+        PlusButtonResetStep::ClearSingleline,
+        PlusButtonResetStep::FocusSingleline,
+    ]
+}
+
 const DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX: f32 = 320.0;
 const SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX: f32 = 1.0;
 
@@ -825,6 +840,13 @@ impl Papyru2App {
             return;
         }
 
+        let editor_was_focused = self.editor.read(cx).is_focused(window, cx);
+        let singleline_was_focused = self.singleline.read(cx).is_focused(window, cx);
+        trace_debug(format!(
+            "plus_button start editor_focused={} singleline_focused={}",
+            editor_was_focused, singleline_was_focused
+        ));
+
         if !self.file_workflow.transition_edit_to_neutral() {
             trace_debug("plus_button no-op (state is not EDIT)");
             return;
@@ -840,13 +862,48 @@ impl Papyru2App {
         ));
         self.sync_current_editing_path_to_components(None, cx);
 
-        self.singleline.update(cx, |singleline, cx| {
-            singleline.apply_text_and_cursor("", 0, window, cx);
-            singleline.focus(window, cx);
-        });
+        // req-newf34: enforce deterministic reset order so final focus/cursor lands on singleline.
+        for step in req_newf34_plus_button_reset_steps() {
+            match step {
+                PlusButtonResetStep::ClearEditor => {
+                    trace_debug("plus_button req-newf34 step=clear_editor");
+                    self.editor.update(cx, |editor, cx| {
+                        editor.apply_text_and_cursor("", 0, 0, window, cx);
+                    });
+                }
+                PlusButtonResetStep::ClearSingleline => {
+                    trace_debug("plus_button req-newf34 step=clear_singleline");
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_text_and_cursor("", 0, window, cx);
+                    });
+                }
+                PlusButtonResetStep::FocusSingleline => {
+                    trace_debug("plus_button req-newf34 step=focus_singleline");
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.focus(window, cx);
+                    });
+                }
+            }
+        }
 
-        self.editor.update(cx, |editor, cx| {
-            editor.apply_text_and_cursor("", 0, 0, window, cx);
+        trace_debug("plus_button req-newf34 schedule deferred singleline focus reassert");
+        cx.defer_in(window, move |this, window, cx| {
+            this.singleline.update(cx, |singleline, cx| {
+                singleline.apply_cursor(0, window, cx);
+                singleline.focus(window, cx);
+            });
+
+            let singleline_snapshot = this.singleline.read(cx).snapshot(cx);
+            let singleline_focused = this.singleline.read(cx).is_focused(window, cx);
+            let editor_focused = this.editor.read(cx).is_focused(window, cx);
+            trace_debug(format!(
+                "plus_button req-newf34 deferred focus reassert done cursor={} singleline_focused={} editor_focused={} pre_editor_focused={} pre_singleline_focused={}",
+                singleline_snapshot.cursor_char,
+                singleline_focused,
+                editor_focused,
+                editor_was_focused,
+                singleline_was_focused
+            ));
         });
     }
 
@@ -1147,9 +1204,10 @@ impl Render for Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX, SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX,
-        build_startup_window_options, persisted_splitter_sizes, should_recreate_layout_split_state,
-        should_restore_singleline_focus_after_new_file,
+        DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX, PlusButtonResetStep,
+        SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX, build_startup_window_options,
+        persisted_splitter_sizes, req_newf34_plus_button_reset_steps,
+        should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
@@ -1178,6 +1236,18 @@ mod tests {
     fn app_newfile_focus_test2_no_restore_when_editor_already_had_focus() {
         assert!(!should_restore_singleline_focus_after_new_file(false, true));
         assert!(!should_restore_singleline_focus_after_new_file(true, true));
+    }
+
+    #[test]
+    fn app_newf_focus_test3_req_newf34_plus_button_restores_singleline_focus_from_editor() {
+        assert_eq!(
+            req_newf34_plus_button_reset_steps(),
+            [
+                PlusButtonResetStep::ClearEditor,
+                PlusButtonResetStep::ClearSingleline,
+                PlusButtonResetStep::FocusSingleline,
+            ]
+        );
     }
 
     #[test]
