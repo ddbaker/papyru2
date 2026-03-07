@@ -8,6 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local};
+use gpui::{Context, Window};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_FILE_STEM_CHARS: usize = 64;
@@ -863,6 +864,273 @@ fn editor_temp_path_for_atomic_write(path: &Path) -> io::Result<PathBuf> {
     })?;
 
     Ok(parent.join(format!("{}.tmp", file_name.to_string_lossy())))
+}
+
+impl crate::app::Papyru2App {
+    pub(crate) fn sync_current_editing_path_to_components(
+        &mut self,
+        path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let autosave_path = path.clone();
+        self.singleline.update(cx, |singleline, _| {
+            singleline.set_current_editing_file_path(path.clone());
+        });
+        self.editor.update(cx, |editor, _| {
+            editor.set_current_editing_file_path(path);
+        });
+        self.editor_autosave.on_edit_path_changed(autosave_path);
+
+        let sl_path = self.singleline.read(cx).current_editing_file_path();
+        let ed_path = self.editor.read(cx).current_editing_file_path();
+        crate::app::trace_debug(format!(
+            "current_edit_path sync singleline={} editor={}",
+            sl_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            ed_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+    }
+
+    pub(crate) fn apply_forced_singleline_stem(
+        &mut self,
+        forced_stem: Option<String>,
+        trace_label: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(forced_stem) = forced_stem else {
+            crate::app::trace_debug(format!(
+                "{trace_label} force singleline stem update skipped (req-newf32)"
+            ));
+            return;
+        };
+
+        crate::app::trace_debug(format!(
+            "{trace_label} force singleline stem update='{}'",
+            crate::app::compact_text(&forced_stem)
+        ));
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor(
+                forced_stem.clone(),
+                forced_stem.chars().count(),
+                window,
+                cx,
+            );
+        });
+    }
+
+    pub(crate) fn ensure_new_file_flow(
+        &mut self,
+        trigger: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_workflow.state() != SinglelineFileState::Neutral {
+            return;
+        }
+
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        let singleline_was_focused = self.singleline.read(cx).is_focused(window, cx);
+        let editor_was_focused = self.editor.read(cx).is_focused(window, cx);
+        crate::app::trace_debug(format!(
+            "new_file_flow trigger={} state=NEUTRAL singleline='{}' singleline_focused={} editor_focused={}",
+            trigger,
+            crate::app::compact_text(&singleline_snapshot.value),
+            singleline_was_focused,
+            editor_was_focused
+        ));
+
+        let now_local = Local::now();
+        match self.file_workflow.try_create_from_neutral(
+            &singleline_snapshot.value,
+            self.app_paths.user_document_dir.as_path(),
+            Instant::now(),
+            now_local,
+        ) {
+            Ok(Some(path)) => {
+                crate::app::trace_debug(format!("new_file_flow created path={}", path.display()));
+                self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                self.refresh_file_tree("req-ftr1-create", cx);
+                self.apply_forced_singleline_stem(
+                    forced_singleline_stem_after_create(
+                        &singleline_snapshot.value,
+                        path.as_path(),
+                        now_local,
+                    ),
+                    "new_file_flow",
+                    window,
+                    cx,
+                );
+                self.editor.update(cx, |editor, cx| {
+                    let _ = editor.open_file(path, window, cx);
+                });
+
+                if crate::app::should_restore_singleline_focus_after_new_file(
+                    singleline_was_focused,
+                    editor_was_focused,
+                ) {
+                    let singleline_after = self.singleline.read(cx).snapshot(cx);
+                    let restore_cursor_char = singleline_snapshot
+                        .cursor_char
+                        .min(singleline_after.value.chars().count());
+
+                    crate::app::trace_debug(format!(
+                        "new_file_flow restore singleline focus cursor={} (rule-1)",
+                        restore_cursor_char
+                    ));
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_cursor(restore_cursor_char, window, cx);
+                        singleline.focus(window, cx);
+                    });
+                } else {
+                    crate::app::trace_debug("new_file_flow no focus restore (rule-2)");
+                }
+            }
+            Ok(None) => {
+                crate::app::trace_debug(format!(
+                    "new_file_flow trigger={} skipped (state/throttle gate)",
+                    trigger
+                ));
+            }
+            Err(error) => {
+                crate::app::trace_debug(format!(
+                    "new_file_flow trigger={} failed error={error}",
+                    trigger
+                ));
+            }
+        }
+    }
+
+    pub(crate) fn on_editor_user_buffer_changed(&mut self, value: &str, cx: &mut Context<Self>) {
+        let snapshot = self.file_workflow.snapshot();
+        let Some(current_path) = snapshot.current_edit_path.clone() else {
+            crate::app::trace_debug(format!(
+                "autosave critical invalid path on user edit state={:?} text_len={}",
+                snapshot.state,
+                value.len()
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: current_edit_path must be present on editor user edit"
+            );
+            return;
+        };
+
+        if snapshot.state != SinglelineFileState::Edit {
+            crate::app::trace_debug(format!(
+                "autosave critical invalid state on user edit state={:?} path={}",
+                snapshot.state,
+                current_path.display()
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: state must be EDIT on editor user edit"
+            );
+            return;
+        }
+
+        let editor_path = self.editor.read(cx).current_editing_file_path();
+        if editor_path.as_ref() != Some(&current_path) {
+            crate::app::trace_debug(format!(
+                "autosave critical path mismatch workflow={} editor={}",
+                current_path.display(),
+                editor_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string())
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: editor path and workflow path mismatch"
+            );
+        }
+
+        crate::app::trace_debug(format!(
+            "autosave step-2 pin user edit path={} text_len={}",
+            current_path.display(),
+            value.len()
+        ));
+
+        self.editor_autosave.mark_user_edit(
+            EditorAutoSavePayload {
+                current_path,
+                editor_text: value.to_string(),
+            },
+            Instant::now(),
+        );
+    }
+
+    pub(crate) fn flush_editor_content_before_context_switch(
+        &mut self,
+        trigger: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let snapshot = self.file_workflow.snapshot();
+        if snapshot.state != SinglelineFileState::Edit {
+            crate::app::trace_debug(format!(
+                "autosave pre-switch trigger={} skipped state={:?}",
+                trigger, snapshot.state
+            ));
+            return true;
+        }
+
+        let Some(current_path) = snapshot.current_edit_path.clone() else {
+            crate::app::trace_debug(format!(
+                "autosave pre-switch trigger={} critical missing path state={:?}",
+                trigger, snapshot.state
+            ));
+            debug_assert!(
+                false,
+                "autosave invariant violation: current_edit_path must be present for pre-switch flush"
+            );
+            return false;
+        };
+
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "autosave pre-switch trigger={} raise path={} text_len={}",
+            trigger,
+            current_path.display(),
+            editor_snapshot.value.len()
+        ));
+
+        let flush_result = self
+            .file_workflow
+            .flush_editor_content_in_edit(&editor_snapshot.value);
+        self.editor_autosave.reset_cycle();
+
+        match flush_result {
+            Ok(true) => {
+                crate::app::trace_debug(format!(
+                    "autosave pre-switch trigger={} consumed path={}",
+                    trigger,
+                    current_path.display()
+                ));
+                true
+            }
+            Ok(false) => {
+                crate::app::trace_debug(format!(
+                    "autosave pre-switch trigger={} no-op by workflow gate path={}",
+                    trigger,
+                    current_path.display()
+                ));
+                true
+            }
+            Err(error) => {
+                crate::app::trace_debug(format!(
+                    "autosave pre-switch trigger={} failed path={} error={error}",
+                    trigger,
+                    current_path.display()
+                ));
+                false
+            }
+        }
+    }
 }
 
 #[cfg(test)]

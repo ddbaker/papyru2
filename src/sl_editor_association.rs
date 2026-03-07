@@ -1,3 +1,5 @@
+use gpui::{Context, Window};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
     SingleLine,
@@ -217,6 +219,269 @@ pub fn transfer_on_up(
     let clamped_cursor_char = clamp_char_index(editor_cursor_char as usize, singleline_text);
 
     Some(make_up_result(clamped_cursor_char))
+}
+
+impl crate::app::Papyru2App {
+    pub(crate) fn apply_focus_target(
+        &mut self,
+        focus_target: FocusTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match focus_target {
+            FocusTarget::Editor => {
+                self.editor.update(cx, |editor, cx| {
+                    editor.focus(window, cx);
+                });
+            }
+            FocusTarget::SingleLine => {
+                self.singleline.update(cx, |singleline, cx| {
+                    singleline.focus(window, cx);
+                });
+            }
+        }
+    }
+
+    pub(crate) fn transfer_singleline_enter(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+
+        crate::app::trace_debug(format!(
+            "transfer_enter before sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char,
+            crate::app::compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char
+        ));
+
+        let Some(result) = transfer_on_enter(
+            &singleline_snapshot.value,
+            singleline_snapshot.cursor_char,
+            &editor_snapshot.value,
+        ) else {
+            crate::app::trace_debug("transfer_enter skipped (no right side)");
+            return;
+        };
+
+        crate::app::trace_debug(format!(
+            "transfer_enter result sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&result.new_singleline_text),
+            result.new_singleline_cursor_char,
+            crate::app::compact_text(&result.new_editor_text),
+            result.new_editor_cursor_line,
+            result.new_editor_cursor_char
+        ));
+
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor(
+                result.new_singleline_text.clone(),
+                result.new_singleline_cursor_char,
+                window,
+                cx,
+            );
+        });
+
+        self.editor.update(cx, |editor, cx| {
+            if result.new_editor_text == editor_snapshot.value {
+                editor.apply_cursor(
+                    result.new_editor_cursor_line,
+                    result.new_editor_cursor_char,
+                    window,
+                    cx,
+                );
+            } else {
+                editor.apply_text_and_cursor(
+                    result.new_editor_text.clone(),
+                    result.new_editor_cursor_line,
+                    result.new_editor_cursor_char,
+                    window,
+                    cx,
+                );
+            }
+        });
+
+        self.apply_focus_target(result.focus_target, window, cx);
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_enter after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            crate::app::compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
+
+    pub(crate) fn transfer_singleline_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+
+        crate::app::trace_debug(format!(
+            "transfer_down before sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char,
+            crate::app::compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char
+        ));
+
+        let result = transfer_on_down(singleline_snapshot.cursor_char, &editor_snapshot.value);
+
+        crate::app::trace_debug(format!(
+            "transfer_down result ed_cursor=({}, {}) focus={:?}",
+            result.new_editor_cursor_line, result.new_editor_cursor_char, result.focus_target
+        ));
+
+        self.editor.update(cx, |editor, cx| {
+            editor.apply_cursor(
+                result.new_editor_cursor_line,
+                result.new_editor_cursor_char,
+                window,
+                cx,
+            );
+        });
+
+        self.apply_focus_target(result.focus_target, window, cx);
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_down after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            crate::app::compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
+
+    pub(crate) fn transfer_editor_backspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_backspace before ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char
+        ));
+
+        if !should_transfer_backspace(editor_snapshot.cursor_line, editor_snapshot.cursor_char) {
+            crate::app::trace_debug("transfer_backspace skipped (cursor not at line-1 head)");
+            return;
+        }
+
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_backspace before sl='{}' sl_cursor={}",
+            crate::app::compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char
+        ));
+
+        let Some(result) = transfer_on_backspace(
+            &singleline_snapshot.value,
+            singleline_snapshot.cursor_char,
+            &editor_snapshot.value,
+        ) else {
+            crate::app::trace_debug("transfer_backspace skipped (editor line-1 empty)");
+            return;
+        };
+
+        crate::app::trace_debug(format!(
+            "transfer_backspace result sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&result.new_singleline_text),
+            result.new_singleline_cursor_char,
+            crate::app::compact_text(&result.new_editor_text),
+            result.new_editor_cursor_line,
+            result.new_editor_cursor_char
+        ));
+
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_text_and_cursor(
+                result.new_singleline_text.clone(),
+                result.new_singleline_cursor_char,
+                window,
+                cx,
+            );
+        });
+
+        self.editor.update(cx, |editor, cx| {
+            editor.apply_text_and_cursor(
+                result.new_editor_text.clone(),
+                result.new_editor_cursor_line,
+                result.new_editor_cursor_char,
+                window,
+                cx,
+            );
+        });
+
+        self.apply_focus_target(result.focus_target, window, cx);
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_backspace after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            crate::app::compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
+
+    pub(crate) fn transfer_editor_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let editor_snapshot = self.editor.read(cx).snapshot(cx);
+        let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
+
+        crate::app::trace_debug(format!(
+            "transfer_up before ed='{}' ed_cursor=({}, {}) sl='{}' sl_cursor={}",
+            crate::app::compact_text(&editor_snapshot.value),
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char,
+            crate::app::compact_text(&singleline_snapshot.value),
+            singleline_snapshot.cursor_char
+        ));
+
+        let Some(result) = transfer_on_up(
+            editor_snapshot.cursor_line,
+            editor_snapshot.cursor_char,
+            &singleline_snapshot.value,
+        ) else {
+            crate::app::trace_debug("transfer_up skipped (editor cursor not on line-1)");
+            return;
+        };
+
+        crate::app::trace_debug(format!(
+            "transfer_up result sl_cursor={} focus={:?}",
+            result.new_singleline_cursor_char, result.focus_target
+        ));
+
+        self.singleline.update(cx, |singleline, cx| {
+            singleline.apply_cursor(result.new_singleline_cursor_char, window, cx);
+        });
+
+        self.apply_focus_target(result.focus_target, window, cx);
+
+        let sl_after = self.singleline.read(cx).snapshot(cx);
+        let ed_after = self.editor.read(cx).snapshot(cx);
+        crate::app::trace_debug(format!(
+            "transfer_up after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            crate::app::compact_text(&sl_after.value),
+            sl_after.cursor_char,
+            crate::app::compact_text(&ed_after.value),
+            ed_after.cursor_line,
+            ed_after.cursor_char
+        ));
+    }
 }
 
 #[cfg(test)]

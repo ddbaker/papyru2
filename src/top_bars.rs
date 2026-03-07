@@ -98,6 +98,83 @@ impl Render for TopBars {
     }
 }
 
+impl crate::app::Papyru2App {
+    pub(crate) fn handle_plus_button(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush_editor_content_before_context_switch("req-aus6-plus", cx) {
+            crate::app::trace_debug("plus_button aborted (pre-switch autosave failed)");
+            return;
+        }
+
+        let editor_was_focused = self.editor.read(cx).is_focused(window, cx);
+        let singleline_was_focused = self.singleline.read(cx).is_focused(window, cx);
+        crate::app::trace_debug(format!(
+            "plus_button start editor_focused={} singleline_focused={}",
+            editor_was_focused, singleline_was_focused
+        ));
+
+        if !self.file_workflow.transition_edit_to_neutral() {
+            crate::app::trace_debug("plus_button no-op (state is not EDIT)");
+            return;
+        }
+
+        let previous_path = self.file_workflow.current_edit_path();
+        crate::app::trace_debug(format!(
+            "plus_button transition EDIT -> NEUTRAL previous_path={}",
+            previous_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string())
+        ));
+        self.sync_current_editing_path_to_components(None, cx);
+
+        // req-newf34: enforce deterministic reset order so final focus/cursor lands on singleline.
+        for step in crate::app::req_newf34_plus_button_reset_steps() {
+            match step {
+                crate::app::PlusButtonResetStep::ClearEditor => {
+                    crate::app::trace_debug("plus_button req-newf34 step=clear_editor");
+                    self.editor.update(cx, |editor, cx| {
+                        editor.apply_text_and_cursor("", 0, 0, window, cx);
+                    });
+                }
+                crate::app::PlusButtonResetStep::ClearSingleline => {
+                    crate::app::trace_debug("plus_button req-newf34 step=clear_singleline");
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_text_and_cursor("", 0, window, cx);
+                    });
+                }
+                crate::app::PlusButtonResetStep::FocusSingleline => {
+                    crate::app::trace_debug("plus_button req-newf34 step=focus_singleline");
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.focus(window, cx);
+                    });
+                }
+            }
+        }
+
+        crate::app::trace_debug(
+            "plus_button req-newf34 schedule deferred singleline focus reassert",
+        );
+        cx.defer_in(window, move |this, window, cx| {
+            this.singleline.update(cx, |singleline, cx| {
+                singleline.apply_cursor(0, window, cx);
+                singleline.focus(window, cx);
+            });
+
+            let singleline_snapshot = this.singleline.read(cx).snapshot(cx);
+            let singleline_focused = this.singleline.read(cx).is_focused(window, cx);
+            let editor_focused = this.editor.read(cx).is_focused(window, cx);
+            crate::app::trace_debug(format!(
+                "plus_button req-newf34 deferred focus reassert done cursor={} singleline_focused={} editor_focused={} pre_editor_focused={} pre_singleline_focused={}",
+                singleline_snapshot.cursor_char,
+                singleline_focused,
+                editor_focused,
+                editor_was_focused,
+                singleline_was_focused
+            ));
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SHARED_INTER_PANEL_SPACING_PX;

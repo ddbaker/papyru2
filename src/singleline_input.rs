@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use chrono::Local;
 use gpui::*;
 use gpui_component::input::InputEvent;
 use gpui_component::input::{Input, InputState};
@@ -194,5 +195,72 @@ impl Render for SingleLineInput {
             .w_full()
             .on_key_down(cx.listener(Self::on_key_down))
             .child(Input::new(&self.sl_input_state).w_full())
+    }
+}
+
+impl crate::app::Papyru2App {
+    pub(crate) fn on_singleline_value_changed(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.file_workflow.state() {
+            crate::file_update_handler::SinglelineFileState::Neutral => {
+                self.ensure_new_file_flow("singleline_value_changed", window, cx);
+            }
+            crate::file_update_handler::SinglelineFileState::Edit => {
+                let now_local = Local::now();
+                let previous_path = self.file_workflow.current_edit_path();
+                match self.file_workflow.try_rename_in_edit(value, now_local) {
+                    Ok(Some(path)) => {
+                        crate::app::trace_debug(format!(
+                            "rename_flow success new_path={} value='{}'",
+                            path.display(),
+                            crate::app::compact_text(value)
+                        ));
+                        self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                        if let Some(previous_path) = previous_path {
+                            let patched = self.file_tree.update(cx, |file_tree, cx| {
+                                file_tree.apply_renamed_path(
+                                    previous_path.as_path(),
+                                    path.as_path(),
+                                    cx,
+                                )
+                            });
+                            if !patched {
+                                crate::app::trace_debug(
+                                    "rename_flow fallback to full file_tree refresh after missed patch",
+                                );
+                                self.refresh_file_tree("req-ftr1-rename-fallback", cx);
+                            }
+                        } else {
+                            crate::app::trace_debug(
+                                "rename_flow missing previous_path; fallback to full file_tree refresh",
+                            );
+                            self.refresh_file_tree("req-ftr1-rename-missing-path", cx);
+                        }
+                        self.apply_forced_singleline_stem(
+                            crate::file_update_handler::forced_singleline_stem_after_rename(
+                                value,
+                                path.as_path(),
+                                now_local,
+                            ),
+                            "rename_flow",
+                            window,
+                            cx,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        crate::app::trace_debug(format!(
+                            "rename_flow failed value='{}' error={error}",
+                            crate::app::compact_text(value)
+                        ));
+                    }
+                }
+            }
+            crate::file_update_handler::SinglelineFileState::New => {}
+        }
     }
 }

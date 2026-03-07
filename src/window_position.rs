@@ -408,6 +408,28 @@ fn normalize_splitter_sizes(sizes: &[f32]) -> Option<Vec<f32>> {
     Some(sizes.to_vec())
 }
 
+impl crate::app::Papyru2App {
+    pub(crate) fn capture_window_position_state(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> WindowPositionState {
+        let actual_splitter_sizes = self.layout_split_state.read(cx).sizes().clone();
+        let splitter_sizes = crate::app::persisted_splitter_sizes(
+            &actual_splitter_sizes,
+            self.split_left_panel_size,
+        );
+        if splitter_sizes != actual_splitter_sizes {
+            crate::app::trace_debug(format!(
+                "window_position splitter persistence fallback left_size={} actual_sizes={:?}",
+                f32::from(self.split_left_panel_size),
+                actual_splitter_sizes
+            ));
+        }
+        WindowPositionState::from_window(window, cx).with_splitter_sizes(&splitter_sizes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

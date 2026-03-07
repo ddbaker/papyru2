@@ -539,6 +539,64 @@ pub(crate) fn move_entries_to_recyclebin(
     Ok(moved)
 }
 
+impl crate::app::Papyru2App {
+    pub(crate) fn refresh_file_tree(&mut self, reason: &str, cx: &mut Context<Self>) {
+        crate::app::trace_debug(format!("file_tree refresh requested reason={reason}"));
+        self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.refresh_from_filesystem(cx);
+        });
+    }
+
+    pub(crate) fn on_file_tree_delete_requested(
+        &mut self,
+        paths: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        crate::app::trace_debug(format!(
+            "file_tree delete request selected_count={} recyclebin={}",
+            paths.len(),
+            self.app_paths.recyclebin_dir.display()
+        ));
+
+        match move_entries_to_recyclebin(&paths, self.app_paths.recyclebin_dir.as_path()) {
+            Ok(moved) => {
+                crate::app::trace_debug(format!(
+                    "file_tree delete move success moved_count={} selected_count={}",
+                    moved.len(),
+                    paths.len()
+                ));
+                self.refresh_file_tree("req-ftr3-delete", cx);
+            }
+            Err(error) => {
+                crate::app::trace_debug(format!("file_tree delete move failed error={error}"));
+            }
+        }
+    }
+
+    pub(crate) fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.flush_editor_content_before_context_switch("req-aus8-open-file", cx) {
+            crate::app::trace_debug(format!(
+                "open_file aborted path={} (pre-switch autosave failed)",
+                path.display()
+            ));
+            return;
+        }
+
+        let opened = self.editor.update(cx, {
+            let path = path.clone();
+            move |editor, cx| editor.open_file(path, window, cx)
+        });
+
+        if !opened {
+            crate::app::trace_debug(format!("open_file failed path={}", path.display()));
+            return;
+        }
+
+        self.file_workflow.set_edit_from_open_file(path.clone());
+        self.sync_current_editing_path_to_components(Some(path), cx);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
