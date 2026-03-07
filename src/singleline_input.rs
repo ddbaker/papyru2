@@ -145,6 +145,24 @@ impl SingleLineInput {
         };
     }
 
+    pub fn apply_text_value_only(
+        &mut self,
+        text: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text: SharedString = text.into();
+        let text_owned = text.to_string();
+
+        self.pending_programmatic_change_events += 1;
+
+        self.sl_input_state.update(cx, move |state, cx| {
+            state.set_value(text.clone(), window, cx);
+        });
+
+        self.last_value = text_owned;
+    }
+
     pub fn apply_cursor(
         &mut self,
         cursor_char: usize,
@@ -227,7 +245,7 @@ impl crate::app::Papyru2App {
             crate::app::compact_text(&stem)
         ));
         self.singleline.update(cx, |singleline, cx| {
-            singleline.apply_text_and_cursor(stem.clone(), stem.chars().count(), window, cx);
+            singleline.apply_text_value_only(stem.clone(), window, cx);
         });
     }
 

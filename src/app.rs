@@ -44,6 +44,21 @@ pub(crate) fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
+pub(crate) fn should_route_delete_to_file_tree(
+    file_tree_focused: bool,
+    file_tree_delete_shortcut_armed: bool,
+    editor_focused: bool,
+    singleline_focused: bool,
+) -> bool {
+    if singleline_focused {
+        return false;
+    }
+    if file_tree_focused {
+        return true;
+    }
+    editor_focused && file_tree_delete_shortcut_armed
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlusButtonResetStep {
     ClearEditor,
@@ -134,7 +149,16 @@ impl Papyru2App {
         }
 
         let key = event.keystroke.key.as_str().to_ascii_lowercase();
-        if key != "delete" {
+        let is_delete_key =
+            key == "delete" || key == "backspace" || key == "forwarddelete" || key == "del";
+        if !is_delete_key {
+            let editor_focused = self.editor.read(cx).is_focused(window, cx);
+            let singleline_focused = self.singleline.read(cx).is_focused(window, cx);
+            if editor_focused || singleline_focused {
+                self.file_tree.update(cx, |file_tree, _| {
+                    file_tree.disarm_delete_shortcut("non_delete_key")
+                });
+            }
             cx.propagate();
             return;
         }
@@ -142,19 +166,28 @@ impl Papyru2App {
         let editor_focused = self.editor.read(cx).is_focused(window, cx);
         let singleline_focused = self.singleline.read(cx).is_focused(window, cx);
         let file_tree_focused = self.file_tree.read(cx).is_focused(window, cx);
-        if editor_focused || singleline_focused {
-            trace_debug(format!(
-                "app keydown delete propagate editor_focused={} singleline_focused={} file_tree_focused={}",
-                editor_focused, singleline_focused, file_tree_focused
-            ));
-            cx.propagate();
-            return;
-        }
+        let file_tree_delete_shortcut_armed = if file_tree_focused {
+            false
+        } else {
+            self.file_tree.update(cx, |file_tree, _| {
+                file_tree.consume_delete_shortcut_for_editor()
+            })
+        };
+        let should_route_to_file_tree = should_route_delete_to_file_tree(
+            file_tree_focused,
+            file_tree_delete_shortcut_armed,
+            editor_focused,
+            singleline_focused,
+        );
 
-        if !file_tree_focused {
+        if !should_route_to_file_tree {
             trace_debug(format!(
-                "app keydown delete ignored file_tree_focused={} editor_focused={} singleline_focused={}",
-                file_tree_focused, editor_focused, singleline_focused
+                "app keydown key={} propagate editor_focused={} singleline_focused={} file_tree_focused={} delete_shortcut_armed={}",
+                key,
+                editor_focused,
+                singleline_focused,
+                file_tree_focused,
+                file_tree_delete_shortcut_armed
             ));
             cx.propagate();
             return;
@@ -164,8 +197,13 @@ impl Papyru2App {
             .file_tree
             .update(cx, |file_tree, cx| file_tree.request_recyclebin_delete(cx));
         trace_debug(format!(
-            "app keydown delete requested_by_file_tree={} editor_focused={} singleline_focused={} file_tree_focused={}",
-            requested, editor_focused, singleline_focused, file_tree_focused
+            "app keydown key={} requested_by_file_tree={} editor_focused={} singleline_focused={} file_tree_focused={} delete_shortcut_armed={}",
+            key,
+            requested,
+            editor_focused,
+            singleline_focused,
+            file_tree_focused,
+            file_tree_delete_shortcut_armed
         ));
         if requested {
             cx.stop_propagation();
@@ -307,6 +345,9 @@ impl Papyru2App {
                 &file_tree,
                 window,
                 move |this, _, event: &FileTreeEvent, window, cx| match event {
+                    FileTreeEvent::SelectionChanged(path) => {
+                        this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
+                    }
                     FileTreeEvent::OpenFile(path) => {
                         this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
                         this.open_file(path.clone(), window, cx);
@@ -480,6 +521,7 @@ mod tests {
         SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX, build_startup_window_options,
         persisted_splitter_sizes, req_newf34_plus_button_reset_steps,
         should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
+        should_route_delete_to_file_tree,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
@@ -520,6 +562,18 @@ mod tests {
                 PlusButtonResetStep::FocusSingleline,
             ]
         );
+    }
+
+    #[test]
+    fn ftr_test21_req_ftr3_regression_editor_focus_with_tree_shortcut_routes_delete_to_file_tree() {
+        assert!(should_route_delete_to_file_tree(false, true, true, false));
+    }
+
+    #[test]
+    fn ftr_test22_req_ftr3_regression_without_tree_shortcut_keeps_editor_delete_behavior() {
+        assert!(!should_route_delete_to_file_tree(false, false, true, false));
+        assert!(!should_route_delete_to_file_tree(false, true, false, false));
+        assert!(!should_route_delete_to_file_tree(false, true, true, true));
     }
 
     #[test]

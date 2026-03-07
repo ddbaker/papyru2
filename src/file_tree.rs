@@ -12,6 +12,7 @@ use gpui_component::{
 };
 
 pub enum FileTreeEvent {
+    SelectionChanged(PathBuf),
     OpenFile(PathBuf),
     RecyclebinDeleteRequested(Vec<PathBuf>),
 }
@@ -23,6 +24,7 @@ pub struct FileTreeView {
     root_items: Vec<TreeItem>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
+    delete_shortcut_armed: bool,
     selection_anchor_item_id: Option<String>,
     visible_item_ids: Vec<String>,
 }
@@ -42,6 +44,7 @@ impl FileTreeView {
             root_items: Vec::new(),
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
+            delete_shortcut_armed: false,
             selection_anchor_item_id: None,
             visible_item_ids: Vec::new(),
         };
@@ -56,10 +59,15 @@ impl FileTreeView {
         }
 
         let key = event.keystroke.key.as_str().to_ascii_lowercase();
+        let is_delete_key =
+            key == "delete" || key == "backspace" || key == "forwarddelete" || key == "del";
         match key.as_str() {
-            "delete" => {
+            _ if is_delete_key => {
                 let requested = self.request_recyclebin_delete(cx);
-                crate::app::trace_debug(format!("file_tree keydown delete requested={requested}"));
+                crate::app::trace_debug(format!(
+                    "file_tree keydown key={} requested={requested}",
+                    key
+                ));
                 if requested {
                     cx.stop_propagation();
                 } else {
@@ -155,11 +163,38 @@ impl FileTreeView {
             selected_paths.len()
         ));
         if selected_paths.is_empty() {
+            self.disarm_delete_shortcut("delete_request_empty_selection");
             return false;
         }
 
+        self.disarm_delete_shortcut("delete_request_emit");
         cx.emit(FileTreeEvent::RecyclebinDeleteRequested(selected_paths));
         true
+    }
+
+    pub fn consume_delete_shortcut_for_editor(&mut self) -> bool {
+        if !self.delete_shortcut_armed || self.selected_item_ids.is_empty() {
+            return false;
+        }
+
+        self.delete_shortcut_armed = false;
+        crate::app::trace_debug(format!(
+            "file_tree delete shortcut consumed_for_editor selected_count={}",
+            self.selected_item_ids.len()
+        ));
+        true
+    }
+
+    pub fn disarm_delete_shortcut(&mut self, reason: &str) {
+        if !self.delete_shortcut_armed {
+            return;
+        }
+
+        self.delete_shortcut_armed = false;
+        crate::app::trace_debug(format!(
+            "file_tree delete shortcut disarmed reason={reason} selected_count={}",
+            self.selected_item_ids.len()
+        ));
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
@@ -171,6 +206,9 @@ impl FileTreeView {
         let mut valid_item_ids = HashSet::new();
         collect_tree_item_ids(&self.root_items, &mut valid_item_ids);
         retain_existing_selections(&mut self.selected_item_ids, &valid_item_ids);
+        if self.selected_item_ids.is_empty() {
+            self.disarm_delete_shortcut("set_items_empty_selection");
+        }
         if self
             .selection_anchor_item_id
             .as_ref()
@@ -219,6 +257,7 @@ impl FileTreeView {
         }
 
         crate::app::trace_debug(format!("file_tree enter open file item={item_id}"));
+        self.disarm_delete_shortcut("enter_open_file");
         cx.emit(FileTreeEvent::OpenFile(PathBuf::from(item_id)));
     }
 
@@ -320,8 +359,13 @@ impl FileTreeView {
             return;
         }
 
-        crate::app::trace_debug(format!("file_tree row click open file item={}", item.id));
-        cx.emit(FileTreeEvent::OpenFile(PathBuf::from(item.id.as_ref())));
+        crate::app::trace_debug(format!(
+            "file_tree row click selection_changed item={} (open deferred to enter)",
+            item.id
+        ));
+        cx.emit(FileTreeEvent::SelectionChanged(PathBuf::from(
+            item.id.as_ref(),
+        )));
     }
 
     fn current_tree_selection_snapshot(&self, cx: &App) -> Option<(usize, String, bool)> {
@@ -347,11 +391,13 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) {
         replace_single_selection(&mut self.selected_item_ids, item_id);
+        self.delete_shortcut_armed = true;
         self.selection_anchor_item_id = Some(item_id.to_string());
         crate::app::trace_debug(format!(
-            "file_tree selection single reason={reason} item={} total_selected={}",
+            "file_tree selection single reason={reason} item={} total_selected={} delete_shortcut_armed={}",
             item_id,
-            self.selected_item_ids.len()
+            self.selected_item_ids.len(),
+            self.delete_shortcut_armed
         ));
         cx.notify();
     }
@@ -388,13 +434,15 @@ impl FileTreeView {
             anchor_index,
             target_index,
         );
+        self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
         self.selection_anchor_item_id = Some(derived_anchor_item_id.clone());
         crate::app::trace_debug(format!(
-            "file_tree selection range reason={reason} anchor_item={} anchor_index={} target_index={} total_selected={}",
+            "file_tree selection range reason={reason} anchor_item={} anchor_index={} target_index={} total_selected={} delete_shortcut_armed={}",
             derived_anchor_item_id,
             anchor_index,
             target_index,
-            self.selected_item_ids.len()
+            self.selected_item_ids.len(),
+            self.delete_shortcut_armed
         ));
         cx.notify();
     }
@@ -1309,5 +1357,34 @@ mod tests {
             Some(hsla(0.58, 0.65, 0.88, 1.0))
         );
         assert_eq!(selected_row_highlight_color(false), None);
+    }
+
+    #[test]
+    fn ftr_test23_req_ftr3_regression_delete_flow_uses_provided_recyclebin_dir() {
+        let root = new_temp_root("ftr_test23");
+        let recyclebin_dir = root.join("data").join("user_document").join("recyclebin");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+        let source = root
+            .join("data")
+            .join("user_document")
+            .join("2026")
+            .join("03")
+            .join("08")
+            .join("target.txt");
+        fs::create_dir_all(source.parent().expect("source parent")).expect("create source dirs");
+        fs::write(&source, "target").expect("seed source");
+
+        let outcome =
+            delete_entries_for_file_tree(std::slice::from_ref(&source), recyclebin_dir.as_path())
+                .expect("delete through file tree flow");
+
+        assert_eq!(outcome.permanently_deleted.len(), 0);
+        assert_eq!(outcome.moved_to_recyclebin.len(), 1);
+        assert!(
+            outcome.moved_to_recyclebin[0]
+                .1
+                .starts_with(&recyclebin_dir)
+        );
+        remove_temp_root(root.as_path());
     }
 }
