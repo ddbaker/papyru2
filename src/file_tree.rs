@@ -489,6 +489,7 @@ fn is_delete_protected_path(path: &Path, protected_delete_roots: &[PathBuf]) -> 
         .any(|protected| is_same_path(path, protected))
 }
 
+#[cfg(test)]
 pub(crate) fn move_entries_to_recyclebin(
     source_paths: &[PathBuf],
     recyclebin_dir: &Path,
@@ -539,6 +540,102 @@ pub(crate) fn move_entries_to_recyclebin(
     Ok(moved)
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct FileTreeDeleteOutcome {
+    pub moved_to_recyclebin: Vec<(PathBuf, PathBuf)>,
+    pub permanently_deleted: Vec<PathBuf>,
+}
+
+fn remove_path_permanently(path: &Path) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+pub(crate) fn delete_entries_for_file_tree(
+    source_paths: &[PathBuf],
+    recyclebin_dir: &Path,
+) -> io::Result<FileTreeDeleteOutcome> {
+    fs::create_dir_all(recyclebin_dir)?;
+
+    let mut outcome = FileTreeDeleteOutcome::default();
+    let mut seen_sources: HashSet<PathBuf> = HashSet::new();
+    for source_path in source_paths {
+        if !seen_sources.insert(source_path.clone()) {
+            continue;
+        }
+        if !source_path.exists() {
+            continue;
+        }
+
+        if is_same_path(source_path, recyclebin_dir) {
+            crate::app::trace_debug(format!(
+                "file_tree permanent delete skipped recyclebin root source={} recyclebin={}",
+                source_path.display(),
+                recyclebin_dir.display()
+            ));
+            continue;
+        }
+
+        if is_path_within(source_path, recyclebin_dir) {
+            match remove_path_permanently(source_path) {
+                Ok(()) => {
+                    crate::app::trace_debug(format!(
+                        "file_tree permanent delete success source={} recyclebin={}",
+                        source_path.display(),
+                        recyclebin_dir.display()
+                    ));
+                    outcome.permanently_deleted.push(source_path.clone());
+                }
+                Err(error) => {
+                    crate::app::trace_debug(format!(
+                        "file_tree permanent delete failed source={} error={error}",
+                        source_path.display()
+                    ));
+                }
+            }
+            continue;
+        }
+
+        if is_path_within(recyclebin_dir, source_path) {
+            crate::app::trace_debug(format!(
+                "file_tree recyclebin move skipped source is ancestor of recyclebin source={} recyclebin={}",
+                source_path.display(),
+                recyclebin_dir.display()
+            ));
+            continue;
+        }
+
+        let Some(target) = recyclebin_target_path(source_path.as_path(), recyclebin_dir) else {
+            continue;
+        };
+        match fs::rename(source_path, &target) {
+            Ok(()) => {
+                crate::app::trace_debug(format!(
+                    "file_tree recyclebin move success source={} target={}",
+                    source_path.display(),
+                    target.display()
+                ));
+                outcome
+                    .moved_to_recyclebin
+                    .push((source_path.clone(), target));
+            }
+            Err(error) => {
+                crate::app::trace_debug(format!(
+                    "file_tree recyclebin move skipped rename error source={} target={} error={error}",
+                    source_path.display(),
+                    target.display()
+                ));
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
 impl crate::app::Papyru2App {
     pub(crate) fn refresh_file_tree(&mut self, reason: &str, cx: &mut Context<Self>) {
         crate::app::trace_debug(format!("file_tree refresh requested reason={reason}"));
@@ -558,11 +655,12 @@ impl crate::app::Papyru2App {
             self.app_paths.recyclebin_dir.display()
         ));
 
-        match move_entries_to_recyclebin(&paths, self.app_paths.recyclebin_dir.as_path()) {
-            Ok(moved) => {
+        match delete_entries_for_file_tree(&paths, self.app_paths.recyclebin_dir.as_path()) {
+            Ok(outcome) => {
                 crate::app::trace_debug(format!(
-                    "file_tree delete move success moved_count={} selected_count={}",
-                    moved.len(),
+                    "file_tree delete success moved_count={} permanently_deleted_count={} selected_count={}",
+                    outcome.moved_to_recyclebin.len(),
+                    outcome.permanently_deleted.len(),
                     paths.len()
                 ));
                 self.refresh_file_tree("req-ftr3-delete", cx);
@@ -600,9 +698,9 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        TreeItem, build_file_items, collect_tree_item_ids, is_delete_protected_path,
-        move_entries_to_recyclebin, rename_tree_item_path, retain_existing_selections,
-        rewrite_selected_item_ids_for_rename, toggle_item_selection,
+        TreeItem, build_file_items, collect_tree_item_ids, delete_entries_for_file_tree,
+        is_delete_protected_path, move_entries_to_recyclebin, rename_tree_item_path,
+        retain_existing_selections, rewrite_selected_item_ids_for_rename, toggle_item_selection,
     };
     use std::{
         collections::HashSet,
@@ -830,6 +928,72 @@ mod tests {
         assert!(!ids.contains(old_path.to_string_lossy().as_ref()));
         assert!(selected.contains(new_path.to_string_lossy().as_ref()));
         assert_eq!(items[0].label.as_ref(), "beta.txt");
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test12_req_ftr6_delete_under_recyclebin_removes_file_permanently() {
+        let root = new_temp_root("ftr_test12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+        let target = recyclebin_dir.join("trash.txt");
+        fs::write(&target, "trash").expect("seed recyclebin file");
+
+        let outcome =
+            delete_entries_for_file_tree(std::slice::from_ref(&target), recyclebin_dir.as_path())
+                .expect("delete under recyclebin");
+
+        assert_eq!(outcome.moved_to_recyclebin.len(), 0);
+        assert_eq!(outcome.permanently_deleted.len(), 1);
+        assert!(!target.exists());
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test13_req_ftr6_delete_multiple_under_recyclebin_removes_all_permanently() {
+        let root = new_temp_root("ftr_test13");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+        let target_file = recyclebin_dir.join("trash_a.txt");
+        let target_dir = recyclebin_dir.join("trash_dir");
+        fs::write(&target_file, "a").expect("seed recyclebin file");
+        fs::create_dir_all(&target_dir).expect("create recyclebin dir");
+        fs::write(target_dir.join("inside.txt"), "b").expect("seed recyclebin dir file");
+
+        let outcome = delete_entries_for_file_tree(
+            &[target_file.clone(), target_dir.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete multiple under recyclebin");
+
+        assert_eq!(outcome.moved_to_recyclebin.len(), 0);
+        assert_eq!(outcome.permanently_deleted.len(), 2);
+        assert!(!target_file.exists());
+        assert!(!target_dir.exists());
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test14_req_ftr6_non_recyclebin_delete_still_moves_to_recyclebin() {
+        let root = new_temp_root("ftr_test14");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+        let source = root.join("outside.txt");
+        fs::write(&source, "outside").expect("seed outside file");
+
+        let outcome =
+            delete_entries_for_file_tree(std::slice::from_ref(&source), recyclebin_dir.as_path())
+                .expect("delete outside recyclebin");
+
+        assert_eq!(outcome.permanently_deleted.len(), 0);
+        assert_eq!(outcome.moved_to_recyclebin.len(), 1);
+        assert!(!source.exists());
+        assert!(outcome.moved_to_recyclebin[0].1.exists());
+        assert!(
+            outcome.moved_to_recyclebin[0]
+                .1
+                .starts_with(&recyclebin_dir)
+        );
         remove_temp_root(root.as_path());
     }
 }
