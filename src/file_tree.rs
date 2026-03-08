@@ -204,11 +204,17 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
-        self.root_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
+        let expanded_folder_item_ids = expanded_folder_item_ids(&self.root_items);
+        let mut refreshed_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
+        let expanded_restored_count =
+            apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
+        self.root_items = refreshed_items;
         crate::app::trace_debug(format!(
-            "file_tree load root_dir={} top_level_count={}",
+            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={}",
             self.tree_root_dir.display(),
-            self.root_items.len()
+            self.root_items.len(),
+            expanded_folder_item_ids.len(),
+            expanded_restored_count
         ));
         self.set_items_from_model(cx);
     }
@@ -602,6 +608,45 @@ fn collect_tree_item_ids(items: &[TreeItem], ids: &mut HashSet<String>) {
     }
 }
 
+fn collect_expanded_folder_item_ids(items: &[TreeItem], ids: &mut HashSet<String>) {
+    for item in items {
+        if item.is_folder() {
+            if item.is_expanded() {
+                ids.insert(item.id.to_string());
+            }
+            collect_expanded_folder_item_ids(&item.children, ids);
+        }
+    }
+}
+
+fn expanded_folder_item_ids(items: &[TreeItem]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    collect_expanded_folder_item_ids(items, &mut ids);
+    ids
+}
+
+fn apply_expanded_folder_item_ids(
+    items: &mut [TreeItem],
+    expanded_folder_item_ids: &HashSet<String>,
+) -> usize {
+    let mut restored = 0usize;
+
+    for item in items {
+        if !item.is_folder() {
+            continue;
+        }
+
+        if expanded_folder_item_ids.contains(item.id.as_ref()) {
+            *item = item.clone().expanded(true);
+            restored += 1;
+        }
+
+        restored += apply_expanded_folder_item_ids(&mut item.children, expanded_folder_item_ids);
+    }
+
+    restored
+}
+
 fn find_visible_index(visible_item_ids: &[String], item_id: &str) -> Option<usize> {
     visible_item_ids
         .iter()
@@ -919,12 +964,12 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        TreeItem, build_file_items, collect_tree_item_ids, collect_visible_item_ids,
-        delete_entries_for_file_tree, find_visible_index, is_delete_protected_path,
-        move_entries_to_recyclebin, replace_single_selection, retain_existing_selections,
-        select_range_items, selected_row_highlight_color,
-        should_restore_selection_after_watcher_refresh, toggle_item_selection,
-        use_checkbox_selection_markers,
+        TreeItem, apply_expanded_folder_item_ids, build_file_items, collect_tree_item_ids,
+        collect_visible_item_ids, delete_entries_for_file_tree, expanded_folder_item_ids,
+        find_visible_index, is_delete_protected_path, move_entries_to_recyclebin,
+        replace_single_selection, retain_existing_selections, select_range_items,
+        selected_row_highlight_color, should_restore_selection_after_watcher_refresh,
+        toggle_item_selection, use_checkbox_selection_markers,
     };
     use gpui::hsla;
     use std::{
@@ -1383,5 +1428,86 @@ mod tests {
             Some(path.as_path())
         ));
         assert!(!should_restore_selection_after_watcher_refresh(0, None));
+    }
+
+    #[test]
+    fn ftr_test34_req_ftr15_refresh_preserves_nested_expanded_folders() {
+        let previous_items = vec![
+            TreeItem::new("/root/2026", "2026")
+                .expanded(true)
+                .children([TreeItem::new("/root/2026/03", "03")
+                    .expanded(true)
+                    .children([TreeItem::new("/root/2026/03/09", "09")
+                        .expanded(true)
+                        .child(TreeItem::new("/root/2026/03/09/fileA.txt", "fileA.txt"))])]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ];
+        let expanded_ids = expanded_folder_item_ids(&previous_items);
+
+        let mut refreshed_items = vec![
+            TreeItem::new("/root/2026", "2026").children([TreeItem::new("/root/2026/03", "03")
+                .children([TreeItem::new("/root/2026/03/09", "09")
+                    .child(TreeItem::new("/root/2026/03/09/fileA.txt", "fileA.txt"))])]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ];
+        let restored_count = apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_ids);
+        let restored_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(restored_count, 3);
+        assert!(restored_ids.contains("/root/2026"));
+        assert!(restored_ids.contains("/root/2026/03"));
+        assert!(restored_ids.contains("/root/2026/03/09"));
+    }
+
+    #[test]
+    fn ftr_test35_req_ftr15_refresh_drops_expansion_for_removed_folders_only() {
+        let expanded_ids = HashSet::from([
+            "/root/2026".to_string(),
+            "/root/2026/03".to_string(),
+            "/root/2026/03/removed".to_string(),
+        ]);
+        let mut refreshed_items = vec![
+            TreeItem::new("/root/2026", "2026").children([TreeItem::new("/root/2026/03", "03")
+                .child(TreeItem::new("/root/2026/03/fileA.txt", "fileA.txt"))]),
+        ];
+
+        let restored_count = apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_ids);
+        let restored_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(restored_count, 2);
+        assert!(restored_ids.contains("/root/2026"));
+        assert!(restored_ids.contains("/root/2026/03"));
+        assert!(!restored_ids.contains("/root/2026/03/removed"));
+    }
+
+    #[test]
+    fn ftr_test36_req_ftr15_expansion_restore_and_selection_restore_do_not_conflict() {
+        let current_path = PathBuf::from("/root/2026/03/09/fileB.txt");
+        let expanded_ids = HashSet::from([
+            "/root/2026".to_string(),
+            "/root/2026/03".to_string(),
+            "/root/2026/03/09".to_string(),
+        ]);
+        let mut refreshed_items = vec![TreeItem::new("/root/2026", "2026").children([
+            TreeItem::new("/root/2026/03", "03").children([
+                TreeItem::new("/root/2026/03/09", "09").children([
+                    TreeItem::new("/root/2026/03/09/fileA.txt", "fileA.txt"),
+                    TreeItem::new("/root/2026/03/09/fileB.txt", "fileB.txt"),
+                ]),
+            ]),
+        ])];
+
+        apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_ids);
+        let mut visible_item_ids = Vec::new();
+        collect_visible_item_ids(&refreshed_items, &mut visible_item_ids);
+
+        assert!(
+            find_visible_index(&visible_item_ids, current_path.to_string_lossy().as_ref())
+                .is_some()
+        );
+        assert!(should_restore_selection_after_watcher_refresh(
+            0,
+            Some(current_path.as_path())
+        ));
     }
 }
