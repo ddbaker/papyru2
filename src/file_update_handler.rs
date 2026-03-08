@@ -955,7 +955,11 @@ impl crate::app::Papyru2App {
             Ok(Some(path)) => {
                 crate::app::trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                self.refresh_file_tree("req-ftr1-create", cx);
+                if crate::app::req_ftr14_create_flow_uses_watcher_refresh_only() {
+                    crate::app::trace_debug(
+                        "new_file_flow watcher_refresh_only=true direct_refresh_skipped",
+                    );
+                }
                 self.apply_forced_singleline_stem(
                     forced_singleline_stem_after_create(
                         &singleline_snapshot.value,

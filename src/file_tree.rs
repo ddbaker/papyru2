@@ -17,6 +17,13 @@ pub enum FileTreeEvent {
     RecyclebinDeleteRequested(Vec<PathBuf>),
 }
 
+pub(crate) fn should_restore_selection_after_watcher_refresh(
+    selected_count: usize,
+    current_edit_path: Option<&Path>,
+) -> bool {
+    selected_count == 0 && current_edit_path.is_some()
+}
+
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     focus_handle: FocusHandle,
@@ -104,6 +111,10 @@ impl FileTreeView {
         self.load_files(cx);
     }
 
+    pub fn selection_count(&self) -> usize {
+        self.selected_item_ids.len()
+    }
+
     pub fn focus(&self, window: &mut Window) {
         self.focus_handle.focus(window);
     }
@@ -112,37 +123,25 @@ impl FileTreeView {
         self.focus_handle.contains_focused(window, cx)
     }
 
-    pub fn apply_renamed_path(
-        &mut self,
-        old_path: &Path,
-        new_path: &Path,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let renamed = rename_tree_item_path(&mut self.root_items, old_path, new_path);
-        if !renamed {
-            crate::app::trace_debug(format!(
-                "file_tree rename patch missed old_path={} new_path={}",
-                old_path.display(),
-                new_path.display()
-            ));
+    pub fn restore_selection_for_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
+        let item_id = path.to_string_lossy().to_string();
+        self.rebuild_visible_item_ids();
+        let Some(selected_index) = find_visible_index(&self.visible_item_ids, item_id.as_str())
+        else {
             return false;
-        }
+        };
 
-        rewrite_selected_item_ids_for_rename(&mut self.selected_item_ids, old_path, new_path);
-        if let Some(anchor_item_id) = self.selection_anchor_item_id.take() {
-            let anchor_path = PathBuf::from(anchor_item_id);
-            let rewritten_anchor = rebase_tree_path(anchor_path.as_path(), old_path, new_path)
-                .unwrap_or(anchor_path)
-                .to_string_lossy()
-                .to_string();
-            self.selection_anchor_item_id = Some(rewritten_anchor);
-        }
+        replace_single_selection(&mut self.selected_item_ids, item_id.as_str());
+        self.selection_anchor_item_id = Some(item_id.clone());
+        self.delete_shortcut_armed = false;
+        self.tree_state.update(cx, |state, cx| {
+            state.set_selected_index(Some(selected_index), cx);
+        });
         crate::app::trace_debug(format!(
-            "file_tree rename patch applied old_path={} new_path={}",
-            old_path.display(),
-            new_path.display()
+            "file_tree watcher selection restore item={} index={} delete_shortcut_armed={}",
+            item_id, selected_index, self.delete_shortcut_armed
         ));
-        self.set_items_from_model(cx);
+        cx.notify();
         true
     }
 
@@ -567,72 +566,6 @@ fn sort_tree_items(items: &mut [TreeItem]) {
     });
 }
 
-fn rename_tree_item_path(items: &mut [TreeItem], old_path: &Path, new_path: &Path) -> bool {
-    for index in 0..items.len() {
-        if is_same_path(Path::new(items[index].id.as_ref()), old_path) {
-            rewrite_tree_item_subtree_paths(&mut items[index], old_path, new_path);
-            sort_tree_items(items);
-            return true;
-        }
-
-        if rename_tree_item_path(&mut items[index].children, old_path, new_path) {
-            sort_tree_items(items);
-            return true;
-        }
-    }
-
-    false
-}
-
-fn rewrite_tree_item_subtree_paths(item: &mut TreeItem, old_root: &Path, new_root: &Path) {
-    if let Some(rebased_path) = rebase_tree_path(Path::new(item.id.as_ref()), old_root, new_root) {
-        item.id = rebased_path.to_string_lossy().to_string().into();
-        item.label = item_label_from_path(&rebased_path).into();
-    }
-
-    for child in item.children.iter_mut() {
-        rewrite_tree_item_subtree_paths(child, old_root, new_root);
-    }
-}
-
-fn rebase_tree_path(path: &Path, old_root: &Path, new_root: &Path) -> Option<PathBuf> {
-    let comparable = comparable_path(path);
-    let comparable_old_root = comparable_path(old_root);
-    let comparable_new_root = comparable_path(new_root);
-    if comparable == comparable_old_root {
-        return Some(comparable_new_root);
-    }
-
-    comparable
-        .strip_prefix(&comparable_old_root)
-        .ok()
-        .map(|relative| comparable_new_root.join(relative))
-}
-
-fn item_label_from_path(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Unknown")
-        .to_string()
-}
-
-fn rewrite_selected_item_ids_for_rename(
-    selected_item_ids: &mut HashSet<String>,
-    old_path: &Path,
-    new_path: &Path,
-) {
-    let mut updated = HashSet::new();
-    for selected in selected_item_ids.drain() {
-        let selected_path = PathBuf::from(&selected);
-        let next = rebase_tree_path(selected_path.as_path(), old_path, new_path)
-            .unwrap_or(selected_path)
-            .to_string_lossy()
-            .to_string();
-        updated.insert(next);
-    }
-    *selected_item_ids = updated;
-}
-
 #[cfg(test)]
 fn toggle_item_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) -> bool {
     if selected_item_ids.contains(item_id) {
@@ -907,17 +840,31 @@ pub(crate) fn delete_entries_for_file_tree(
 }
 
 impl crate::app::Papyru2App {
-    pub(crate) fn refresh_file_tree(&mut self, reason: &str, cx: &mut Context<Self>) {
-        crate::app::trace_debug(format!("file_tree refresh requested reason={reason}"));
+    pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
+        let current_edit_path = self.file_workflow.current_edit_path();
+        let mut restored_selection = false;
         self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
+
+            if should_restore_selection_after_watcher_refresh(
+                file_tree.selection_count(),
+                current_edit_path.as_deref(),
+            ) && let Some(path) = current_edit_path.as_deref()
+            {
+                restored_selection = file_tree.restore_selection_for_path(path, cx);
+            }
         });
+        crate::app::trace_debug(format!(
+            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={}",
+            current_edit_path.is_some(),
+            restored_selection
+        ));
     }
 
     pub(crate) fn on_file_tree_delete_requested(
         &mut self,
         paths: Vec<PathBuf>,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
         crate::app::trace_debug(format!(
             "file_tree delete request selected_count={} recyclebin={}",
@@ -933,7 +880,11 @@ impl crate::app::Papyru2App {
                     outcome.permanently_deleted.len(),
                     paths.len()
                 ));
-                self.refresh_file_tree("req-ftr3-delete", cx);
+                if crate::app::req_ftr14_delete_flow_uses_watcher_refresh_only() {
+                    crate::app::trace_debug(
+                        "file_tree delete success watcher_refresh_only=true direct_refresh_skipped",
+                    );
+                }
             }
             Err(error) => {
                 crate::app::trace_debug(format!("file_tree delete move failed error={error}"));
@@ -970,9 +921,10 @@ mod tests {
     use super::{
         TreeItem, build_file_items, collect_tree_item_ids, collect_visible_item_ids,
         delete_entries_for_file_tree, find_visible_index, is_delete_protected_path,
-        move_entries_to_recyclebin, rename_tree_item_path, replace_single_selection,
-        retain_existing_selections, rewrite_selected_item_ids_for_rename, select_range_items,
-        selected_row_highlight_color, toggle_item_selection, use_checkbox_selection_markers,
+        move_entries_to_recyclebin, replace_single_selection, retain_existing_selections,
+        select_range_items, selected_row_highlight_color,
+        should_restore_selection_after_watcher_refresh, toggle_item_selection,
+        use_checkbox_selection_markers,
     };
     use gpui::hsla;
     use std::{
@@ -1172,35 +1124,6 @@ mod tests {
             &protected
         ));
         assert!(!is_delete_protected_path(sample_file.as_path(), &protected));
-        remove_temp_root(root.as_path());
-    }
-
-    #[test]
-    fn ftr_test9_rename_patch_updates_tree_item_and_selection_in_place() {
-        let root = new_temp_root("ftr_test9");
-        let old_path = root.join("alpha.txt");
-        let new_path = root.join("beta.txt");
-        let sibling_path = root.join("gamma.txt");
-
-        let mut items = vec![
-            TreeItem::new(old_path.to_string_lossy().to_string(), "alpha.txt"),
-            TreeItem::new(sibling_path.to_string_lossy().to_string(), "gamma.txt"),
-        ];
-        let mut selected = HashSet::from([old_path.to_string_lossy().to_string()]);
-
-        assert!(rename_tree_item_path(
-            &mut items,
-            old_path.as_path(),
-            new_path.as_path()
-        ));
-        rewrite_selected_item_ids_for_rename(&mut selected, old_path.as_path(), new_path.as_path());
-
-        let mut ids = HashSet::new();
-        collect_tree_item_ids(&items, &mut ids);
-        assert!(ids.contains(new_path.to_string_lossy().as_ref()));
-        assert!(!ids.contains(old_path.to_string_lossy().as_ref()));
-        assert!(selected.contains(new_path.to_string_lossy().as_ref()));
-        assert_eq!(items[0].label.as_ref(), "beta.txt");
         remove_temp_root(root.as_path());
     }
 
@@ -1446,5 +1369,19 @@ mod tests {
                 .starts_with(&recyclebin_dir)
         );
         remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test33_req_ftr14_watcher_refresh_can_restore_selection_for_current_edit_path() {
+        let path = PathBuf::from("C:/tmp/current.txt");
+        assert!(should_restore_selection_after_watcher_refresh(
+            0,
+            Some(path.as_path())
+        ));
+        assert!(!should_restore_selection_after_watcher_refresh(
+            1,
+            Some(path.as_path())
+        ));
+        assert!(!should_restore_selection_after_watcher_refresh(0, None));
     }
 }

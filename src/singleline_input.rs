@@ -270,25 +270,14 @@ impl crate::app::Papyru2App {
                             crate::app::compact_text(value)
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
-                        if let Some(previous_path) = previous_path {
-                            let patched = self.file_tree.update(cx, |file_tree, cx| {
-                                file_tree.apply_renamed_path(
-                                    previous_path.as_path(),
-                                    path.as_path(),
-                                    cx,
-                                )
-                            });
-                            if !patched {
-                                crate::app::trace_debug(
-                                    "rename_flow fallback to full file_tree refresh after missed patch",
-                                );
-                                self.refresh_file_tree("req-ftr1-rename-fallback", cx);
-                            }
-                        } else {
-                            crate::app::trace_debug(
-                                "rename_flow missing previous_path; fallback to full file_tree refresh",
-                            );
-                            self.refresh_file_tree("req-ftr1-rename-missing-path", cx);
+                        if crate::app::req_ftr14_rename_flow_uses_watcher_refresh_only() {
+                            crate::app::trace_debug(format!(
+                                "rename_flow watcher_refresh_only=true previous_path={} direct_tree_patch_skipped",
+                                previous_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string())
+                                    .unwrap_or_else(|| "<none>".to_string())
+                            ));
                         }
                         self.apply_forced_singleline_stem(
                             crate::file_update_handler::forced_singleline_stem_after_rename(

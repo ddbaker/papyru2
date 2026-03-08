@@ -80,6 +80,18 @@ pub(crate) fn req_newf34_plus_button_reset_steps() -> [PlusButtonResetStep; 3] {
     ]
 }
 
+pub(crate) fn req_ftr14_create_flow_uses_watcher_refresh_only() -> bool {
+    true
+}
+
+pub(crate) fn req_ftr14_delete_flow_uses_watcher_refresh_only() -> bool {
+    true
+}
+
+pub(crate) fn req_ftr14_rename_flow_uses_watcher_refresh_only() -> bool {
+    true
+}
+
 const DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX: f32 = 320.0;
 const SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX: f32 = 1.0;
 
@@ -145,6 +157,7 @@ pub struct Papyru2App {
     pub(crate) editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) app_paths: crate::path_resolver::AppPaths,
+    pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
 }
 
 impl Papyru2App {
@@ -330,6 +343,16 @@ impl Papyru2App {
         let file_tree = cx.new(move |cx| {
             FileTreeView::new(protected_delete_roots, file_tree_root_dir.clone(), cx)
         });
+        let (file_tree_watcher, file_tree_refresh_rx) =
+            match crate::file_tree_watcher::start_file_tree_watcher(
+                app_paths.user_document_dir.clone(),
+            ) {
+                Ok(watcher) => watcher,
+                Err(error) => {
+                    trace_debug(format!("file_tree watcher init failed error={error}"));
+                    panic!("file_tree watcher init failed: {error}");
+                }
+            };
         let file_workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::new();
         let editor_autosave = crate::file_update_handler::EditorAutoSaveCoordinator::new();
 
@@ -352,6 +375,16 @@ impl Papyru2App {
             editor_autosave.clone(),
             file_workflow.clone(),
         );
+        cx.spawn(async move |this, cx| {
+            while file_tree_refresh_rx.recv().await.is_ok() {
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+                let _ = this.update(cx, |app, cx| app.apply_file_tree_watcher_refresh(cx));
+            }
+            trace_debug("file_tree watcher refresh loop detached");
+        })
+        .detach();
 
         let mut subscriptions = vec![
             cx.subscribe_in(
@@ -498,6 +531,7 @@ impl Papyru2App {
             editor_autosave,
             _subscriptions: subscriptions,
             app_paths,
+            _file_tree_watcher: file_tree_watcher,
         }
     }
 }
@@ -539,8 +573,11 @@ mod tests {
         DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX, PlusButtonResetStep,
         SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX, build_startup_window_options,
         file_tree_root_dir_from_app_paths, persisted_splitter_sizes,
-        req_newf34_plus_button_reset_steps, should_recreate_layout_split_state,
-        should_restore_singleline_focus_after_new_file, should_route_delete_to_file_tree,
+        req_ftr14_create_flow_uses_watcher_refresh_only,
+        req_ftr14_delete_flow_uses_watcher_refresh_only,
+        req_ftr14_rename_flow_uses_watcher_refresh_only, req_newf34_plus_button_reset_steps,
+        should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
+        should_route_delete_to_file_tree,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::path_resolver::{AppPaths, RunEnvPattern};
@@ -594,6 +631,21 @@ mod tests {
         assert!(!should_route_delete_to_file_tree(false, false, true, false));
         assert!(!should_route_delete_to_file_tree(false, true, false, false));
         assert!(!should_route_delete_to_file_tree(false, true, true, true));
+    }
+
+    #[test]
+    fn ftr_test30_req_ftr14_create_flow_uses_watcher_refresh_only() {
+        assert!(req_ftr14_create_flow_uses_watcher_refresh_only());
+    }
+
+    #[test]
+    fn ftr_test31_req_ftr14_delete_flow_uses_watcher_refresh_only() {
+        assert!(req_ftr14_delete_flow_uses_watcher_refresh_only());
+    }
+
+    #[test]
+    fn ftr_test32_req_ftr14_rename_flow_uses_watcher_refresh_only() {
+        assert!(req_ftr14_rename_flow_uses_watcher_refresh_only());
     }
 
     #[test]

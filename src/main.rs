@@ -1,6 +1,7 @@
 mod app;
 mod editor;
 mod file_tree;
+mod file_tree_watcher;
 mod file_update_handler;
 mod path_resolver;
 mod singleline_input;
