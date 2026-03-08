@@ -360,6 +360,12 @@ impl Papyru2App {
                 move |this, _, event: &FileTreeEvent, window, cx| match event {
                     FileTreeEvent::SelectionChanged(path) => {
                         this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
+                        this.file_workflow.set_edit_from_open_file(path.clone());
+                        this.sync_current_editing_path_to_components(Some(path.clone()), cx);
+                        trace_debug(format!(
+                            "file_tree selection promoted_to_edit path={}",
+                            path.display()
+                        ));
                     }
                     FileTreeEvent::OpenFile(path) => {
                         this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
