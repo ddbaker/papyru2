@@ -20,7 +20,7 @@ pub enum FileTreeEvent {
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     focus_handle: FocusHandle,
-    workspace_root: PathBuf,
+    tree_root_dir: PathBuf,
     root_items: Vec<TreeItem>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
@@ -32,15 +32,18 @@ pub struct FileTreeView {
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
 
 impl FileTreeView {
-    pub fn new(protected_delete_roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        protected_delete_roots: Vec<PathBuf>,
+        tree_root_dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let focus_handle = cx.focus_handle().tab_stop(true);
-        let workspace_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let mut this = Self {
             tree_state,
             focus_handle,
-            workspace_root,
+            tree_root_dir,
             root_items: Vec::new(),
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
@@ -48,6 +51,10 @@ impl FileTreeView {
             selection_anchor_item_id: None,
             visible_item_ids: Vec::new(),
         };
+        crate::app::trace_debug(format!(
+            "file_tree init root_dir={}",
+            this.tree_root_dir.display()
+        ));
         this.load_files(cx);
         this
     }
@@ -198,7 +205,12 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
-        self.root_items = build_file_items(&self.workspace_root, &self.workspace_root);
+        self.root_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
+        crate::app::trace_debug(format!(
+            "file_tree load root_dir={} top_level_count={}",
+            self.tree_root_dir.display(),
+            self.root_items.len()
+        ));
         self.set_items_from_model(cx);
     }
 
@@ -1357,6 +1369,54 @@ mod tests {
             Some(hsla(0.58, 0.65, 0.88, 1.0))
         );
         assert_eq!(selected_row_highlight_color(false), None);
+    }
+
+    #[test]
+    fn ftr_test24_req_ftr11_rooted_tree_excludes_user_document_dir_row() {
+        let root = new_temp_root("ftr_test24");
+        let user_document_dir = root.join("user_document");
+        fs::create_dir_all(user_document_dir.join("2026").join("03"))
+            .expect("create date directory");
+        fs::create_dir_all(user_document_dir.join("recyclebin")).expect("create recyclebin");
+
+        let items = build_file_items(&user_document_dir, &user_document_dir);
+        let mut ids = HashSet::new();
+        collect_tree_item_ids(&items, &mut ids);
+
+        assert!(!ids.contains(user_document_dir.to_string_lossy().as_ref()));
+        assert!(ids.contains(user_document_dir.join("2026").to_string_lossy().as_ref()));
+        assert!(
+            ids.contains(
+                user_document_dir
+                    .join("recyclebin")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test25_req_ftr11_top_level_rows_are_direct_children_of_user_document_dir() {
+        let root = new_temp_root("ftr_test25");
+        let user_document_dir = root.join("user_document");
+        fs::create_dir_all(user_document_dir.join("2026")).expect("create year directory");
+        fs::create_dir_all(user_document_dir.join("recyclebin")).expect("create recyclebin");
+        fs::create_dir_all(user_document_dir.join("2025")).expect("create another year directory");
+
+        let items = build_file_items(&user_document_dir, &user_document_dir);
+        let top_labels: Vec<String> = items.iter().map(|item| item.label.to_string()).collect();
+
+        assert_eq!(
+            top_labels,
+            vec![
+                "2025".to_string(),
+                "2026".to_string(),
+                "recyclebin".to_string()
+            ]
+        );
+        assert!(!top_labels.contains(&"user_document".to_string()));
+        remove_temp_root(root.as_path());
     }
 
     #[test]

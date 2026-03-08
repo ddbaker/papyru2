@@ -44,6 +44,12 @@ pub(crate) fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused && !editor_was_focused
 }
 
+pub(crate) fn file_tree_root_dir_from_app_paths(
+    app_paths: &crate::path_resolver::AppPaths,
+) -> PathBuf {
+    app_paths.user_document_dir.clone()
+}
+
 pub(crate) fn should_route_delete_to_file_tree(
     file_tree_focused: bool,
     file_tree_delete_shortcut_armed: bool,
@@ -316,7 +322,14 @@ impl Papyru2App {
             app_paths.data_dir.clone(),
             app_paths.user_document_dir.clone(),
         ];
-        let file_tree = cx.new(move |cx| FileTreeView::new(protected_delete_roots, cx));
+        let file_tree_root_dir = file_tree_root_dir_from_app_paths(&app_paths);
+        trace_debug(format!(
+            "file_tree app root_dir={}",
+            file_tree_root_dir.display()
+        ));
+        let file_tree = cx.new(move |cx| {
+            FileTreeView::new(protected_delete_roots, file_tree_root_dir.clone(), cx)
+        });
         let file_workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::new();
         let editor_autosave = crate::file_update_handler::EditorAutoSaveCoordinator::new();
 
@@ -519,11 +532,12 @@ mod tests {
     use super::{
         DEFAULT_SPLIT_LEFT_PANEL_SIZE_PX, PlusButtonResetStep,
         SPLITTER_PERSISTENCE_FALLBACK_RIGHT_PANEL_SIZE_PX, build_startup_window_options,
-        persisted_splitter_sizes, req_newf34_plus_button_reset_steps,
-        should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
-        should_route_delete_to_file_tree,
+        file_tree_root_dir_from_app_paths, persisted_splitter_sizes,
+        req_newf34_plus_button_reset_steps, should_recreate_layout_split_state,
+        should_restore_singleline_focus_after_new_file, should_route_delete_to_file_tree,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
+    use crate::path_resolver::{AppPaths, RunEnvPattern};
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
     use gpui::{WindowBounds, bounds, point, px, size};
     use std::{
@@ -574,6 +588,25 @@ mod tests {
         assert!(!should_route_delete_to_file_tree(false, false, true, false));
         assert!(!should_route_delete_to_file_tree(false, true, false, false));
         assert!(!should_route_delete_to_file_tree(false, true, true, true));
+    }
+
+    #[test]
+    fn ftr_test26_req_ftr11_file_tree_root_is_user_document_dir_from_app_paths() {
+        let app_paths = AppPaths {
+            mode: RunEnvPattern::DevCargoRun,
+            app_home: PathBuf::from("C:/tmp/app_home"),
+            conf_dir: PathBuf::from("C:/tmp/app_home/conf"),
+            data_dir: PathBuf::from("C:/tmp/app_home/data"),
+            user_document_dir: PathBuf::from("C:/tmp/app_home/data/user_document"),
+            recyclebin_dir: PathBuf::from("C:/tmp/app_home/data/user_document/recyclebin"),
+            log_dir: PathBuf::from("C:/tmp/app_home/log"),
+            bin_dir: PathBuf::from("C:/tmp/app_home/bin"),
+        };
+
+        assert_eq!(
+            file_tree_root_dir_from_app_paths(&app_paths),
+            app_paths.user_document_dir
+        );
     }
 
     #[test]
