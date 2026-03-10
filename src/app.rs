@@ -65,14 +65,56 @@ pub(crate) fn should_route_delete_to_file_tree(
     editor_focused && file_tree_delete_shortcut_armed
 }
 
-pub(crate) fn should_schedule_file_tree_focus_reassert_after_selection_load(
-    selection_load_succeeded: bool,
-) -> bool {
-    selection_load_succeeded
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionLoadRoutingTransition {
+    pub next_focus_reassert_pending: bool,
+    pub schedule_focus_reassert: bool,
 }
 
-pub(crate) fn should_process_editor_focus_gained(selection_focus_reassert_pending: bool) -> bool {
-    !selection_focus_reassert_pending
+pub(crate) fn transition_selection_load_result(
+    selection_load_succeeded: bool,
+) -> SelectionLoadRoutingTransition {
+    SelectionLoadRoutingTransition {
+        next_focus_reassert_pending: selection_load_succeeded,
+        schedule_focus_reassert: selection_load_succeeded,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EditorFocusRoutingTransition {
+    pub process_editor_focus: bool,
+    pub next_focus_reassert_pending: bool,
+}
+
+pub(crate) fn transition_editor_focus_gained(
+    selection_focus_reassert_pending: bool,
+) -> EditorFocusRoutingTransition {
+    EditorFocusRoutingTransition {
+        process_editor_focus: !selection_focus_reassert_pending,
+        next_focus_reassert_pending: selection_focus_reassert_pending,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FocusReassertTickTransition {
+    pub run_focus_reassert: bool,
+    pub next_focus_reassert_pending: bool,
+}
+
+pub(crate) fn transition_focus_reassert_tick(
+    selection_focus_reassert_pending: bool,
+) -> FocusReassertTickTransition {
+    if !selection_focus_reassert_pending {
+        return FocusReassertTickTransition {
+            run_focus_reassert: false,
+            next_focus_reassert_pending: false,
+        };
+    }
+
+    FocusReassertTickTransition {
+        run_focus_reassert: true,
+        next_focus_reassert_pending: false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,28 +456,37 @@ impl Papyru2App {
                             path.display(),
                             loaded
                         ));
-                        let should_reassert_focus =
-                            should_schedule_file_tree_focus_reassert_after_selection_load(loaded);
-                        this.selection_focus_reassert_pending = should_reassert_focus;
-                        if should_reassert_focus {
+                        let transition = transition_selection_load_result(loaded);
+                        this.selection_focus_reassert_pending =
+                            transition.next_focus_reassert_pending;
+                        if transition.schedule_focus_reassert {
                             trace_debug(format!(
-                                "file_tree selection focus_reassert scheduled path={}",
-                                path.display()
+                                "file_tree selection focus_reassert scheduled path={} pending={}",
+                                path.display(),
+                                this.selection_focus_reassert_pending
                             ));
                             cx.defer_in(window, move |this, window, cx| {
-                                if !this.selection_focus_reassert_pending {
+                                let tick_transition = transition_focus_reassert_tick(
+                                    this.selection_focus_reassert_pending,
+                                );
+                                this.selection_focus_reassert_pending =
+                                    tick_transition.next_focus_reassert_pending;
+                                if !tick_transition.run_focus_reassert {
+                                    trace_debug(
+                                        "file_tree selection focus_reassert skipped pending=false",
+                                    );
                                     return;
                                 }
                                 this.file_tree.update(cx, |file_tree, _| {
                                     file_tree.focus(window);
                                 });
-                                this.selection_focus_reassert_pending = false;
                                 let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
                                 let editor_focused = this.editor.read(cx).is_focused(window, cx);
                                 trace_debug(format!(
-                                    "file_tree selection focus_reassert done file_tree_focused={} editor_focused={}",
+                                    "file_tree selection focus_reassert done file_tree_focused={} editor_focused={} pending={}",
                                     file_tree_focused,
-                                    editor_focused
+                                    editor_focused,
+                                    this.selection_focus_reassert_pending
                                 ));
                             });
                         }
@@ -506,14 +557,16 @@ impl Papyru2App {
                         this.transfer_editor_up(window, cx);
                     }
                     crate::editor::EditorEvent::FocusGained => {
-                        let should_process_focus =
-                            should_process_editor_focus_gained(this.selection_focus_reassert_pending);
+                        let transition =
+                            transition_editor_focus_gained(this.selection_focus_reassert_pending);
+                        this.selection_focus_reassert_pending =
+                            transition.next_focus_reassert_pending;
                         trace_debug(format!(
                             "app received EditorEvent::FocusGained process={} selection_focus_reassert_pending={}",
-                            should_process_focus,
+                            transition.process_editor_focus,
                             this.selection_focus_reassert_pending
                         ));
-                        if !should_process_focus {
+                        if !transition.process_editor_focus {
                             return;
                         }
                         this.ensure_new_file_flow("editor_focus", window, cx);
@@ -632,9 +685,9 @@ mod tests {
         req_ftr14_create_flow_uses_watcher_refresh_only,
         req_ftr14_delete_flow_uses_watcher_refresh_only,
         req_ftr14_rename_flow_uses_watcher_refresh_only, req_newf34_plus_button_reset_steps,
-        should_process_editor_focus_gained, should_recreate_layout_split_state,
-        should_restore_singleline_focus_after_new_file, should_route_delete_to_file_tree,
-        should_schedule_file_tree_focus_reassert_after_selection_load,
+        should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
+        should_route_delete_to_file_tree, transition_editor_focus_gained,
+        transition_focus_reassert_tick, transition_selection_load_result,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::path_resolver::{AppPaths, RunEnvPattern};
@@ -692,19 +745,165 @@ mod tests {
 
     #[test]
     fn ftr_test40_req_ftr16_regression_selection_load_focus_reassert_gate_engages() {
-        assert!(should_schedule_file_tree_focus_reassert_after_selection_load(true));
-        assert!(!should_schedule_file_tree_focus_reassert_after_selection_load(false));
+        assert!(transition_selection_load_result(true).schedule_focus_reassert);
+        assert!(!transition_selection_load_result(false).schedule_focus_reassert);
     }
 
     #[test]
     fn ftr_test41_req_ftr16_regression_regular_editor_focus_path_is_preserved() {
-        assert!(should_process_editor_focus_gained(false));
-        assert!(!should_process_editor_focus_gained(true));
+        assert!(transition_editor_focus_gained(false).process_editor_focus);
+        assert!(!transition_editor_focus_gained(true).process_editor_focus);
     }
 
     #[test]
     fn ftr_test42_req_ftr16_regression_delete_routes_to_file_tree_after_focus_reassert() {
         assert!(should_route_delete_to_file_tree(true, false, false, false));
+    }
+
+    #[test]
+    fn ftr_test44_req_ftr16_hard_selection_load_success_schedules_reassert() {
+        let transition = transition_selection_load_result(true);
+        assert_eq!(
+            transition,
+            super::SelectionLoadRoutingTransition {
+                next_focus_reassert_pending: true,
+                schedule_focus_reassert: true,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test45_req_ftr16_hard_selection_load_failure_skips_reassert() {
+        let transition = transition_selection_load_result(false);
+        assert_eq!(
+            transition,
+            super::SelectionLoadRoutingTransition {
+                next_focus_reassert_pending: false,
+                schedule_focus_reassert: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test46_req_ftr16_hard_editor_focus_processing_respects_pending_reassert() {
+        let pending_transition = transition_editor_focus_gained(true);
+        assert_eq!(
+            pending_transition,
+            super::EditorFocusRoutingTransition {
+                process_editor_focus: false,
+                next_focus_reassert_pending: true,
+            }
+        );
+
+        let regular_transition = transition_editor_focus_gained(false);
+        assert_eq!(
+            regular_transition,
+            super::EditorFocusRoutingTransition {
+                process_editor_focus: true,
+                next_focus_reassert_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test47_req_ftr16_hard_focus_reassert_tick_is_idempotent() {
+        let first_tick = transition_focus_reassert_tick(true);
+        assert_eq!(
+            first_tick,
+            super::FocusReassertTickTransition {
+                run_focus_reassert: true,
+                next_focus_reassert_pending: false,
+            }
+        );
+
+        let second_tick = transition_focus_reassert_tick(first_tick.next_focus_reassert_pending);
+        assert_eq!(
+            second_tick,
+            super::FocusReassertTickTransition {
+                run_focus_reassert: false,
+                next_focus_reassert_pending: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test48_req_ftr16_hard_sequence_success_routes_delete_to_file_tree() {
+        let selection_load = transition_selection_load_result(true);
+        let mut pending_focus_reassert = selection_load.next_focus_reassert_pending;
+        assert!(selection_load.schedule_focus_reassert);
+        assert!(pending_focus_reassert);
+
+        let editor_focus = transition_editor_focus_gained(pending_focus_reassert);
+        pending_focus_reassert = editor_focus.next_focus_reassert_pending;
+        assert!(!editor_focus.process_editor_focus);
+        assert!(pending_focus_reassert);
+
+        let tick = transition_focus_reassert_tick(pending_focus_reassert);
+        pending_focus_reassert = tick.next_focus_reassert_pending;
+        assert!(tick.run_focus_reassert);
+        assert!(!pending_focus_reassert);
+
+        assert!(should_route_delete_to_file_tree(
+            true,  // file_tree_focused after reassert
+            false, // delete shortcut arm not required when focused
+            false, // editor should not own delete
+            false, // singleline not focused
+        ));
+    }
+
+    #[test]
+    fn ftr_test49_req_ftr16_hard_sequence_failure_keeps_non_tree_delete_routing() {
+        let selection_load = transition_selection_load_result(false);
+        let mut pending_focus_reassert = selection_load.next_focus_reassert_pending;
+        assert!(!selection_load.schedule_focus_reassert);
+        assert!(!pending_focus_reassert);
+
+        let editor_focus = transition_editor_focus_gained(pending_focus_reassert);
+        pending_focus_reassert = editor_focus.next_focus_reassert_pending;
+        assert!(editor_focus.process_editor_focus);
+        assert!(!pending_focus_reassert);
+
+        let tick = transition_focus_reassert_tick(pending_focus_reassert);
+        pending_focus_reassert = tick.next_focus_reassert_pending;
+        assert!(!tick.run_focus_reassert);
+        assert!(!pending_focus_reassert);
+
+        assert!(!should_route_delete_to_file_tree(
+            false, // file_tree not focused
+            false, // no consumed file-tree shortcut arm
+            true,  // editor remains focused
+            false, // singleline not focused
+        ));
+    }
+
+    #[test]
+    fn ftr_test50_req_ftr16_hard_delete_routing_truth_table_is_exhaustive() {
+        for file_tree_focused in [false, true] {
+            for file_tree_delete_shortcut_armed in [false, true] {
+                for editor_focused in [false, true] {
+                    for singleline_focused in [false, true] {
+                        let actual = should_route_delete_to_file_tree(
+                            file_tree_focused,
+                            file_tree_delete_shortcut_armed,
+                            editor_focused,
+                            singleline_focused,
+                        );
+                        let expected = !singleline_focused
+                            && (file_tree_focused
+                                || (editor_focused && file_tree_delete_shortcut_armed));
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "routing mismatch (file_tree_focused={}, shortcut_armed={}, editor_focused={}, singleline_focused={})",
+                            file_tree_focused,
+                            file_tree_delete_shortcut_armed,
+                            editor_focused,
+                            singleline_focused
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
