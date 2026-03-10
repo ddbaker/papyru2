@@ -448,4 +448,17 @@ mod tests {
         dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
+
+    #[test]
+    fn ftr_test43_req_ftr16_regression_content_sync_path_remains_available() {
+        let root = new_temp_root("ftr_test43");
+        let selected_path = root.join("selected.txt");
+        fs::write(&selected_path, "line-a\nline-b\n").expect("seed selected file");
+
+        let loaded =
+            read_editor_text_from_disk(selected_path.as_path()).expect("read selected file text");
+        assert_eq!(loaded, "line-a\nline-b\n");
+
+        remove_temp_root(root.as_path());
+    }
 }

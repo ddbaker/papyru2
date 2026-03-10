@@ -65,6 +65,16 @@ pub(crate) fn should_route_delete_to_file_tree(
     editor_focused && file_tree_delete_shortcut_armed
 }
 
+pub(crate) fn should_schedule_file_tree_focus_reassert_after_selection_load(
+    selection_load_succeeded: bool,
+) -> bool {
+    selection_load_succeeded
+}
+
+pub(crate) fn should_process_editor_focus_gained(selection_focus_reassert_pending: bool) -> bool {
+    !selection_focus_reassert_pending
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlusButtonResetStep {
     ClearEditor,
@@ -158,6 +168,7 @@ pub struct Papyru2App {
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) app_paths: crate::path_resolver::AppPaths,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
+    pub(crate) selection_focus_reassert_pending: bool,
 }
 
 impl Papyru2App {
@@ -403,6 +414,31 @@ impl Papyru2App {
                             path.display(),
                             loaded
                         ));
+                        let should_reassert_focus =
+                            should_schedule_file_tree_focus_reassert_after_selection_load(loaded);
+                        this.selection_focus_reassert_pending = should_reassert_focus;
+                        if should_reassert_focus {
+                            trace_debug(format!(
+                                "file_tree selection focus_reassert scheduled path={}",
+                                path.display()
+                            ));
+                            cx.defer_in(window, move |this, window, cx| {
+                                if !this.selection_focus_reassert_pending {
+                                    return;
+                                }
+                                this.file_tree.update(cx, |file_tree, _| {
+                                    file_tree.focus(window);
+                                });
+                                this.selection_focus_reassert_pending = false;
+                                let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
+                                let editor_focused = this.editor.read(cx).is_focused(window, cx);
+                                trace_debug(format!(
+                                    "file_tree selection focus_reassert done file_tree_focused={} editor_focused={}",
+                                    file_tree_focused,
+                                    editor_focused
+                                ));
+                            });
+                        }
                         if loaded {
                             trace_debug(format!(
                                 "file_tree selection promoted_to_edit path={}",
@@ -470,7 +506,16 @@ impl Papyru2App {
                         this.transfer_editor_up(window, cx);
                     }
                     crate::editor::EditorEvent::FocusGained => {
-                        trace_debug("app received EditorEvent::FocusGained");
+                        let should_process_focus =
+                            should_process_editor_focus_gained(this.selection_focus_reassert_pending);
+                        trace_debug(format!(
+                            "app received EditorEvent::FocusGained process={} selection_focus_reassert_pending={}",
+                            should_process_focus,
+                            this.selection_focus_reassert_pending
+                        ));
+                        if !should_process_focus {
+                            return;
+                        }
                         this.ensure_new_file_flow("editor_focus", window, cx);
                     }
                     crate::editor::EditorEvent::UserBufferChanged { value } => {
@@ -542,6 +587,7 @@ impl Papyru2App {
             _subscriptions: subscriptions,
             app_paths,
             _file_tree_watcher: file_tree_watcher,
+            selection_focus_reassert_pending: false,
         }
     }
 }
@@ -586,8 +632,9 @@ mod tests {
         req_ftr14_create_flow_uses_watcher_refresh_only,
         req_ftr14_delete_flow_uses_watcher_refresh_only,
         req_ftr14_rename_flow_uses_watcher_refresh_only, req_newf34_plus_button_reset_steps,
-        should_recreate_layout_split_state, should_restore_singleline_focus_after_new_file,
-        should_route_delete_to_file_tree,
+        should_process_editor_focus_gained, should_recreate_layout_split_state,
+        should_restore_singleline_focus_after_new_file, should_route_delete_to_file_tree,
+        should_schedule_file_tree_focus_reassert_after_selection_load,
     };
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::path_resolver::{AppPaths, RunEnvPattern};
@@ -641,6 +688,23 @@ mod tests {
         assert!(!should_route_delete_to_file_tree(false, false, true, false));
         assert!(!should_route_delete_to_file_tree(false, true, false, false));
         assert!(!should_route_delete_to_file_tree(false, true, true, true));
+    }
+
+    #[test]
+    fn ftr_test40_req_ftr16_regression_selection_load_focus_reassert_gate_engages() {
+        assert!(should_schedule_file_tree_focus_reassert_after_selection_load(true));
+        assert!(!should_schedule_file_tree_focus_reassert_after_selection_load(false));
+    }
+
+    #[test]
+    fn ftr_test41_req_ftr16_regression_regular_editor_focus_path_is_preserved() {
+        assert!(should_process_editor_focus_gained(false));
+        assert!(!should_process_editor_focus_gained(true));
+    }
+
+    #[test]
+    fn ftr_test42_req_ftr16_regression_delete_routes_to_file_tree_after_focus_reassert() {
+        assert!(should_route_delete_to_file_tree(true, false, false, false));
     }
 
     #[test]
