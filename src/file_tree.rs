@@ -937,13 +937,18 @@ impl crate::app::Papyru2App {
         }
     }
 
-    pub(crate) fn open_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.flush_editor_content_before_context_switch("req-aus8-open-file", cx) {
             crate::app::trace_debug(format!(
                 "open_file aborted path={} (pre-switch autosave failed)",
                 path.display()
             ));
-            return;
+            return false;
         }
 
         let opened = self.editor.update(cx, {
@@ -953,11 +958,12 @@ impl crate::app::Papyru2App {
 
         if !opened {
             crate::app::trace_debug(format!("open_file failed path={}", path.display()));
-            return;
+            return false;
         }
 
         self.file_workflow.set_edit_from_open_file(path.clone());
         self.sync_current_editing_path_to_components(Some(path), cx);
+        true
     }
 }
 

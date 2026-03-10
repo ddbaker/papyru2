@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::*;
 use gpui_component::{
@@ -32,6 +32,10 @@ pub struct Papyru2Editor {
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
+
+pub(crate) fn read_editor_text_from_disk(path: &Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path)
+}
 
 impl Papyru2Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -269,10 +273,21 @@ impl Papyru2Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let content = match std::fs::read_to_string(&path) {
+        let content = match read_editor_text_from_disk(path.as_path()) {
             Ok(content) => content,
-            Err(_) => return false,
+            Err(error) => {
+                crate::app::trace_debug(format!(
+                    "editor open_file read_failed path={} error={error}",
+                    path.display()
+                ));
+                return false;
+            }
         };
+        crate::app::trace_debug(format!(
+            "editor open_file content_loaded path={} bytes={}",
+            path.display(),
+            content.len()
+        ));
 
         let language = path
             .extension()
@@ -328,5 +343,109 @@ impl Render for Papyru2Editor {
                     .font_family(cx.theme().mono_font_family.clone())
                     .text_size(cx.theme().mono_font_size),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_editor_text_from_disk;
+    use crate::file_update_handler::{
+        EditorAutoSavePayload, FileWorkflowEventDispatcher, SinglelineCreateFileWorkflow,
+    };
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn new_temp_root(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!(
+            "gpui_papyru2_editor_{name}_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        fs::create_dir_all(&path).expect("create temp root");
+        path
+    }
+
+    fn remove_temp_root(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn ftr_test37_req_ftr16_selection_reads_file_content_for_editor_sync() {
+        let root = new_temp_root("ftr_test37");
+        let selected_path = root.join("fileA.txt");
+        fs::write(&selected_path, "alpha\nbeta").expect("seed selected file");
+
+        let loaded = read_editor_text_from_disk(selected_path.as_path())
+            .expect("read selected file for editor sync");
+        assert_eq!(loaded, "alpha\nbeta");
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test38_req_ftr16_selection_reads_utf8_file_content_losslessly() {
+        let root = new_temp_root("ftr_test38");
+        let selected_path = root.join("multibyte.txt");
+        let expected = "テスト🙂\n二行目";
+        fs::write(&selected_path, expected).expect("seed utf8 selected file");
+
+        let loaded = read_editor_text_from_disk(selected_path.as_path())
+            .expect("read utf8 selected file for editor sync");
+        assert_eq!(loaded, expected);
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test39_req_ftr16_selected_file_edit_save_updates_selected_path_not_stale_buffer() {
+        let root = new_temp_root("ftr_test39");
+        let path_a = root.join("fileA.txt");
+        let path_b = root.join("fileB.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        fs::write(&path_b, "B-old").expect("seed fileB");
+
+        // Simulate editor currently having stale text from previously edited file A.
+        let stale_text_from_previous_file = "A-stale";
+        let dispatcher = FileWorkflowEventDispatcher::new();
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
+        workflow.set_edit_from_open_file(path_a.clone());
+        let flushed = workflow
+            .flush_editor_content_in_edit(stale_text_from_previous_file)
+            .expect("flush stale fileA content before selection switch");
+        assert!(flushed);
+
+        // File-tree selection must load fileB content into editor and move edit context to fileB.
+        let loaded_selected_text =
+            read_editor_text_from_disk(path_b.as_path()).expect("load selected fileB content");
+        assert_eq!(loaded_selected_text, "B-old");
+        workflow.set_edit_from_open_file(path_b.clone());
+
+        let saved = workflow
+            .try_autosave_in_edit(EditorAutoSavePayload {
+                current_path: path_b.clone(),
+                editor_text: format!("{loaded_selected_text}\nB-new"),
+            })
+            .expect("autosave edited selected file");
+        assert!(saved);
+
+        assert_eq!(
+            fs::read_to_string(&path_a).expect("read fileA after switch"),
+            "A-stale"
+        );
+        assert_eq!(
+            fs::read_to_string(&path_b).expect("read fileB after selected-file save"),
+            "B-old\nB-new"
+        );
+
+        dispatcher.shutdown();
+        remove_temp_root(root.as_path());
     }
 }
