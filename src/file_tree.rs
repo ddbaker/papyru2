@@ -145,6 +145,17 @@ impl FileTreeView {
         true
     }
 
+    pub fn clear_selection_for_req_ftr17_case3(&mut self, cx: &mut Context<Self>) {
+        self.selected_item_ids.clear();
+        self.selection_anchor_item_id = None;
+        self.disarm_delete_shortcut("req_ftr17_case3_clear_selection");
+        self.tree_state.update(cx, |state, cx| {
+            state.set_selected_index(None, cx);
+        });
+        crate::app::trace_debug("file_tree req-ftr17 case3_reset_neutral clear_tree_selection");
+        cx.notify();
+    }
+
     pub fn request_recyclebin_delete(&mut self, cx: &mut Context<Self>) -> bool {
         let mut removed_protected_count = 0usize;
         let protected_delete_roots = self.protected_delete_roots.clone();
@@ -884,7 +895,219 @@ pub(crate) fn delete_entries_for_file_tree(
     Ok(outcome)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReqFtr17PostDeleteDecision {
+    SelectNext(PathBuf),
+    SelectPrevious(PathBuf),
+    ResetToNeutral,
+}
+
+fn req_ftr17_sort_key(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+pub(crate) fn req_ftr17_post_delete_decision_from_remaining_files(
+    deleted_source: &Path,
+    remaining_files: &[PathBuf],
+) -> ReqFtr17PostDeleteDecision {
+    let deleted_parent = deleted_source.parent().map(Path::to_path_buf);
+    let deleted_key = req_ftr17_sort_key(deleted_source);
+    let mut previous: Option<PathBuf> = None;
+
+    for candidate in remaining_files {
+        if !candidate.is_file() {
+            continue;
+        }
+        if let Some(parent) = deleted_parent.as_deref()
+            && candidate.parent() != Some(parent)
+        {
+            continue;
+        }
+
+        let candidate_key = req_ftr17_sort_key(candidate.as_path());
+        if candidate_key > deleted_key {
+            return ReqFtr17PostDeleteDecision::SelectNext(candidate.clone());
+        }
+        if candidate_key < deleted_key {
+            previous = Some(candidate.clone());
+        }
+    }
+
+    if let Some(path) = previous {
+        ReqFtr17PostDeleteDecision::SelectPrevious(path)
+    } else {
+        ReqFtr17PostDeleteDecision::ResetToNeutral
+    }
+}
+
+fn req_ftr17_sorted_remaining_files_in_parent(parent_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(parent_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort_by_key(|path| req_ftr17_sort_key(path.as_path()));
+    Ok(files)
+}
+
+fn req_ftr17_post_delete_decision_from_filesystem(
+    deleted_source: &Path,
+) -> io::Result<ReqFtr17PostDeleteDecision> {
+    let Some(parent_dir) = deleted_source.parent() else {
+        return Ok(ReqFtr17PostDeleteDecision::ResetToNeutral);
+    };
+    let remaining_files = req_ftr17_sorted_remaining_files_in_parent(parent_dir)?;
+    Ok(req_ftr17_post_delete_decision_from_remaining_files(
+        deleted_source,
+        &remaining_files,
+    ))
+}
+
+fn req_ftr17_post_delete_decision_for_outcome(
+    outcome: &FileTreeDeleteOutcome,
+) -> io::Result<Option<ReqFtr17PostDeleteDecision>> {
+    if !outcome.permanently_deleted.is_empty() || outcome.moved_to_recyclebin.len() != 1 {
+        return Ok(None);
+    }
+
+    let (deleted_source, moved_target) = &outcome.moved_to_recyclebin[0];
+    if moved_target.is_dir() {
+        return Ok(None);
+    }
+
+    let decision = req_ftr17_post_delete_decision_from_filesystem(deleted_source.as_path())?;
+    Ok(Some(decision))
+}
+
+fn req_ftr17_deleted_paths_contain_current_edit(
+    deleted_source_paths: &[PathBuf],
+    current_edit_path: Option<&Path>,
+) -> bool {
+    let Some(current_edit_path) = current_edit_path else {
+        return false;
+    };
+    deleted_source_paths
+        .iter()
+        .any(|source| is_same_path(source.as_path(), current_edit_path))
+}
+
 impl crate::app::Papyru2App {
+    pub(crate) fn handle_file_tree_selection_changed(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
+        crate::app::trace_debug(format!(
+            "file_tree selection load_editor requested path={}",
+            path.display()
+        ));
+        let loaded = self.open_file(path.clone(), window, cx);
+        crate::app::trace_debug(format!(
+            "file_tree selection load_editor result path={} loaded={}",
+            path.display(),
+            loaded
+        ));
+        let transition = crate::app::transition_selection_load_result(loaded);
+        self.selection_focus_reassert_pending = transition.next_focus_reassert_pending;
+        if transition.schedule_focus_reassert {
+            crate::app::trace_debug(format!(
+                "file_tree selection focus_reassert scheduled path={} pending={}",
+                path.display(),
+                self.selection_focus_reassert_pending
+            ));
+            cx.defer_in(window, move |this, window, cx| {
+                let tick_transition = crate::app::transition_focus_reassert_tick(
+                    this.selection_focus_reassert_pending,
+                );
+                this.selection_focus_reassert_pending = tick_transition.next_focus_reassert_pending;
+                if !tick_transition.run_focus_reassert {
+                    crate::app::trace_debug("file_tree selection focus_reassert skipped pending=false");
+                    return;
+                }
+                this.file_tree.update(cx, |file_tree, _| {
+                    file_tree.focus(window);
+                });
+                let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
+                let editor_focused = this.editor.read(cx).is_focused(window, cx);
+                crate::app::trace_debug(format!(
+                    "file_tree selection focus_reassert done file_tree_focused={} editor_focused={} pending={}",
+                    file_tree_focused,
+                    editor_focused,
+                    this.selection_focus_reassert_pending
+                ));
+            });
+        }
+        if loaded {
+            crate::app::trace_debug(format!(
+                "file_tree selection promoted_to_edit path={}",
+                path.display()
+            ));
+        }
+    }
+
+    fn apply_req_ftr17_case3_reset_to_neutral(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let transitioned = self.file_workflow.transition_edit_to_neutral();
+        self.sync_current_editing_path_to_components(None, cx);
+        self.selection_focus_reassert_pending = false;
+        self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.clear_selection_for_req_ftr17_case3(cx);
+        });
+
+        for step in crate::app::req_newf34_plus_button_reset_steps() {
+            match step {
+                crate::app::PlusButtonResetStep::ClearEditor => {
+                    self.editor.update(cx, |editor, cx| {
+                        editor.apply_text_and_cursor("", 0, 0, window, cx);
+                    });
+                }
+                crate::app::PlusButtonResetStep::ClearSingleline => {
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.apply_text_and_cursor("", 0, window, cx);
+                    });
+                }
+                crate::app::PlusButtonResetStep::FocusSingleline => {
+                    self.singleline.update(cx, |singleline, cx| {
+                        singleline.focus(window, cx);
+                    });
+                }
+            }
+        }
+
+        crate::app::trace_debug(format!(
+            "file_tree req-ftr17 case3_reset_neutral transition_to_neutral={}",
+            transitioned
+        ));
+        cx.defer_in(window, move |this, window, cx| {
+            this.singleline.update(cx, |singleline, cx| {
+                singleline.apply_cursor(0, window, cx);
+                singleline.focus(window, cx);
+            });
+            let singleline_focused = this.singleline.read(cx).is_focused(window, cx);
+            let editor_focused = this.editor.read(cx).is_focused(window, cx);
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr17 case3_reset_neutral deferred_focus singleline_focused={} editor_focused={}",
+                singleline_focused,
+                editor_focused
+            ));
+        });
+    }
+
     pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
         let current_edit_path = self.file_workflow.current_edit_path();
         let mut restored_selection = false;
@@ -909,7 +1132,8 @@ impl crate::app::Papyru2App {
     pub(crate) fn on_file_tree_delete_requested(
         &mut self,
         paths: Vec<PathBuf>,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
         crate::app::trace_debug(format!(
             "file_tree delete request selected_count={} recyclebin={}",
@@ -925,6 +1149,85 @@ impl crate::app::Papyru2App {
                     outcome.permanently_deleted.len(),
                     paths.len()
                 ));
+
+                match req_ftr17_post_delete_decision_for_outcome(&outcome) {
+                    Ok(Some(decision)) => {
+                        let moved_sources: Vec<PathBuf> = outcome
+                            .moved_to_recyclebin
+                            .iter()
+                            .map(|(source, _)| source.clone())
+                            .collect();
+                        let deleted_current_edit_path =
+                            req_ftr17_deleted_paths_contain_current_edit(
+                                &moved_sources,
+                                self.file_workflow.current_edit_path().as_deref(),
+                            );
+
+                        match decision {
+                            ReqFtr17PostDeleteDecision::SelectNext(path) => {
+                                if deleted_current_edit_path {
+                                    let transitioned =
+                                        self.file_workflow.transition_edit_to_neutral();
+                                    self.sync_current_editing_path_to_components(None, cx);
+                                    crate::app::trace_debug(format!(
+                                        "file_tree req-ftr17 case1_next deleted_current_edit_path transition_to_neutral={}",
+                                        transitioned
+                                    ));
+                                }
+                                let restored_selection =
+                                    self.file_tree.update(cx, |file_tree, cx| {
+                                        file_tree.restore_selection_for_path(path.as_path(), cx)
+                                    });
+                                crate::app::trace_debug(format!(
+                                    "file_tree req-ftr17 case1_next target={} restored_selection={}",
+                                    path.display(),
+                                    restored_selection
+                                ));
+                                self.handle_file_tree_selection_changed(path, window, cx);
+                            }
+                            ReqFtr17PostDeleteDecision::SelectPrevious(path) => {
+                                if deleted_current_edit_path {
+                                    let transitioned =
+                                        self.file_workflow.transition_edit_to_neutral();
+                                    self.sync_current_editing_path_to_components(None, cx);
+                                    crate::app::trace_debug(format!(
+                                        "file_tree req-ftr17 case2_prev deleted_current_edit_path transition_to_neutral={}",
+                                        transitioned
+                                    ));
+                                }
+                                let restored_selection =
+                                    self.file_tree.update(cx, |file_tree, cx| {
+                                        file_tree.restore_selection_for_path(path.as_path(), cx)
+                                    });
+                                crate::app::trace_debug(format!(
+                                    "file_tree req-ftr17 case2_prev target={} restored_selection={}",
+                                    path.display(),
+                                    restored_selection
+                                ));
+                                self.handle_file_tree_selection_changed(path, window, cx);
+                            }
+                            ReqFtr17PostDeleteDecision::ResetToNeutral => {
+                                crate::app::trace_debug(
+                                    "file_tree req-ftr17 case3_reset_neutral no_remaining_file=true",
+                                );
+                                self.apply_req_ftr17_case3_reset_to_neutral(window, cx);
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        crate::app::trace_debug(format!(
+                            "file_tree req-ftr17 skipped moved_count={} permanently_deleted_count={}",
+                            outcome.moved_to_recyclebin.len(),
+                            outcome.permanently_deleted.len()
+                        ));
+                    }
+                    Err(error) => {
+                        crate::app::trace_debug(format!(
+                            "file_tree req-ftr17 decision failed error={error}"
+                        ));
+                    }
+                }
+
                 if crate::app::req_ftr14_delete_flow_uses_watcher_refresh_only() {
                     crate::app::trace_debug(
                         "file_tree delete success watcher_refresh_only=true direct_refresh_skipped",
@@ -970,12 +1273,15 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        TreeItem, apply_expanded_folder_item_ids, build_file_items, collect_tree_item_ids,
-        collect_visible_item_ids, delete_entries_for_file_tree, expanded_folder_item_ids,
-        find_visible_index, is_delete_protected_path, move_entries_to_recyclebin,
-        replace_single_selection, retain_existing_selections, select_range_items,
-        selected_row_highlight_color, should_restore_selection_after_watcher_refresh,
-        toggle_item_selection, use_checkbox_selection_markers,
+        ReqFtr17PostDeleteDecision, TreeItem, apply_expanded_folder_item_ids, build_file_items,
+        collect_tree_item_ids, collect_visible_item_ids, delete_entries_for_file_tree,
+        expanded_folder_item_ids, find_visible_index, is_delete_protected_path,
+        move_entries_to_recyclebin, replace_single_selection,
+        req_ftr17_post_delete_decision_from_filesystem,
+        req_ftr17_post_delete_decision_from_remaining_files, req_ftr17_sort_key,
+        retain_existing_selections, select_range_items, selected_row_highlight_color,
+        should_restore_selection_after_watcher_refresh, toggle_item_selection,
+        use_checkbox_selection_markers,
     };
     use gpui::hsla;
     use std::{
@@ -1515,5 +1821,101 @@ mod tests {
             0,
             Some(current_path.as_path())
         ));
+    }
+
+    #[test]
+    fn ftr_test51_req_ftr17_case1_delete_middle_reselects_next_file() {
+        let root = new_temp_root("ftr_test51");
+        let dir = root.join("2026").join("03").join("12");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+
+        fs::remove_file(&file_b).expect("remove B");
+
+        let decision = req_ftr17_post_delete_decision_from_filesystem(file_b.as_path())
+            .expect("resolve post-delete decision");
+
+        assert_eq!(decision, ReqFtr17PostDeleteDecision::SelectNext(file_c));
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test52_req_ftr17_case2_delete_bottom_reselects_previous_file() {
+        let root = new_temp_root("ftr_test52");
+        let dir = root.join("2026").join("03").join("12");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+
+        fs::remove_file(&file_c).expect("remove C");
+
+        let decision = req_ftr17_post_delete_decision_from_filesystem(file_c.as_path())
+            .expect("resolve post-delete decision");
+
+        assert_eq!(decision, ReqFtr17PostDeleteDecision::SelectPrevious(file_b));
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test53_req_ftr17_case3_delete_last_file_resets_to_neutral() {
+        let root = new_temp_root("ftr_test53");
+        let dir = root.join("2026").join("03").join("12");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+        fs::write(&file_a, "A").expect("seed A");
+
+        fs::remove_file(&file_a).expect("remove A");
+
+        let decision = req_ftr17_post_delete_decision_from_filesystem(file_a.as_path())
+            .expect("resolve post-delete decision");
+
+        assert_eq!(decision, ReqFtr17PostDeleteDecision::ResetToNeutral);
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test54_req_ftr17_reselection_ignores_folder_and_cross_directory_candidates() {
+        let root = new_temp_root("ftr_test54");
+        let dir = root.join("2026").join("03").join("12");
+        fs::create_dir_all(&dir).expect("create dir");
+        let other_dir = root.join("2026").join("03").join("13");
+        fs::create_dir_all(&other_dir).expect("create other dir");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        let folder_d = dir.join("folderD");
+        let cross_dir_file = other_dir.join("fileD.txt");
+
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+        fs::create_dir_all(&folder_d).expect("seed folder");
+        fs::write(&cross_dir_file, "D").expect("seed cross-dir file");
+
+        fs::remove_file(&file_b).expect("remove B");
+
+        let mut candidates = vec![
+            folder_d.clone(),
+            file_a.clone(),
+            cross_dir_file.clone(),
+            file_c.clone(),
+        ];
+        candidates.sort_by_key(|path| req_ftr17_sort_key(path.as_path()));
+
+        let decision =
+            req_ftr17_post_delete_decision_from_remaining_files(file_b.as_path(), &candidates);
+
+        assert_eq!(decision, ReqFtr17PostDeleteDecision::SelectNext(file_c));
+        remove_temp_root(root.as_path());
     }
 }

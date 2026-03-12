@@ -445,64 +445,14 @@ impl Papyru2App {
                 window,
                 move |this, _, event: &FileTreeEvent, window, cx| match event {
                     FileTreeEvent::SelectionChanged(path) => {
-                        this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
-                        trace_debug(format!(
-                            "file_tree selection load_editor requested path={}",
-                            path.display()
-                        ));
-                        let loaded = this.open_file(path.clone(), window, cx);
-                        trace_debug(format!(
-                            "file_tree selection load_editor result path={} loaded={}",
-                            path.display(),
-                            loaded
-                        ));
-                        let transition = transition_selection_load_result(loaded);
-                        this.selection_focus_reassert_pending =
-                            transition.next_focus_reassert_pending;
-                        if transition.schedule_focus_reassert {
-                            trace_debug(format!(
-                                "file_tree selection focus_reassert scheduled path={} pending={}",
-                                path.display(),
-                                this.selection_focus_reassert_pending
-                            ));
-                            cx.defer_in(window, move |this, window, cx| {
-                                let tick_transition = transition_focus_reassert_tick(
-                                    this.selection_focus_reassert_pending,
-                                );
-                                this.selection_focus_reassert_pending =
-                                    tick_transition.next_focus_reassert_pending;
-                                if !tick_transition.run_focus_reassert {
-                                    trace_debug(
-                                        "file_tree selection focus_reassert skipped pending=false",
-                                    );
-                                    return;
-                                }
-                                this.file_tree.update(cx, |file_tree, _| {
-                                    file_tree.focus(window);
-                                });
-                                let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
-                                let editor_focused = this.editor.read(cx).is_focused(window, cx);
-                                trace_debug(format!(
-                                    "file_tree selection focus_reassert done file_tree_focused={} editor_focused={} pending={}",
-                                    file_tree_focused,
-                                    editor_focused,
-                                    this.selection_focus_reassert_pending
-                                ));
-                            });
-                        }
-                        if loaded {
-                            trace_debug(format!(
-                                "file_tree selection promoted_to_edit path={}",
-                                path.display()
-                            ));
-                        }
+                        this.handle_file_tree_selection_changed(path.clone(), window, cx);
                     }
                     FileTreeEvent::OpenFile(path) => {
                         this.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
                         let _ = this.open_file(path.clone(), window, cx);
                     }
                     FileTreeEvent::RecyclebinDeleteRequested(paths) => {
-                        this.on_file_tree_delete_requested(paths.clone(), cx);
+                        this.on_file_tree_delete_requested(paths.clone(), window, cx);
                     }
                 },
             ),
@@ -903,6 +853,42 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn ftr_test55_req_ftr17_delete_routing_invariants_remain_unchanged() {
+        let cases = [
+            (true, false, false, false),
+            (false, true, true, false),
+            (false, false, true, false),
+            (false, true, true, true),
+        ];
+
+        for (
+            file_tree_focused,
+            file_tree_delete_shortcut_armed,
+            editor_focused,
+            singleline_focused,
+        ) in cases
+        {
+            let actual = should_route_delete_to_file_tree(
+                file_tree_focused,
+                file_tree_delete_shortcut_armed,
+                editor_focused,
+                singleline_focused,
+            );
+            let expected = !singleline_focused
+                && (file_tree_focused || (editor_focused && file_tree_delete_shortcut_armed));
+            assert_eq!(
+                actual,
+                expected,
+                "req-ftr17 invariant mismatch (file_tree_focused={}, shortcut_armed={}, editor_focused={}, singleline_focused={})",
+                file_tree_focused,
+                file_tree_delete_shortcut_armed,
+                editor_focused,
+                singleline_focused
+            );
         }
     }
 
