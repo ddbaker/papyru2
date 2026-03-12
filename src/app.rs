@@ -393,6 +393,24 @@ impl Papyru2App {
             "file_tree app root_dir={}",
             file_tree_root_dir.display()
         ));
+        let startup_daily_dir = match crate::file_update_handler::ensure_daily_directory(
+            app_paths.user_document_dir.as_path(),
+            chrono::Local::now(),
+        ) {
+            Ok(path) => {
+                trace_debug(format!(
+                    "file_tree req-ftr18 startup daily_dir ensured path={}",
+                    path.display()
+                ));
+                path
+            }
+            Err(error) => {
+                trace_debug(format!(
+                    "file_tree req-ftr18 startup daily_dir ensure failed error={error}"
+                ));
+                panic!("file_tree req-ftr18 startup daily_dir ensure failed: {error}");
+            }
+        };
         let file_tree = cx.new(move |cx| {
             FileTreeView::new(protected_delete_roots, file_tree_root_dir.clone(), cx)
         });
@@ -576,7 +594,7 @@ impl Papyru2App {
             editor.set_current_editing_file_path(None);
         });
 
-        Self {
+        let mut this = Self {
             top_bars,
             singleline,
             editor,
@@ -591,7 +609,11 @@ impl Papyru2App {
             app_paths,
             _file_tree_watcher: file_tree_watcher,
             selection_focus_reassert_pending: false,
-        }
+        };
+
+        this.apply_req_ftr18_startup_daily_folder_positioning(startup_daily_dir, window, cx);
+
+        this
     }
 }
 

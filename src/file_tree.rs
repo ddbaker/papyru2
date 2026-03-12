@@ -111,6 +111,39 @@ impl FileTreeView {
         self.load_files(cx);
     }
 
+    pub fn apply_req_ftr18_startup_daily_folder_position(
+        &mut self,
+        daily_dir: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, usize)> {
+        let Some((expanded_count, target_index, last_index)) =
+            req_ftr18_expand_and_resolve_top_index(
+                &mut self.root_items,
+                self.tree_root_dir.as_path(),
+                daily_dir,
+            )
+        else {
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr18 startup positioning skipped daily_dir={} root_dir={}",
+                daily_dir.display(),
+                self.tree_root_dir.display()
+            ));
+            return None;
+        };
+
+        self.set_items_from_model(cx);
+
+        crate::app::trace_debug(format!(
+            "file_tree req-ftr18 startup positioning prepared daily_dir={} expanded_count={} target_index={} last_index={}",
+            daily_dir.display(),
+            expanded_count,
+            target_index,
+            last_index
+        ));
+
+        Some((target_index, last_index))
+    }
+
     pub fn selection_count(&self) -> usize {
         self.selected_item_ids.len()
     }
@@ -219,6 +252,7 @@ impl FileTreeView {
         let mut refreshed_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
         let expanded_restored_count =
             apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
+        req_ftr18_append_scroll_padding_items(&mut refreshed_items);
         self.root_items = refreshed_items;
         crate::app::trace_debug(format!(
             "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={}",
@@ -272,6 +306,9 @@ impl FileTreeView {
         let Some((_, item_id, is_folder)) = self.current_tree_selection_snapshot(cx) else {
             return;
         };
+        if is_req_ftr18_scroll_padding_item_id(item_id.as_str()) {
+            return;
+        }
 
         self.apply_single_selection_by_id(item_id.as_str(), "enter_key", cx);
         crate::app::trace_debug(format!(
@@ -356,6 +393,10 @@ impl FileTreeView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if is_req_ftr18_scroll_padding_item_id(item.id.as_ref()) {
+            return;
+        }
+
         self.focus(window);
         self.rebuild_visible_item_ids();
 
@@ -492,6 +533,11 @@ impl Render for FileTreeView {
                         view.update(cx, |this, cx| {
                             let item = entry.item();
                             let item_id = item.id.to_string();
+
+                            if is_req_ftr18_scroll_padding_item_id(item_id.as_str()) {
+                                return ListItem::new(ix).w_full().py_0p5().px_2().child(" ");
+                            }
+
                             let is_selected = this.selected_item_ids.contains(&item_id);
 
                             let icon = if !entry.is_folder() {
@@ -603,6 +649,9 @@ fn retain_existing_selections(
 
 fn collect_visible_item_ids(items: &[TreeItem], ids: &mut Vec<String>) {
     for item in items {
+        if is_req_ftr18_scroll_padding_item_id(item.id.as_ref()) {
+            continue;
+        }
         ids.push(item.id.to_string());
         if item.is_folder() && item.is_expanded() {
             collect_visible_item_ids(&item.children, ids);
@@ -658,6 +707,52 @@ fn apply_expanded_folder_item_ids(
     restored
 }
 
+fn req_ftr18_daily_folder_chain_item_ids(
+    tree_root_dir: &Path,
+    daily_dir: &Path,
+) -> Option<HashSet<String>> {
+    if !daily_dir.starts_with(tree_root_dir) || daily_dir == tree_root_dir {
+        return None;
+    }
+
+    let mut item_ids = HashSet::new();
+    let mut cursor = Some(daily_dir);
+    while let Some(path) = cursor {
+        if path == tree_root_dir {
+            break;
+        }
+        if !path.starts_with(tree_root_dir) {
+            return None;
+        }
+        item_ids.insert(path.to_string_lossy().to_string());
+        cursor = path.parent();
+    }
+
+    if item_ids.is_empty() {
+        return None;
+    }
+
+    Some(item_ids)
+}
+
+fn req_ftr18_expand_and_resolve_top_index(
+    items: &mut [TreeItem],
+    tree_root_dir: &Path,
+    daily_dir: &Path,
+) -> Option<(usize, usize, usize)> {
+    let expanded_ids = req_ftr18_daily_folder_chain_item_ids(tree_root_dir, daily_dir)?;
+    let expanded_count = apply_expanded_folder_item_ids(items, &expanded_ids);
+
+    let mut visible_item_ids = Vec::new();
+    collect_visible_item_ids_including_padding(items, &mut visible_item_ids);
+
+    let target_item_id = daily_dir.to_string_lossy().to_string();
+    let target_index = find_visible_index(&visible_item_ids, target_item_id.as_str())?;
+    let last_index = visible_item_ids.len().checked_sub(1)?;
+
+    Some((expanded_count, target_index, last_index))
+}
+
 fn find_visible_index(visible_item_ids: &[String], item_id: &str) -> Option<usize> {
     visible_item_ids
         .iter()
@@ -685,6 +780,37 @@ fn select_range_items(
 fn replace_single_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) {
     selected_item_ids.clear();
     selected_item_ids.insert(item_id.to_string());
+}
+
+const REQ_FTR18_SCROLL_PADDING_ROW_COUNT: usize = 128;
+const REQ_FTR18_SCROLL_PADDING_ID_PREFIX: &str = "__req_ftr18_scroll_padding__";
+
+fn is_req_ftr18_scroll_padding_item_id(item_id: &str) -> bool {
+    item_id.starts_with(REQ_FTR18_SCROLL_PADDING_ID_PREFIX)
+}
+
+fn req_ftr18_append_scroll_padding_items(items: &mut Vec<TreeItem>) {
+    if items
+        .iter()
+        .any(|item| is_req_ftr18_scroll_padding_item_id(item.id.as_ref()))
+    {
+        return;
+    }
+
+    for ix in 0..REQ_FTR18_SCROLL_PADDING_ROW_COUNT {
+        items.push(
+            TreeItem::new(format!("{REQ_FTR18_SCROLL_PADDING_ID_PREFIX}:{ix}"), "").disabled(true),
+        );
+    }
+}
+
+fn collect_visible_item_ids_including_padding(items: &[TreeItem], ids: &mut Vec<String>) {
+    for item in items {
+        ids.push(item.id.to_string());
+        if item.is_folder() && item.is_expanded() {
+            collect_visible_item_ids_including_padding(&item.children, ids);
+        }
+    }
 }
 
 fn selected_row_highlight_color(is_selected: bool) -> Option<Hsla> {
@@ -1127,6 +1253,83 @@ impl crate::app::Papyru2App {
             current_edit_path.is_some(),
             restored_selection
         ));
+    }
+
+    pub(crate) fn apply_req_ftr18_startup_daily_folder_positioning(
+        &mut self,
+        daily_dir: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let immediate_plan = self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.apply_req_ftr18_startup_daily_folder_position(daily_dir.as_path(), cx)
+        });
+        let Some((target_index, last_index)) = immediate_plan else {
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr18 startup immediate prepared=false daily_dir={}",
+                daily_dir.display()
+            ));
+            return;
+        };
+
+        self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.tree_state.update(cx, |state, cx| {
+                state.set_selected_index(Some(last_index), cx);
+                state.scroll_to_item(last_index, gpui::ScrollStrategy::Bottom);
+            });
+        });
+        crate::app::trace_debug(format!(
+            "file_tree req-ftr18 startup immediate primed_bottom=true target_index={} last_index={} daily_dir={}",
+            target_index,
+            last_index,
+            daily_dir.display()
+        ));
+
+        let daily_dir_next_frame = daily_dir.clone();
+        cx.on_next_frame(window, move |this, window, cx| {
+            let next_frame_plan = this.file_tree.update(cx, |file_tree, cx| {
+                file_tree.apply_req_ftr18_startup_daily_folder_position(
+                    daily_dir_next_frame.as_path(),
+                    cx,
+                )
+            });
+
+            if let Some((target_index, _)) = next_frame_plan {
+                this.file_tree.update(cx, |file_tree, cx| {
+                    file_tree.tree_state.update(cx, |state, cx| {
+                        state.set_selected_index(Some(target_index), cx);
+                        state.scroll_to_item(target_index, gpui::ScrollStrategy::Top);
+                    });
+                });
+            }
+
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr18 startup next_frame_1 prepared={} daily_dir={}",
+                next_frame_plan.is_some(),
+                daily_dir_next_frame.display()
+            ));
+
+            cx.on_next_frame(window, move |this, _window, cx| {
+                let second_next_frame_plan = this.file_tree.update(cx, |file_tree, cx| {
+                    file_tree.apply_req_ftr18_startup_daily_folder_position(daily_dir.as_path(), cx)
+                });
+
+                if let Some((target_index, _)) = second_next_frame_plan {
+                    this.file_tree.update(cx, |file_tree, cx| {
+                        file_tree.tree_state.update(cx, |state, cx| {
+                            state.set_selected_index(Some(target_index), cx);
+                            state.scroll_to_item(target_index, gpui::ScrollStrategy::Top);
+                        });
+                    });
+                }
+
+                crate::app::trace_debug(format!(
+                    "file_tree req-ftr18 startup next_frame_2 prepared={} daily_dir={}",
+                    second_next_frame_plan.is_some(),
+                    daily_dir.display()
+                ));
+            });
+        });
     }
 
     pub(crate) fn on_file_tree_delete_requested(
@@ -1916,6 +2119,126 @@ mod tests {
             req_ftr17_post_delete_decision_from_remaining_files(file_b.as_path(), &candidates);
 
         assert_eq!(decision, ReqFtr17PostDeleteDecision::SelectNext(file_c));
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test57_req_ftr18_startup_expands_yyyy_mm_dd_folders() {
+        let root = new_temp_root("ftr_test57");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("13");
+        let file = day.join("fileA.txt");
+        let recyclebin = root.join("recyclebin");
+
+        let mut items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").children([
+                        TreeItem::new(day.to_string_lossy().to_string(), "13").child(
+                            TreeItem::new(file.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ]),
+                ]),
+                TreeItem::new(recyclebin.to_string_lossy().to_string(), "recyclebin"),
+            ];
+
+        let (expanded_count, _, _) = super::req_ftr18_expand_and_resolve_top_index(
+            &mut items,
+            root.as_path(),
+            day.as_path(),
+        )
+        .expect("resolve req-ftr18 startup target");
+        let expanded_ids = expanded_folder_item_ids(&items);
+
+        assert_eq!(expanded_count, 3);
+        assert!(expanded_ids.contains(year.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(month.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(day.to_string_lossy().as_ref()));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test58_req_ftr18_startup_resolves_dd_visible_index_for_top_scroll() {
+        let root = new_temp_root("ftr_test58");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("13");
+        let file = day.join("fileA.txt");
+        let recyclebin = root.join("recyclebin");
+
+        let mut items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").children([
+                        TreeItem::new(day.to_string_lossy().to_string(), "13").child(
+                            TreeItem::new(file.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ]),
+                ]),
+                TreeItem::new(recyclebin.to_string_lossy().to_string(), "recyclebin"),
+            ];
+
+        let (_, target_index, _) = super::req_ftr18_expand_and_resolve_top_index(
+            &mut items,
+            root.as_path(),
+            day.as_path(),
+        )
+        .expect("resolve req-ftr18 startup target");
+
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+
+        assert_eq!(
+            find_visible_index(&visible_ids, day.to_string_lossy().as_ref()),
+            Some(2)
+        );
+        assert_eq!(
+            visible_ids.get(target_index),
+            Some(&day.to_string_lossy().to_string())
+        );
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test59_req_ftr18_startup_targets_dd_folder_without_forced_file_selection() {
+        let root = new_temp_root("ftr_test59");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("13");
+        let file = day.join("fileA.txt");
+        let recyclebin = root.join("recyclebin");
+
+        let mut items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").children([
+                        TreeItem::new(day.to_string_lossy().to_string(), "13").child(
+                            TreeItem::new(file.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ]),
+                ]),
+                TreeItem::new(recyclebin.to_string_lossy().to_string(), "recyclebin"),
+            ];
+
+        let (_, target_index, _) = super::req_ftr18_expand_and_resolve_top_index(
+            &mut items,
+            root.as_path(),
+            day.as_path(),
+        )
+        .expect("resolve req-ftr18 startup target");
+
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+        let target_item_id = visible_ids
+            .get(target_index)
+            .expect("target item should exist");
+
+        assert_eq!(target_item_id, &day.to_string_lossy().to_string());
+        assert!(!target_item_id.ends_with(".txt"));
+
         remove_temp_root(root.as_path());
     }
 }

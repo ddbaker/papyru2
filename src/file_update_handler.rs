@@ -605,6 +605,15 @@ pub fn daily_directory(user_document_dir: &Path, now: DateTime<Local>) -> PathBu
     user_document_dir.join(now.format("%Y/%m/%d").to_string())
 }
 
+pub fn ensure_daily_directory(
+    user_document_dir: &Path,
+    now: DateTime<Local>,
+) -> io::Result<PathBuf> {
+    let dir = daily_directory(user_document_dir, now);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 pub fn forced_singleline_stem_after_create(
     singleline_value: &str,
     created_path: &Path,
@@ -657,8 +666,7 @@ fn txt_candidate_path(dir: &Path, stem: &str, suffix: usize) -> PathBuf {
 }
 
 pub fn create_new_text_file(request: &CreateFileRequest) -> io::Result<PathBuf> {
-    let dir = daily_directory(request.user_document_dir.as_path(), request.now);
-    fs::create_dir_all(&dir)?;
+    let dir = ensure_daily_directory(request.user_document_dir.as_path(), request.now)?;
 
     let stem = stem_from_singleline_value(&request.singleline_value, request.now);
     let mut suffix = 1usize;
@@ -1281,6 +1289,18 @@ mod tests {
         let root = PathBuf::from("C:/tmp/root");
         let dir = daily_directory(root.as_path(), fixed_now());
         assert!(dir.ends_with(Path::new("2026").join("02").join("28")));
+    }
+
+    #[test]
+    fn ftr_test56_startup_daily_directory_helper_creates_missing_yyyy_mm_dd() {
+        let root = new_temp_root("ftr_test56");
+        let created = ensure_daily_directory(root.as_path(), fixed_now())
+            .expect("ensure startup daily directory");
+
+        assert!(created.ends_with(Path::new("2026").join("02").join("28")));
+        assert!(created.is_dir());
+
+        remove_temp_root(root.as_path());
     }
 
     #[test]
