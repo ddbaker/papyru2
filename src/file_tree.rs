@@ -248,18 +248,43 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
-        let expanded_folder_item_ids = expanded_folder_item_ids(&self.root_items);
+        let previous_items = self.root_items.clone();
+        let expanded_folder_item_ids = expanded_folder_item_ids(&previous_items);
         let mut refreshed_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
         let expanded_restored_count =
             apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
+        let req_ftr19_daily_dirs = req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            self.tree_root_dir.as_path(),
+        );
+        let req_ftr19_opened_folder_count = apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            self.tree_root_dir.as_path(),
+            &req_ftr19_daily_dirs,
+        );
+        let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
         req_ftr18_append_scroll_padding_items(&mut refreshed_items);
         self.root_items = refreshed_items;
+
+        if req_ftr19_daily_dir_count > 0 {
+            let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
+            daily_dirs.sort();
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr19 first_file_auto_open daily_dirs={} opened_folder_count={}",
+                daily_dirs.join(","),
+                req_ftr19_opened_folder_count
+            ));
+        }
+
         crate::app::trace_debug(format!(
-            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={}",
+            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={}",
             self.tree_root_dir.display(),
             self.root_items.len(),
             expanded_folder_item_ids.len(),
-            expanded_restored_count
+            expanded_restored_count,
+            req_ftr19_daily_dir_count,
+            req_ftr19_opened_folder_count
         ));
         self.set_items_from_model(cx);
     }
@@ -689,6 +714,27 @@ fn apply_expanded_folder_item_ids(
     items: &mut [TreeItem],
     expanded_folder_item_ids: &HashSet<String>,
 ) -> usize {
+    let comparable_expanded_folder_item_ids: HashSet<String> = expanded_folder_item_ids
+        .iter()
+        .map(|item_id| {
+            comparable_path(Path::new(item_id))
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
+
+    apply_expanded_folder_item_ids_with_comparable(
+        items,
+        expanded_folder_item_ids,
+        &comparable_expanded_folder_item_ids,
+    )
+}
+
+fn apply_expanded_folder_item_ids_with_comparable(
+    items: &mut [TreeItem],
+    expanded_folder_item_ids: &HashSet<String>,
+    comparable_expanded_folder_item_ids: &HashSet<String>,
+) -> usize {
     let mut restored = 0usize;
 
     for item in items {
@@ -696,36 +742,206 @@ fn apply_expanded_folder_item_ids(
             continue;
         }
 
-        if expanded_folder_item_ids.contains(item.id.as_ref()) {
+        let item_id = item.id.as_ref();
+        let comparable_item_id = comparable_path(Path::new(item_id))
+            .to_string_lossy()
+            .to_string();
+
+        if (expanded_folder_item_ids.contains(item_id)
+            || comparable_expanded_folder_item_ids.contains(comparable_item_id.as_str()))
+            && !item.is_expanded()
+        {
             *item = item.clone().expanded(true);
             restored += 1;
         }
 
-        restored += apply_expanded_folder_item_ids(&mut item.children, expanded_folder_item_ids);
+        restored += apply_expanded_folder_item_ids_with_comparable(
+            &mut item.children,
+            expanded_folder_item_ids,
+            comparable_expanded_folder_item_ids,
+        );
     }
 
     restored
+}
+
+fn req_ftr19_is_ascii_digit_component(value: &str, expected_width: usize) -> bool {
+    value.len() == expected_width && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn req_ftr19_is_yyyy_mm_dd_directory(tree_root_dir: &Path, directory: &Path) -> bool {
+    let comparable_root = comparable_path(tree_root_dir);
+    let comparable_directory = comparable_path(directory);
+
+    if !comparable_directory.starts_with(comparable_root.as_path())
+        || comparable_directory == comparable_root
+    {
+        return false;
+    }
+
+    let Ok(relative) = comparable_directory.strip_prefix(comparable_root.as_path()) else {
+        return false;
+    };
+
+    let mut components = relative.components();
+    let Some(std::path::Component::Normal(year)) = components.next() else {
+        return false;
+    };
+    let Some(std::path::Component::Normal(month)) = components.next() else {
+        return false;
+    };
+    let Some(std::path::Component::Normal(day)) = components.next() else {
+        return false;
+    };
+    if components.next().is_some() {
+        return false;
+    }
+
+    let Some(year) = year.to_str() else {
+        return false;
+    };
+    let Some(month) = month.to_str() else {
+        return false;
+    };
+    let Some(day) = day.to_str() else {
+        return false;
+    };
+
+    req_ftr19_is_ascii_digit_component(year, 4)
+        && req_ftr19_is_ascii_digit_component(month, 2)
+        && req_ftr19_is_ascii_digit_component(day, 2)
+}
+
+fn req_ftr19_collect_file_counts_by_daily_dir(
+    items: &[TreeItem],
+    tree_root_dir: &Path,
+    file_counts_by_daily_dir: &mut std::collections::HashMap<String, usize>,
+) {
+    for item in items {
+        if item.is_folder() {
+            req_ftr19_collect_file_counts_by_daily_dir(
+                &item.children,
+                tree_root_dir,
+                file_counts_by_daily_dir,
+            );
+            continue;
+        }
+
+        let item_id = item.id.as_ref();
+        if is_req_ftr18_scroll_padding_item_id(item_id) {
+            continue;
+        }
+
+        let item_path = Path::new(item_id);
+        let Some(parent_dir) = item_path.parent() else {
+            continue;
+        };
+        if !req_ftr19_is_yyyy_mm_dd_directory(tree_root_dir, parent_dir) {
+            continue;
+        }
+
+        let daily_dir_id = comparable_path(parent_dir).to_string_lossy().to_string();
+        *file_counts_by_daily_dir.entry(daily_dir_id).or_insert(0) += 1;
+    }
+}
+
+fn req_ftr19_first_file_daily_dirs(
+    previous_items: &[TreeItem],
+    refreshed_items: &[TreeItem],
+    tree_root_dir: &Path,
+) -> HashSet<String> {
+    let mut previous_counts = std::collections::HashMap::new();
+    req_ftr19_collect_file_counts_by_daily_dir(previous_items, tree_root_dir, &mut previous_counts);
+
+    let mut refreshed_counts = std::collections::HashMap::new();
+    req_ftr19_collect_file_counts_by_daily_dir(
+        refreshed_items,
+        tree_root_dir,
+        &mut refreshed_counts,
+    );
+
+    let mut triggered_daily_dirs = HashSet::new();
+    for (daily_dir, refreshed_count) in refreshed_counts {
+        if refreshed_count == 0 {
+            continue;
+        }
+        let previous_count = previous_counts.get(&daily_dir).copied().unwrap_or(0);
+        if previous_count == 0 {
+            triggered_daily_dirs.insert(daily_dir);
+        }
+    }
+
+    triggered_daily_dirs
+}
+
+fn apply_req_ftr19_first_file_auto_open(
+    items: &mut [TreeItem],
+    tree_root_dir: &Path,
+    triggered_daily_dirs: &HashSet<String>,
+) -> usize {
+    let mut opened_folder_count = 0usize;
+
+    for daily_dir in triggered_daily_dirs {
+        let daily_dir_path = Path::new(daily_dir);
+        if !req_ftr19_is_yyyy_mm_dd_directory(tree_root_dir, daily_dir_path) {
+            continue;
+        }
+
+        let Some(expanded_ids) =
+            req_ftr18_daily_folder_chain_item_ids(tree_root_dir, daily_dir_path)
+        else {
+            crate::app::trace_debug(format!(
+                "file_tree req-ftr19 first_file_auto_open skipped_chain daily_dir={} root_dir={}",
+                daily_dir_path.display(),
+                tree_root_dir.display()
+            ));
+            continue;
+        };
+        opened_folder_count += apply_expanded_folder_item_ids(items, &expanded_ids);
+    }
+
+    opened_folder_count
 }
 
 fn req_ftr18_daily_folder_chain_item_ids(
     tree_root_dir: &Path,
     daily_dir: &Path,
 ) -> Option<HashSet<String>> {
-    if !daily_dir.starts_with(tree_root_dir) || daily_dir == tree_root_dir {
+    let comparable_root = comparable_path(tree_root_dir);
+    let comparable_daily = comparable_path(daily_dir);
+
+    if !comparable_daily.starts_with(comparable_root.as_path())
+        || comparable_daily == comparable_root
+    {
         return None;
     }
 
     let mut item_ids = HashSet::new();
-    let mut cursor = Some(daily_dir);
+
+    let mut cursor = Some(comparable_daily.as_path());
     while let Some(path) = cursor {
-        if path == tree_root_dir {
+        if path == comparable_root.as_path() {
             break;
         }
-        if !path.starts_with(tree_root_dir) {
+        if !path.starts_with(comparable_root.as_path()) {
             return None;
         }
         item_ids.insert(path.to_string_lossy().to_string());
         cursor = path.parent();
+    }
+
+    if daily_dir.starts_with(tree_root_dir) && daily_dir != tree_root_dir {
+        let mut raw_cursor = Some(daily_dir);
+        while let Some(path) = raw_cursor {
+            if path == tree_root_dir {
+                break;
+            }
+            if !path.starts_with(tree_root_dir) {
+                break;
+            }
+            item_ids.insert(path.to_string_lossy().to_string());
+            raw_cursor = path.parent();
+        }
     }
 
     if item_ids.is_empty() {
@@ -2238,6 +2454,298 @@ mod tests {
 
         assert_eq!(target_item_id, &day.to_string_lossy().to_string());
         assert!(!target_item_id.ends_with(".txt"));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test60_req_ftr19_detects_first_file_transition_for_yyyy_mm_dd() {
+        let root = new_temp_root("ftr_test60");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+
+        let previous_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026")
+                    .children([TreeItem::new(month.to_string_lossy().to_string(), "03")
+                        .child(TreeItem::new(day.to_string_lossy().to_string(), "14"))]),
+            ];
+        let refreshed_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14").child(
+                            TreeItem::new(file_a.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ),
+                ]),
+            ];
+
+        let triggered_daily_dirs = super::req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            root.as_path(),
+        );
+        let day_id = super::comparable_path(day.as_path())
+            .to_string_lossy()
+            .to_string();
+
+        assert_eq!(triggered_daily_dirs.len(), 1);
+        assert!(triggered_daily_dirs.contains(day_id.as_str()));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test61_req_ftr19_ignores_non_first_file_transition_for_yyyy_mm_dd() {
+        let root = new_temp_root("ftr_test61");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+        let file_b = day.join("fileB.txt");
+
+        let previous_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14").child(
+                            TreeItem::new(file_a.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ),
+                ]),
+            ];
+        let refreshed_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14").children([
+                            TreeItem::new(file_a.to_string_lossy().to_string(), "fileA.txt"),
+                            TreeItem::new(file_b.to_string_lossy().to_string(), "fileB.txt"),
+                        ]),
+                    ),
+                ]),
+            ];
+
+        let triggered_daily_dirs = super::req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            root.as_path(),
+        );
+
+        assert!(triggered_daily_dirs.is_empty());
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test62_req_ftr19_ignores_non_date_directory_parents() {
+        let root = new_temp_root("ftr_test62");
+        let notes_dir = root.join("notes");
+        let file_a = notes_dir.join("fileA.txt");
+
+        let previous_items = vec![
+            TreeItem::new(notes_dir.to_string_lossy().to_string(), "notes"),
+            TreeItem::new(
+                root.join("recyclebin").to_string_lossy().to_string(),
+                "recyclebin",
+            ),
+        ];
+        let refreshed_items = vec![
+            TreeItem::new(notes_dir.to_string_lossy().to_string(), "notes").child(TreeItem::new(
+                file_a.to_string_lossy().to_string(),
+                "fileA.txt",
+            )),
+            TreeItem::new(
+                root.join("recyclebin").to_string_lossy().to_string(),
+                "recyclebin",
+            ),
+        ];
+
+        let triggered_daily_dirs = super::req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            root.as_path(),
+        );
+
+        assert!(triggered_daily_dirs.is_empty());
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test63_req_ftr19_first_file_trigger_expands_yyyy_mm_dd_chain() {
+        let root = new_temp_root("ftr_test63");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+
+        let previous_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026")
+                    .children([TreeItem::new(month.to_string_lossy().to_string(), "03")
+                        .child(TreeItem::new(day.to_string_lossy().to_string(), "14"))]),
+            ];
+        let mut refreshed_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14").child(
+                            TreeItem::new(file_a.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ),
+                ]),
+            ];
+
+        let triggered_daily_dirs = super::req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            root.as_path(),
+        );
+        let opened_folder_count = super::apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            root.as_path(),
+            &triggered_daily_dirs,
+        );
+        let expanded_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(opened_folder_count, 3);
+        assert!(expanded_ids.contains(year.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(month.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(day.to_string_lossy().as_ref()));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test64_req_ftr19_first_file_trigger_is_idempotent_when_chain_already_open() {
+        let root = new_temp_root("ftr_test64");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+
+        let previous_items = vec![
+            TreeItem::new(year.to_string_lossy().to_string(), "2026")
+                .expanded(true)
+                .children([TreeItem::new(month.to_string_lossy().to_string(), "03")
+                    .expanded(true)
+                    .child(TreeItem::new(day.to_string_lossy().to_string(), "14").expanded(true))]),
+        ];
+        let mut refreshed_items = vec![
+            TreeItem::new(year.to_string_lossy().to_string(), "2026")
+                .expanded(true)
+                .children([TreeItem::new(month.to_string_lossy().to_string(), "03")
+                    .expanded(true)
+                    .child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14")
+                            .expanded(true)
+                            .child(TreeItem::new(
+                                file_a.to_string_lossy().to_string(),
+                                "fileA.txt",
+                            )),
+                    )]),
+        ];
+
+        let triggered_daily_dirs = super::req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            root.as_path(),
+        );
+        let opened_folder_count = super::apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            root.as_path(),
+            &triggered_daily_dirs,
+        );
+        let expanded_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(triggered_daily_dirs.len(), 1);
+        assert_eq!(opened_folder_count, 0);
+        assert!(expanded_ids.contains(year.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(month.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(day.to_string_lossy().as_ref()));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ftr_test65_req_ftr19_windows_prefixed_root_still_expands_daily_chain() {
+        let root = new_temp_root("ftr_test65");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+
+        let root_prefixed = PathBuf::from(format!(r"\\?\{}", root.display()));
+
+        let mut refreshed_items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").child(
+                        TreeItem::new(day.to_string_lossy().to_string(), "14").child(
+                            TreeItem::new(file_a.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ),
+                ]),
+            ];
+
+        let triggered_daily_dirs = HashSet::from([day.to_string_lossy().to_string()]);
+        let opened_folder_count = super::apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            root_prefixed.as_path(),
+            &triggered_daily_dirs,
+        );
+        let expanded_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(opened_folder_count, 3);
+        assert!(expanded_ids.contains(year.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(month.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(day.to_string_lossy().as_ref()));
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ftr_test66_req_ftr19_nonprefixed_daily_dir_matches_prefixed_tree_item_ids() {
+        let root = new_temp_root("ftr_test66");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("14");
+        let file_a = day.join("fileA.txt");
+
+        let root_prefixed = PathBuf::from(format!(r"\\?\{}", root.display()));
+        let year_prefixed = PathBuf::from(format!(r"\\?\{}", year.display()));
+        let month_prefixed = PathBuf::from(format!(r"\\?\{}", month.display()));
+        let day_prefixed = PathBuf::from(format!(r"\\?\{}", day.display()));
+        let file_a_prefixed = PathBuf::from(format!(r"\\?\{}", file_a.display()));
+
+        let mut refreshed_items = vec![
+            TreeItem::new(year_prefixed.to_string_lossy().to_string(), "2026").children([
+                TreeItem::new(month_prefixed.to_string_lossy().to_string(), "03").child(
+                    TreeItem::new(day_prefixed.to_string_lossy().to_string(), "14").child(
+                        TreeItem::new(file_a_prefixed.to_string_lossy().to_string(), "fileA.txt"),
+                    ),
+                ),
+            ]),
+        ];
+
+        let triggered_daily_dirs = HashSet::from([day.to_string_lossy().to_string()]);
+        let opened_folder_count = super::apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            root_prefixed.as_path(),
+            &triggered_daily_dirs,
+        );
+        let expanded_ids = expanded_folder_item_ids(&refreshed_items);
+
+        assert_eq!(opened_folder_count, 3);
+        assert!(expanded_ids.contains(year_prefixed.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(month_prefixed.to_string_lossy().as_ref()));
+        assert!(expanded_ids.contains(day_prefixed.to_string_lossy().as_ref()));
 
         remove_temp_root(root.as_path());
     }
