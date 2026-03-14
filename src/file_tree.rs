@@ -322,9 +322,7 @@ impl FileTreeView {
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
-        let mut selected_ids: Vec<_> = self.selected_item_ids.iter().cloned().collect();
-        selected_ids.sort_unstable();
-        selected_ids.into_iter().map(PathBuf::from).collect()
+        req_ftr20_selected_paths_in_visible_order(&self.selected_item_ids, &self.visible_item_ids)
     }
 
     fn handle_enter_key(&mut self, cx: &mut Context<Self>) {
@@ -995,6 +993,20 @@ fn find_visible_index(visible_item_ids: &[String], item_id: &str) -> Option<usiz
         .position(|visible_item_id| visible_item_id == item_id)
 }
 
+fn req_ftr20_selected_paths_in_visible_order(
+    selected_item_ids: &HashSet<String>,
+    visible_item_ids: &[String],
+) -> Vec<PathBuf> {
+    let mut selected_ids: Vec<String> = selected_item_ids.iter().cloned().collect();
+    selected_ids.sort_by(|left, right| {
+        let left_index = find_visible_index(visible_item_ids, left).unwrap_or(usize::MAX);
+        let right_index = find_visible_index(visible_item_ids, right).unwrap_or(usize::MAX);
+        left_index.cmp(&right_index).then_with(|| left.cmp(right))
+    });
+
+    selected_ids.into_iter().map(PathBuf::from).collect()
+}
+
 fn select_range_items(
     selected_item_ids: &mut HashSet<String>,
     visible_item_ids: &[String],
@@ -1335,20 +1347,28 @@ fn req_ftr17_post_delete_decision_from_filesystem(
     ))
 }
 
+fn req_ftr20_anchor_deleted_file_source_path(outcome: &FileTreeDeleteOutcome) -> Option<PathBuf> {
+    outcome
+        .moved_to_recyclebin
+        .iter()
+        .rev()
+        .find(|(_, moved_target)| moved_target.is_file())
+        .map(|(deleted_source, _)| deleted_source.clone())
+}
+
 fn req_ftr17_post_delete_decision_for_outcome(
     outcome: &FileTreeDeleteOutcome,
-) -> io::Result<Option<ReqFtr17PostDeleteDecision>> {
-    if !outcome.permanently_deleted.is_empty() || outcome.moved_to_recyclebin.len() != 1 {
+) -> io::Result<Option<(PathBuf, ReqFtr17PostDeleteDecision)>> {
+    if !outcome.permanently_deleted.is_empty() {
         return Ok(None);
     }
 
-    let (deleted_source, moved_target) = &outcome.moved_to_recyclebin[0];
-    if moved_target.is_dir() {
+    let Some(deleted_anchor_source) = req_ftr20_anchor_deleted_file_source_path(outcome) else {
         return Ok(None);
-    }
+    };
 
-    let decision = req_ftr17_post_delete_decision_from_filesystem(deleted_source.as_path())?;
-    Ok(Some(decision))
+    let decision = req_ftr17_post_delete_decision_from_filesystem(deleted_anchor_source.as_path())?;
+    Ok(Some((deleted_anchor_source, decision)))
 }
 
 fn req_ftr17_deleted_paths_contain_current_edit(
@@ -1590,7 +1610,14 @@ impl crate::app::Papyru2App {
                 ));
 
                 match req_ftr17_post_delete_decision_for_outcome(&outcome) {
-                    Ok(Some(decision)) => {
+                    Ok(Some((deleted_anchor_source, decision))) => {
+                        crate::app::trace_debug(format!(
+                            "file_tree req-ftr20 anchor_selected_bottom_file={} moved_count={} permanently_deleted_count={}",
+                            deleted_anchor_source.display(),
+                            outcome.moved_to_recyclebin.len(),
+                            outcome.permanently_deleted.len()
+                        ));
+
                         let moved_sources: Vec<PathBuf> = outcome
                             .moved_to_recyclebin
                             .iter()
@@ -2767,6 +2794,212 @@ mod tests {
         assert!(expanded_ids.contains(month_prefixed.to_string_lossy().as_ref()));
         assert!(expanded_ids.contains(day_prefixed.to_string_lossy().as_ref()));
 
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test67_req_ftr20_case1_multi_delete_reselects_next_from_bottom_anchor() {
+        let root = new_temp_root("ftr_test67");
+        let dir = root.join("2026").join("03").join("12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        let file_d = dir.join("fileD.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+        fs::write(&file_d, "D").expect("seed D");
+
+        let outcome = delete_entries_for_file_tree(
+            &[file_b.clone(), file_c.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete B and C");
+
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved files");
+
+        assert_eq!(
+            result,
+            (
+                file_c.clone(),
+                ReqFtr17PostDeleteDecision::SelectNext(file_d.clone())
+            )
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test68_req_ftr20_case2_multi_delete_reselects_previous_from_bottom_anchor() {
+        let root = new_temp_root("ftr_test68");
+        let dir = root.join("2026").join("03").join("12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+
+        let outcome = delete_entries_for_file_tree(
+            &[file_b.clone(), file_c.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete B and C");
+
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved files");
+
+        assert_eq!(
+            result,
+            (
+                file_c.clone(),
+                ReqFtr17PostDeleteDecision::SelectPrevious(file_a.clone())
+            )
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test69_req_ftr20_case3_multi_delete_last_files_resets_to_neutral() {
+        let root = new_temp_root("ftr_test69");
+        let dir = root.join("2026").join("03").join("12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+
+        let outcome = delete_entries_for_file_tree(
+            &[file_a.clone(), file_b.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete A and B");
+
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved files");
+
+        assert_eq!(
+            result,
+            (file_b.clone(), ReqFtr17PostDeleteDecision::ResetToNeutral)
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test70_req_ftr20_anchor_uses_bottom_visible_order_not_selection_insertion_order() {
+        let visible_item_ids = vec![
+            "/root/fileA.txt".to_string(),
+            "/root/fileB.txt".to_string(),
+            "/root/fileC.txt".to_string(),
+            "/root/fileD.txt".to_string(),
+        ];
+
+        let mut selected_item_ids = HashSet::new();
+        selected_item_ids.insert("/root/fileC.txt".to_string());
+        selected_item_ids.insert("/root/fileB.txt".to_string());
+
+        let selected_paths =
+            super::req_ftr20_selected_paths_in_visible_order(&selected_item_ids, &visible_item_ids);
+
+        assert_eq!(
+            selected_paths,
+            vec![
+                PathBuf::from("/root/fileB.txt"),
+                PathBuf::from("/root/fileC.txt"),
+            ]
+        );
+        assert_eq!(
+            selected_paths.last().cloned(),
+            Some(PathBuf::from("/root/fileC.txt"))
+        );
+    }
+
+    #[test]
+    fn ftr_test71_req_ftr20_multi_delete_reselection_ignores_folder_and_cross_directory_candidates()
+    {
+        let root = new_temp_root("ftr_test71");
+        let dir = root.join("2026").join("03").join("12");
+        let other_dir = root.join("2026").join("03").join("13");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&other_dir).expect("create other dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        let folder_z = dir.join("zFolder");
+        let cross_dir_file = other_dir.join("fileD.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+        fs::create_dir_all(&folder_z).expect("seed folder");
+        fs::write(&cross_dir_file, "D").expect("seed cross-dir file");
+
+        let outcome = delete_entries_for_file_tree(
+            &[file_b.clone(), file_c.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete B and C");
+
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved files");
+
+        assert_eq!(
+            result,
+            (
+                file_c.clone(),
+                ReqFtr17PostDeleteDecision::SelectPrevious(file_a.clone())
+            )
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test72_req_ftr20_single_delete_behavior_still_uses_deleted_file_as_anchor() {
+        let root = new_temp_root("ftr_test72");
+        let dir = root.join("2026").join("03").join("12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+
+        let outcome =
+            delete_entries_for_file_tree(std::slice::from_ref(&file_b), recyclebin_dir.as_path())
+                .expect("delete B");
+
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved file");
+
+        assert_eq!(
+            result,
+            (
+                file_b.clone(),
+                ReqFtr17PostDeleteDecision::SelectNext(file_c.clone())
+            )
+        );
         remove_temp_root(root.as_path());
     }
 }

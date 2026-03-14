@@ -928,6 +928,36 @@ mod tests {
     }
 
     #[test]
+    fn ftr_test73_req_ftr20_delete_routing_invariants_remain_unchanged_for_multi_delete_flow() {
+        for file_tree_focused in [false, true] {
+            for file_tree_delete_shortcut_armed in [false, true] {
+                for editor_focused in [false, true] {
+                    for singleline_focused in [false, true] {
+                        let actual = should_route_delete_to_file_tree(
+                            file_tree_focused,
+                            file_tree_delete_shortcut_armed,
+                            editor_focused,
+                            singleline_focused,
+                        );
+                        let expected = !singleline_focused
+                            && (file_tree_focused
+                                || (editor_focused && file_tree_delete_shortcut_armed));
+                        assert_eq!(
+                            actual,
+                            expected,
+                            "req-ftr20 routing invariant mismatch (file_tree_focused={}, shortcut_armed={}, editor_focused={}, singleline_focused={})",
+                            file_tree_focused,
+                            file_tree_delete_shortcut_armed,
+                            editor_focused,
+                            singleline_focused
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ftr_test30_req_ftr14_create_flow_uses_watcher_refresh_only() {
         assert!(req_ftr14_create_flow_uses_watcher_refresh_only());
     }
