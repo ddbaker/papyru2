@@ -11,6 +11,7 @@ use gpui_component::{
     tree::{TreeItem, TreeState, tree},
 };
 
+use gpui_component::ActiveTheme as _;
 pub enum FileTreeEvent {
     SelectionChanged(PathBuf),
     OpenFile(PathBuf),
@@ -24,6 +25,10 @@ pub(crate) fn should_restore_selection_after_watcher_refresh(
     selected_count == 0 && current_edit_path.is_some()
 }
 
+pub(crate) fn req_editor_file_tree_font_size_policy() -> &'static str {
+    crate::app::req_editor_shared_text_size_policy()
+}
+
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     focus_handle: FocusHandle,
@@ -34,6 +39,7 @@ pub struct FileTreeView {
     delete_shortcut_armed: bool,
     selection_anchor_item_id: Option<String>,
     visible_item_ids: Vec<String>,
+    font_size_logged_once: bool,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
@@ -57,10 +63,15 @@ impl FileTreeView {
             delete_shortcut_armed: false,
             selection_anchor_item_id: None,
             visible_item_ids: Vec::new(),
+            font_size_logged_once: false,
         };
         crate::app::trace_debug(format!(
             "file_tree init root_dir={}",
             this.tree_root_dir.display()
+        ));
+        crate::app::trace_debug(format!(
+            "req-editor6 file_tree font_size_policy={}",
+            req_editor_file_tree_font_size_policy()
         ));
         this.load_files(cx);
         this
@@ -544,69 +555,78 @@ impl FileTreeView {
 
 impl Render for FileTreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.font_size_logged_once {
+            crate::app::trace_debug(format!(
+                "req-editor-font-size snapshot component=file_tree policy={} tree_text_size=text_sm theme.font_size={:?} theme.mono_font_size={:?}",
+                req_editor_file_tree_font_size_policy(),
+                cx.theme().font_size,
+                cx.theme().mono_font_size,
+            ));
+            self.font_size_logged_once = true;
+        }
+
         self.rebuild_visible_item_ids();
         let view = cx.entity();
+
+        let tree_view = crate::app::apply_req_editor_shared_text_size(tree(
+            &self.tree_state,
+            move |ix, entry, _selected, _window, cx| {
+                view.update(cx, |this, cx| {
+                    let item = entry.item();
+                    let item_id = item.id.to_string();
+
+                    if is_req_ftr18_scroll_padding_item_id(item_id.as_str()) {
+                        return ListItem::new(ix).w_full().py_0p5().px_2().child(" ");
+                    }
+
+                    let is_selected = this.selected_item_ids.contains(&item_id);
+
+                    let icon = if !entry.is_folder() {
+                        IconName::File
+                    } else if entry.is_expanded() {
+                        IconName::FolderOpen
+                    } else {
+                        IconName::Folder
+                    };
+                    let row_content = if use_checkbox_selection_markers() {
+                        h_flex()
+                            .gap_2()
+                            .child(if is_selected { "[x]" } else { "[ ]" })
+                            .child(icon)
+                            .child(item.label.clone())
+                    } else {
+                        h_flex().gap_2().child(icon).child(item.label.clone())
+                    };
+
+                    let row = ListItem::new(ix)
+                        .selected(is_selected)
+                        .w_full()
+                        .py_0p5()
+                        .px_2()
+                        .pl(px(16.) * entry.depth() + px(8.))
+                        .child(row_content)
+                        .on_click(cx.listener({
+                            let item = item.clone();
+                            move |this, event, window, cx| {
+                                this.on_row_click(&item, ix, event, window, cx);
+                            }
+                        }));
+                    if let Some(color) = selected_row_highlight_color(is_selected) {
+                        row.bg(color)
+                    } else {
+                        row
+                    }
+                })
+            },
+        ))
+        .p_1()
+        .h_full();
 
         div()
             .size_full()
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(Self::on_key_down))
-            .child(
-                tree(
-                    &self.tree_state,
-                    move |ix, entry, _selected, _window, cx| {
-                        view.update(cx, |this, cx| {
-                            let item = entry.item();
-                            let item_id = item.id.to_string();
-
-                            if is_req_ftr18_scroll_padding_item_id(item_id.as_str()) {
-                                return ListItem::new(ix).w_full().py_0p5().px_2().child(" ");
-                            }
-
-                            let is_selected = this.selected_item_ids.contains(&item_id);
-
-                            let icon = if !entry.is_folder() {
-                                IconName::File
-                            } else if entry.is_expanded() {
-                                IconName::FolderOpen
-                            } else {
-                                IconName::Folder
-                            };
-                            let row_content = if use_checkbox_selection_markers() {
-                                h_flex()
-                                    .gap_2()
-                                    .child(if is_selected { "[x]" } else { "[ ]" })
-                                    .child(icon)
-                                    .child(item.label.clone())
-                            } else {
-                                h_flex().gap_2().child(icon).child(item.label.clone())
-                            };
-
-                            let row = ListItem::new(ix)
-                                .selected(is_selected)
-                                .w_full()
-                                .py_0p5()
-                                .px_2()
-                                .pl(px(16.) * entry.depth() + px(8.))
-                                .child(row_content)
-                                .on_click(cx.listener({
-                                    let item = item.clone();
-                                    move |this, event, window, cx| {
-                                        this.on_row_click(&item, ix, event, window, cx);
-                                    }
-                                }));
-                            if let Some(color) = selected_row_highlight_color(is_selected) {
-                                row.bg(color)
-                            } else {
-                                row
-                            }
-                        })
-                    },
-                )
-                .text_sm()
-                .p_1()
-                .h_full(),
-            )
+            .child(tree_view)
     }
 }
 

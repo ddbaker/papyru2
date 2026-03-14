@@ -29,9 +29,14 @@ pub struct Papyru2Editor {
     pending_programmatic_change_events: usize,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
+    font_size_logged_once: bool,
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
+
+pub(crate) fn req_editor_editor_font_size_policy() -> &'static str {
+    crate::app::req_editor_shared_text_size_policy()
+}
 
 pub(crate) fn read_editor_text_from_disk(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
@@ -127,6 +132,11 @@ impl Papyru2Editor {
             }
         })];
 
+        crate::app::trace_debug(format!(
+            "req-editor8 editor font_size_policy={}",
+            req_editor_editor_font_size_policy()
+        ));
+
         Self {
             input_state,
             last_value,
@@ -134,6 +144,7 @@ impl Papyru2Editor {
             pending_programmatic_change_events: 0,
             current_editing_file_path: None,
             _subscriptions,
+            font_size_logged_once: false,
         }
     }
 
@@ -333,15 +344,31 @@ impl Papyru2Editor {
 
 impl Render for Papyru2Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 1.0);
+
+        if !self.font_size_logged_once {
+            crate::app::trace_debug(format!(
+                "req-editor-font-size snapshot component=editor policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_1px={:?} mono_font_family={} theme.font_size={:?} theme.mono_font_size={:?}",
+                req_editor_editor_font_size_policy(),
+                experimental_text_size_px,
+                cx.theme().mono_font_family,
+                cx.theme().font_size,
+                cx.theme().mono_font_size,
+            ));
+            self.font_size_logged_once = true;
+        }
+
         div()
             .size_full()
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::on_move_up_action))
             .child(
-                Input::new(&self.input_state)
-                    .size_full()
-                    .font_family(cx.theme().mono_font_family.clone())
-                    .text_size(cx.theme().mono_font_size),
+                crate::app::apply_req_editor_shared_text_size(
+                    Input::new(&self.input_state)
+                        .size_full()
+                        .font_family(cx.theme().mono_font_family.clone()),
+                )
+                .text_size(experimental_text_size_px),
             )
     }
 }

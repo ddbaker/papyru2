@@ -5,6 +5,7 @@ use gpui::*;
 use gpui_component::input::InputEvent;
 use gpui_component::input::{Input, InputState};
 
+use gpui_component::ActiveTheme as _;
 #[derive(Clone, Debug)]
 pub enum SingleLineEvent {
     PressEnter,
@@ -25,9 +26,14 @@ pub struct SingleLineInput {
     pending_programmatic_change_events: usize,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
+    font_size_logged_once: bool,
 }
 
 impl EventEmitter<SingleLineEvent> for SingleLineInput {}
+
+pub(crate) fn req_editor_singleline_font_size_policy() -> &'static str {
+    crate::app::req_editor_shared_text_size_policy()
+}
 
 impl SingleLineInput {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -60,6 +66,11 @@ impl SingleLineInput {
             }
         })];
 
+        crate::app::trace_debug(format!(
+            "req-editor7 singleline_input font_size_policy={}",
+            req_editor_singleline_font_size_policy()
+        ));
+
         Self {
             sl_input_state,
             last_value,
@@ -67,6 +78,7 @@ impl SingleLineInput {
             pending_programmatic_change_events: 0,
             current_editing_file_path: None,
             _subscriptions,
+            font_size_logged_once: false,
         }
     }
 
@@ -209,10 +221,28 @@ impl SingleLineInput {
 
 impl Render for SingleLineInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 1.0);
+
+        if !self.font_size_logged_once {
+            crate::app::trace_debug(format!(
+                "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_1px={:?} theme.font_size={:?} theme.mono_font_size={:?}",
+                req_editor_singleline_font_size_policy(),
+                experimental_text_size_px,
+                cx.theme().font_size,
+                cx.theme().mono_font_size,
+            ));
+            self.font_size_logged_once = true;
+        }
+
         div()
             .w_full()
             .on_key_down(cx.listener(Self::on_key_down))
-            .child(Input::new(&self.sl_input_state).w_full())
+            .child(
+                crate::app::apply_req_editor_shared_text_size(
+                    Input::new(&self.sl_input_state).w_full(),
+                )
+                .text_size(experimental_text_size_px),
+            )
     }
 }
 

@@ -37,6 +37,19 @@ pub(crate) fn compact_text(text: &str) -> String {
     text.replace('\\', "\\\\").replace('\n', "\\n")
 }
 
+pub(crate) const REQ_EDITOR_SHARED_TEXT_SIZE_POLICY: &str = "text_sm";
+
+pub(crate) fn req_editor_shared_text_size_policy() -> &'static str {
+    REQ_EDITOR_SHARED_TEXT_SIZE_POLICY
+}
+
+pub(crate) fn apply_req_editor_shared_text_size<T>(element: T) -> T
+where
+    T: Styled,
+{
+    element.text_sm()
+}
+
 pub(crate) fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused: bool,
     editor_was_focused: bool,
@@ -1029,6 +1042,36 @@ mod tests {
     #[test]
     fn lo_test2_req_lo3_shared_inter_panel_spacing_is_10px() {
         assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
+    }
+
+    #[test]
+    fn editor_test6_req_editor6_7_8_font_size_policy_maps_are_identified() {
+        assert_eq!(super::req_editor_shared_text_size_policy(), "text_sm");
+        assert_eq!(
+            crate::file_tree::req_editor_file_tree_font_size_policy(),
+            "text_sm"
+        );
+        assert_eq!(
+            crate::singleline_input::req_editor_singleline_font_size_policy(),
+            "text_sm"
+        );
+        assert_eq!(
+            crate::editor::req_editor_editor_font_size_policy(),
+            "text_sm"
+        );
+    }
+
+    #[test]
+    fn editor_test9_req_editor9_singleline_and_editor_share_file_tree_font_size_policy() {
+        let file_tree_policy = crate::file_tree::req_editor_file_tree_font_size_policy();
+        assert_eq!(
+            crate::singleline_input::req_editor_singleline_font_size_policy(),
+            file_tree_policy
+        );
+        assert_eq!(
+            crate::editor::req_editor_editor_font_size_policy(),
+            file_tree_policy
+        );
     }
 
     #[test]
