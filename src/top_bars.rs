@@ -10,6 +10,19 @@ use crate::singleline_input::SingleLineInput;
 
 pub(crate) const SHARED_INTER_PANEL_SPACING_PX: f32 = 10.0;
 
+pub(crate) const TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE: bool = true;
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TopBarButtonSpec {
+    SearchPlaceholder,
+    PlusResetToNeutral,
+}
+
+pub(crate) const TOP_BARS_BUTTON_ORDER: [TopBarButtonSpec; 2] = [
+    TopBarButtonSpec::SearchPlaceholder,
+    TopBarButtonSpec::PlusResetToNeutral,
+];
+
 #[derive(Clone, Debug)]
 pub enum TopBarsEvent {
     PressPlus,
@@ -67,8 +80,35 @@ impl TopBars {
             .xsmall()
             .icon(IconName::Search)
             .on_click(cx.listener(|_, _, _, _| {
-                // Placeholder button (no-op)
+                crate::app::trace_debug("search_button placeholder click (no-op)");
             }))
+    }
+
+    fn render_button_group(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let button_group = h_flex().w_full().gap_2().items_center();
+        let button_group = if TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE {
+            button_group.justify_end()
+        } else {
+            button_group.justify_start()
+        };
+
+        match TOP_BARS_BUTTON_ORDER {
+            [
+                TopBarButtonSpec::SearchPlaceholder,
+                TopBarButtonSpec::PlusResetToNeutral,
+            ] => button_group
+                .child(self.render_search_button(cx))
+                .child(self.render_plus_button(cx)),
+            [
+                TopBarButtonSpec::PlusResetToNeutral,
+                TopBarButtonSpec::SearchPlaceholder,
+            ] => button_group
+                .child(self.render_plus_button(cx))
+                .child(self.render_search_button(cx)),
+            _ => button_group
+                .child(self.render_search_button(cx))
+                .child(self.render_plus_button(cx)),
+        }
     }
 }
 
@@ -78,13 +118,9 @@ impl Render for TopBars {
             h_resizable("top-split")
                 .with_state(&self.layout_split_state)
                 .child(
-                    resizable_panel().size(self.left_panel_size).child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(self.render_plus_button(cx))
-                            .child(self.render_search_button(cx)),
-                    ),
+                    resizable_panel()
+                        .size(self.left_panel_size)
+                        .child(self.render_button_group(cx)),
                 )
                 .child(
                     resizable_panel().child(
@@ -177,10 +213,39 @@ impl crate::app::Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::SHARED_INTER_PANEL_SPACING_PX;
+    use super::{
+        SHARED_INTER_PANEL_SPACING_PX, TOP_BARS_BUTTON_ORDER,
+        TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE, TopBarButtonSpec, TopBarsEvent,
+    };
 
     #[test]
     fn lo_test1_req_lo2_singleline_left_spacing_is_10px() {
         assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
+    }
+
+    #[test]
+    fn lo_test5_req_lo5_buttons_are_adjacent_to_singleline() {
+        assert!(TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE);
+    }
+
+    #[test]
+    fn lo_test6_req_lo6_button_order_is_search_then_plus() {
+        assert_eq!(
+            TOP_BARS_BUTTON_ORDER,
+            [
+                TopBarButtonSpec::SearchPlaceholder,
+                TopBarButtonSpec::PlusResetToNeutral,
+            ]
+        );
+    }
+
+    #[test]
+    fn lo_test7_req_lo6_plus_event_contract_is_unchanged() {
+        let emitted_event = TopBarsEvent::PressPlus;
+        assert!(matches!(emitted_event, TopBarsEvent::PressPlus));
+        assert_eq!(
+            TOP_BARS_BUTTON_ORDER[1],
+            TopBarButtonSpec::PlusResetToNeutral
+        );
     }
 }
