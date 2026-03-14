@@ -434,7 +434,8 @@ impl FileTreeView {
         self.focus(window);
         self.rebuild_visible_item_ids();
 
-        if event.modifiers().shift {
+        let modifiers = event.modifiers();
+        if modifiers.shift {
             self.apply_shift_range_selection_to_index(
                 row_index,
                 Some(row_index),
@@ -447,6 +448,22 @@ impl FileTreeView {
                 row_index,
                 self.selected_item_ids.len()
             ));
+            return;
+        }
+
+        if modifiers.secondary() && !item.is_folder() {
+            let selected_now = toggle_item_selection(&mut self.selected_item_ids, item.id.as_ref());
+            self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
+            self.selection_anchor_item_id = Some(item.id.to_string());
+            crate::app::trace_debug(format!(
+                "file_tree row click secondary_toggle=true item={} selected_now={} index={} selected_count={} delete_shortcut_armed={}",
+                item.id,
+                selected_now,
+                row_index,
+                self.selected_item_ids.len(),
+                self.delete_shortcut_armed
+            ));
+            cx.notify();
             return;
         }
 
@@ -672,7 +689,6 @@ fn sort_tree_items(items: &mut [TreeItem]) {
     });
 }
 
-#[cfg(test)]
 fn toggle_item_selection(selected_item_ids: &mut HashSet<String>, item_id: &str) -> bool {
     if selected_item_ids.contains(item_id) {
         selected_item_ids.remove(item_id);
@@ -2998,6 +3014,180 @@ mod tests {
             (
                 file_b.clone(),
                 ReqFtr17PostDeleteDecision::SelectNext(file_c.clone())
+            )
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test74_req_ftr21_secondary_click_adds_selection_without_clearing_existing() {
+        let mut selected_item_ids = HashSet::from(["/root/fileA.txt".to_string()]);
+
+        let selected_now = toggle_item_selection(&mut selected_item_ids, "/root/fileC.txt");
+
+        assert!(selected_now);
+        assert_eq!(selected_item_ids.len(), 2);
+        assert!(selected_item_ids.contains("/root/fileA.txt"));
+        assert!(selected_item_ids.contains("/root/fileC.txt"));
+    }
+
+    #[test]
+    fn ftr_test75_req_ftr21_secondary_click_toggles_selected_item_off_without_clearing_others() {
+        let mut selected_item_ids =
+            HashSet::from(["/root/fileA.txt".to_string(), "/root/fileC.txt".to_string()]);
+
+        let selected_now = toggle_item_selection(&mut selected_item_ids, "/root/fileC.txt");
+
+        assert!(!selected_now);
+        assert_eq!(selected_item_ids.len(), 1);
+        assert!(selected_item_ids.contains("/root/fileA.txt"));
+        assert!(!selected_item_ids.contains("/root/fileC.txt"));
+    }
+
+    #[test]
+    fn ftr_test76_req_ftr21_secondary_click_builds_non_contiguous_selection_set() {
+        let mut selected_item_ids = HashSet::new();
+
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileA.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileC.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileE.txt"
+        ));
+
+        assert_eq!(selected_item_ids.len(), 3);
+        assert!(selected_item_ids.contains("/root/fileA.txt"));
+        assert!(selected_item_ids.contains("/root/fileC.txt"));
+        assert!(selected_item_ids.contains("/root/fileE.txt"));
+        assert!(!selected_item_ids.contains("/root/fileB.txt"));
+        assert!(!selected_item_ids.contains("/root/fileD.txt"));
+    }
+
+    #[test]
+    fn ftr_test77_req_ftr21_plain_click_after_secondary_multi_select_collapses_to_single_file() {
+        let mut selected_item_ids = HashSet::new();
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileA.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileC.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileE.txt"
+        ));
+
+        replace_single_selection(&mut selected_item_ids, "/root/fileB.txt");
+
+        assert_eq!(selected_item_ids.len(), 1);
+        assert!(selected_item_ids.contains("/root/fileB.txt"));
+    }
+
+    #[test]
+    fn ftr_test78_req_ftr21_shift_range_after_secondary_click_uses_anchor_visible_order() {
+        let visible_item_ids = vec![
+            "/root/fileA.txt".to_string(),
+            "/root/fileB.txt".to_string(),
+            "/root/fileC.txt".to_string(),
+            "/root/fileD.txt".to_string(),
+            "/root/fileE.txt".to_string(),
+        ];
+        let mut selected_item_ids = HashSet::new();
+
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileA.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileC.txt"
+        ));
+
+        let anchor_index = find_visible_index(&visible_item_ids, "/root/fileC.txt")
+            .expect("anchor index for fileC");
+        let target_index = find_visible_index(&visible_item_ids, "/root/fileE.txt")
+            .expect("target index for fileE");
+        select_range_items(
+            &mut selected_item_ids,
+            &visible_item_ids,
+            anchor_index,
+            target_index,
+        );
+
+        assert_eq!(selected_item_ids.len(), 3);
+        assert!(selected_item_ids.contains("/root/fileC.txt"));
+        assert!(selected_item_ids.contains("/root/fileD.txt"));
+        assert!(selected_item_ids.contains("/root/fileE.txt"));
+        assert!(!selected_item_ids.contains("/root/fileA.txt"));
+    }
+
+    #[test]
+    fn ftr_test79_req_ftr21_delete_paths_from_secondary_multi_select_stay_compatible_with_req_ftr20_anchor_policy()
+     {
+        let visible_item_ids = vec![
+            "/root/fileA.txt".to_string(),
+            "/root/fileB.txt".to_string(),
+            "/root/fileC.txt".to_string(),
+            "/root/fileD.txt".to_string(),
+        ];
+        let mut selected_item_ids = HashSet::new();
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileC.txt"
+        ));
+        assert!(toggle_item_selection(
+            &mut selected_item_ids,
+            "/root/fileB.txt"
+        ));
+
+        let selected_paths =
+            super::req_ftr20_selected_paths_in_visible_order(&selected_item_ids, &visible_item_ids);
+
+        assert_eq!(
+            selected_paths,
+            vec![
+                PathBuf::from("/root/fileB.txt"),
+                PathBuf::from("/root/fileC.txt")
+            ]
+        );
+
+        let root = new_temp_root("ftr_test79");
+        let dir = root.join("2026").join("03").join("12");
+        let recyclebin_dir = root.join("recyclebin");
+        fs::create_dir_all(&dir).expect("create dir");
+        fs::create_dir_all(&recyclebin_dir).expect("create recyclebin");
+
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        let file_d = dir.join("fileD.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+        fs::write(&file_c, "C").expect("seed C");
+        fs::write(&file_d, "D").expect("seed D");
+
+        let outcome = delete_entries_for_file_tree(
+            &[file_b.clone(), file_c.clone()],
+            recyclebin_dir.as_path(),
+        )
+        .expect("delete B and C");
+        let result = super::req_ftr17_post_delete_decision_for_outcome(&outcome)
+            .expect("resolve post-delete decision")
+            .expect("decision for moved files");
+
+        assert_eq!(
+            result,
+            (
+                file_c.clone(),
+                ReqFtr17PostDeleteDecision::SelectNext(file_d.clone())
             )
         );
         remove_temp_root(root.as_path());
