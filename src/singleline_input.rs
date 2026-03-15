@@ -221,11 +221,11 @@ impl SingleLineInput {
 
 impl Render for SingleLineInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 1.0);
+        let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
 
         if !self.font_size_logged_once {
             crate::app::trace_debug(format!(
-                "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_1px={:?} theme.font_size={:?} theme.mono_font_size={:?}",
+                "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} theme.font_size={:?} theme.mono_font_size={:?}",
                 req_editor_singleline_font_size_policy(),
                 experimental_text_size_px,
                 cx.theme().font_size,
