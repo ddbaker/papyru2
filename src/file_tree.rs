@@ -442,6 +442,10 @@ impl FileTreeView {
                 "shift_click",
                 cx,
             );
+            if self.selected_item_ids.len() > 1 {
+                self.tree_state
+                    .update(cx, |state, cx| state.set_selected_index(None, cx));
+            }
             crate::app::trace_debug(format!(
                 "file_tree row click shift_range=true item={} index={} selected_count={}",
                 item.id,
@@ -455,6 +459,10 @@ impl FileTreeView {
             let selected_now = toggle_item_selection(&mut self.selected_item_ids, item.id.as_ref());
             self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
             self.selection_anchor_item_id = Some(item.id.to_string());
+            if self.selected_item_ids.len() > 1 {
+                self.tree_state
+                    .update(cx, |state, cx| state.set_selected_index(None, cx));
+            }
             crate::app::trace_debug(format!(
                 "file_tree row click secondary_toggle=true item={} selected_now={} index={} selected_count={} delete_shortcut_armed={}",
                 item.id,
@@ -585,7 +593,7 @@ impl Render for FileTreeView {
 
         let tree_view = crate::app::apply_req_editor_shared_text_size(tree(
             &self.tree_state,
-            move |ix, entry, _selected, _window, cx| {
+            move |ix, entry, tree_selected, _window, cx| {
                 view.update(cx, |this, cx| {
                     let item = entry.item();
                     let item_id = item.id.to_string();
@@ -614,7 +622,10 @@ impl Render for FileTreeView {
                     };
 
                     let row = ListItem::new(ix)
-                        .selected(is_selected)
+                        .selected(use_native_tree_selection_highlight(
+                            tree_selected,
+                            is_selected,
+                        ))
                         .w_full()
                         .py_0p5()
                         .px_2()
@@ -1075,6 +1086,10 @@ fn collect_visible_item_ids_including_padding(items: &[TreeItem], ids: &mut Vec<
             collect_visible_item_ids_including_padding(&item.children, ids);
         }
     }
+}
+
+fn use_native_tree_selection_highlight(tree_selected: bool, is_selected: bool) -> bool {
+    tree_selected && !is_selected
 }
 
 fn selected_row_highlight_color(is_selected: bool) -> Option<Hsla> {
@@ -3191,5 +3206,13 @@ mod tests {
             )
         );
         remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test80_req_ftr22_multi_selected_rows_disable_native_tree_highlight() {
+        assert!(!super::use_native_tree_selection_highlight(true, true));
+        assert!(!super::use_native_tree_selection_highlight(false, true));
+        assert!(!super::use_native_tree_selection_highlight(false, false));
+        assert!(super::use_native_tree_selection_highlight(true, false));
     }
 }
