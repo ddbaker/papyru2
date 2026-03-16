@@ -688,6 +688,7 @@ mod tests {
         text: &str,
     ) -> crate::file_update_handler::EditorAutoSavePayload {
         crate::file_update_handler::EditorAutoSavePayload {
+            user_document_dir: PathBuf::from("C:/tmp"),
             current_path: PathBuf::from(path),
             editor_text: text.to_string(),
         }

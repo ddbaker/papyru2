@@ -36,6 +36,7 @@ pub struct CreateFileRequest {
 
 #[derive(Debug, Clone)]
 pub struct RenameFileRequest {
+    pub user_document_dir: PathBuf,
     pub current_path: PathBuf,
     pub singleline_value: String,
     pub now: DateTime<Local>,
@@ -43,6 +44,7 @@ pub struct RenameFileRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EditorAutoSavePayload {
+    pub user_document_dir: PathBuf,
     pub current_path: PathBuf,
     pub editor_text: String,
 }
@@ -487,6 +489,7 @@ impl SinglelineCreateFileWorkflow {
     pub fn try_rename_in_edit(
         &self,
         singleline_value: &str,
+        user_document_dir: &Path,
         now_local: DateTime<Local>,
     ) -> io::Result<Option<PathBuf>> {
         let mut state = self
@@ -503,6 +506,7 @@ impl SinglelineCreateFileWorkflow {
         let result = self
             .dispatcher
             .dispatch_blocking(FileWorkflowEvent::Rename(RenameFileRequest {
+                user_document_dir: user_document_dir.to_path_buf(),
                 current_path,
                 singleline_value: singleline_value.to_string(),
                 now: now_local,
@@ -524,7 +528,7 @@ impl SinglelineCreateFileWorkflow {
     }
 
     pub fn try_autosave_in_edit(&self, payload: EditorAutoSavePayload) -> io::Result<bool> {
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -545,7 +549,22 @@ impl SinglelineCreateFileWorkflow {
             }))?;
 
         match result {
-            FileWorkflowEventResult::AutoSaved { .. } => Ok(true),
+            FileWorkflowEventResult::AutoSaved { path } => {
+                if state.current_edit_path.as_ref() != Some(&path) {
+                    let previous = state
+                        .current_edit_path
+                        .as_ref()
+                        .map(|old| old.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string());
+                    crate::app::trace_debug(format!(
+                        "req-newf35 autosave path updated old={} new={}",
+                        previous,
+                        path.display()
+                    ));
+                }
+                state.current_edit_path = Some(path);
+                Ok(true)
+            }
             FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::Renamed { .. } => {
                 debug_assert!(
                     false,
@@ -556,7 +575,11 @@ impl SinglelineCreateFileWorkflow {
         }
     }
 
-    pub fn flush_editor_content_in_edit(&self, editor_text: &str) -> io::Result<bool> {
+    pub fn flush_editor_content_in_edit(
+        &self,
+        editor_text: &str,
+        user_document_dir: &Path,
+    ) -> io::Result<bool> {
         let snapshot = self.snapshot();
         if snapshot.state != SinglelineFileState::Edit {
             return Ok(false);
@@ -566,6 +589,7 @@ impl SinglelineCreateFileWorkflow {
         };
 
         self.try_autosave_in_edit(EditorAutoSavePayload {
+            user_document_dir: user_document_dir.to_path_buf(),
             current_path,
             editor_text: editor_text.to_string(),
         })
@@ -612,6 +636,112 @@ pub fn ensure_daily_directory(
     let dir = daily_directory(user_document_dir, now);
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+fn comparable_path_for_daily_directory(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        return PathBuf::from(stripped);
+    }
+    path.to_path_buf()
+}
+
+fn is_path_under_daily_directory(current_path: &Path, daily_dir: &Path) -> bool {
+    current_path
+        .parent()
+        .map(|parent| {
+            comparable_path_for_daily_directory(parent)
+                == comparable_path_for_daily_directory(daily_dir)
+        })
+        .unwrap_or(false)
+}
+
+fn relocated_daily_candidate_path(daily_dir: &Path, original_file_name: &str, suffix: usize) -> PathBuf {
+    if suffix == 1 {
+        return daily_dir.join(original_file_name);
+    }
+
+    let original = Path::new(original_file_name);
+    let stem = original
+        .file_stem()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "file".to_string());
+    let extension = original
+        .extension()
+        .map(|value| value.to_string_lossy().to_string())
+        .filter(|value| !value.is_empty());
+
+    let file_name = match extension {
+        Some(extension) => format!("{stem}_{suffix}.{extension}"),
+        None => format!("{stem}_{suffix}"),
+    };
+    daily_dir.join(file_name)
+}
+
+fn move_existing_file_to_daily_directory(
+    current_path: &Path,
+    user_document_dir: &Path,
+    now: DateTime<Local>,
+) -> io::Result<PathBuf> {
+    if !current_path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "current editing file does not exist",
+        ));
+    }
+
+    let daily_dir = ensure_daily_directory(user_document_dir, now)?;
+    if is_path_under_daily_directory(current_path, daily_dir.as_path()) {
+        crate::app::trace_debug(format!(
+            "req-newf35 daily-move noop path={} daily_dir={}",
+            current_path.display(),
+            daily_dir.display()
+        ));
+        return Ok(current_path.to_path_buf());
+    }
+
+    let original_file_name = current_path
+        .file_name()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "current editing file path has no file name",
+            )
+        })?
+        .to_string_lossy()
+        .to_string();
+
+    crate::app::trace_debug(format!(
+        "req-newf35 daily-move start from={} to_dir={}",
+        current_path.display(),
+        daily_dir.display()
+    ));
+
+    let mut suffix = 1usize;
+    loop {
+        let target = relocated_daily_candidate_path(daily_dir.as_path(), &original_file_name, suffix);
+        if target.exists() {
+            suffix += 1;
+            continue;
+        }
+
+        match fs::rename(current_path, &target) {
+            Ok(_) => {
+                crate::app::trace_debug(format!(
+                    "req-newf35 daily-move success from={} to={}",
+                    current_path.display(),
+                    target.display()
+                ));
+                return Ok(target);
+            }
+            Err(error) if is_retryable_name_conflict_error(&error) || target.exists() => {
+                suffix += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 pub fn forced_singleline_stem_after_create(
@@ -695,7 +825,12 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
         ));
     }
 
-    let parent = request.current_path.parent().ok_or_else(|| {
+    let relocated_path = move_existing_file_to_daily_directory(
+        request.current_path.as_path(),
+        request.user_document_dir.as_path(),
+        request.now,
+    )?;
+    let parent = relocated_path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "current editing file path has no parent directory",
@@ -706,7 +841,7 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
     let mut suffix = 1usize;
     loop {
         let target = txt_candidate_path(parent, &stem, suffix);
-        if target == request.current_path {
+        if target == relocated_path {
             return Ok(target);
         }
         if target.exists() {
@@ -714,7 +849,7 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
             continue;
         }
 
-        match fs::rename(&request.current_path, &target) {
+        match fs::rename(&relocated_path, &target) {
             Ok(_) => return Ok(target),
             Err(error) if is_retryable_name_conflict_error(&error) || target.exists() => {
                 suffix += 1;
@@ -733,11 +868,13 @@ fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Resul
     let decoded: EditorAutoSavePayload = serde_json::from_slice(&serialized)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
 
-    write_editor_text_atomic(
+    let relocated_path = move_existing_file_to_daily_directory(
         decoded.current_path.as_path(),
-        decoded.editor_text.as_bytes(),
+        decoded.user_document_dir.as_path(),
+        Local::now(),
     )?;
-    Ok(decoded.current_path)
+    write_editor_text_atomic(relocated_path.as_path(), decoded.editor_text.as_bytes())?;
+    Ok(relocated_path)
 }
 
 fn write_editor_text_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -1049,17 +1186,14 @@ impl crate::app::Papyru2App {
         let editor_path = self.editor.read(cx).current_editing_file_path();
         if editor_path.as_ref() != Some(&current_path) {
             crate::app::trace_debug(format!(
-                "autosave critical path mismatch workflow={} editor={}",
+                "autosave path mismatch workflow={} editor={} (resync)",
                 current_path.display(),
                 editor_path
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|| "<none>".to_string())
             ));
-            debug_assert!(
-                false,
-                "autosave invariant violation: editor path and workflow path mismatch"
-            );
+            self.sync_current_editing_path_to_components(Some(current_path.clone()), cx);
         }
 
         crate::app::trace_debug(format!(
@@ -1070,6 +1204,7 @@ impl crate::app::Papyru2App {
 
         self.editor_autosave.mark_user_edit(
             EditorAutoSavePayload {
+                user_document_dir: self.app_paths.user_document_dir.clone(),
                 current_path,
                 editor_text: value.to_string(),
             },
@@ -1111,17 +1246,30 @@ impl crate::app::Papyru2App {
             editor_snapshot.value.len()
         ));
 
-        let flush_result = self
-            .file_workflow
-            .flush_editor_content_in_edit(&editor_snapshot.value);
+        let flush_result = self.file_workflow.flush_editor_content_in_edit(
+            &editor_snapshot.value,
+            self.app_paths.user_document_dir.as_path(),
+        );
         self.editor_autosave.reset_cycle();
 
         match flush_result {
             Ok(true) => {
+                let resolved_path = self
+                    .file_workflow
+                    .current_edit_path()
+                    .unwrap_or_else(|| current_path.clone());
+                if resolved_path != current_path {
+                    crate::app::trace_debug(format!(
+                        "req-newf35 pre-switch path updated old={} new={}",
+                        current_path.display(),
+                        resolved_path.display()
+                    ));
+                    self.sync_current_editing_path_to_components(Some(resolved_path.clone()), cx);
+                }
                 crate::app::trace_debug(format!(
                     "autosave pre-switch trigger={} consumed path={}",
                     trigger,
-                    current_path.display()
+                    resolved_path.display()
                 ));
                 true
             }
@@ -1368,7 +1516,7 @@ mod tests {
         assert!(created.exists());
 
         let renamed = workflow
-            .try_rename_in_edit("next", fixed_now())
+            .try_rename_in_edit("next", root.as_path(), fixed_now())
             .expect("rename in edit")
             .expect("renamed path");
         assert!(renamed.ends_with(Path::new("next.txt")));
@@ -1382,7 +1530,7 @@ mod tests {
     fn newf_test16_rename_event_is_noop_when_not_in_edit() {
         let workflow = SinglelineCreateFileWorkflow::new();
         let renamed = workflow
-            .try_rename_in_edit("next", fixed_now())
+            .try_rename_in_edit("next", Path::new("C:/tmp"), fixed_now())
             .expect("rename in neutral");
         assert!(renamed.is_none());
         workflow.dispatcher.shutdown();
@@ -1481,7 +1629,7 @@ mod tests {
             .expect("create");
 
         let renamed = workflow
-            .try_rename_in_edit("こんにちは 世界", fixed_now())
+            .try_rename_in_edit("こんにちは 世界", root.as_path(), fixed_now())
             .expect("rename")
             .expect("renamed path");
         assert!(
@@ -1507,7 +1655,7 @@ mod tests {
         fs::write(parent.join("renamed.txt"), "").expect("seed renamed.txt");
 
         let renamed = workflow
-            .try_rename_in_edit("renamed", fixed_now())
+            .try_rename_in_edit("renamed", root.as_path(), fixed_now())
             .expect("rename")
             .expect("path");
         assert!(renamed.ends_with(Path::new("renamed_2.txt")));
@@ -1525,7 +1673,7 @@ mod tests {
             .expect("path");
 
         let renamed = workflow
-            .try_rename_in_edit("same", fixed_now())
+            .try_rename_in_edit("same", root.as_path(), fixed_now())
             .expect("rename")
             .expect("path");
         assert_eq!(created, renamed);
@@ -1669,6 +1817,7 @@ mod tests {
         fs::write(daily.join("target.txt"), "target").expect("seed conflict target");
 
         let renamed = rename_text_file(&RenameFileRequest {
+            user_document_dir: root.clone(),
             current_path: source.clone(),
             singleline_value: "target".to_string(),
             now,
@@ -1719,6 +1868,7 @@ mod tests {
         fs::write(&target, "target-content").expect("seed target");
 
         let renamed = rename_text_file(&RenameFileRequest {
+            user_document_dir: root.clone(),
             current_path: source.clone(),
             singleline_value: "target".to_string(),
             now,
@@ -1749,6 +1899,7 @@ mod tests {
         fs::write(daily.join("conflict.txt"), "existing").expect("seed conflict");
 
         let renamed_collision = rename_text_file(&RenameFileRequest {
+            user_document_dir: root.clone(),
             current_path: source_collision,
             singleline_value: "conflict".to_string(),
             now,
@@ -1763,6 +1914,7 @@ mod tests {
         let source_sanitize = daily.join("source_sanitize.txt");
         fs::write(&source_sanitize, "source-sanitize").expect("seed sanitize source");
         let renamed_sanitize = rename_text_file(&RenameFileRequest {
+            user_document_dir: root.clone(),
             current_path: source_sanitize,
             singleline_value: "file:name".to_string(),
             now,
@@ -1777,6 +1929,168 @@ mod tests {
         remove_temp_root(root.as_path());
     }
 
+
+#[test]
+    fn newf_test36_req_newf35_rename_update_moves_existing_file_to_today_and_updates_path() {
+        let root = new_temp_root("newf_test36");
+        let now = fixed_now();
+        let today_dir = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&today_dir).expect("create today directory");
+        let old_dir = root.join("1999").join("01").join("01");
+        fs::create_dir_all(&old_dir).expect("create old directory");
+        let source = old_dir.join("fileA.txt");
+        fs::write(&source, "A-old").expect("seed source");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(source.clone());
+
+        let renamed = workflow
+            .try_rename_in_edit("fileB", root.as_path(), now)
+            .expect("rename in edit")
+            .expect("renamed path");
+        assert!(renamed.starts_with(today_dir.as_path()));
+        assert!(renamed.ends_with(Path::new("fileB.txt")));
+        assert!(renamed.exists());
+        assert!(!source.exists());
+        assert_eq!(workflow.current_edit_path(), Some(renamed));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test37_req_newf35_autosave_update_moves_existing_file_to_today_and_updates_path() {
+        let root = new_temp_root("newf_test37");
+        let old_dir = root.join("1999").join("01").join("01");
+        fs::create_dir_all(&old_dir).expect("create old directory");
+        let source = old_dir.join("fileA.txt");
+        fs::write(&source, "A-old").expect("seed source");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(source.clone());
+
+        let before = Local::now();
+        let saved = workflow
+            .try_autosave_in_edit(EditorAutoSavePayload {
+                user_document_dir: root.clone(),
+                current_path: source.clone(),
+                editor_text: "A-new".to_string(),
+            })
+            .expect("autosave after move");
+        let after = Local::now();
+
+        assert!(saved);
+        let current = workflow
+            .current_edit_path()
+            .expect("current edit path after autosave");
+        let today_before = daily_directory(root.as_path(), before);
+        let today_after = daily_directory(root.as_path(), after);
+        assert!(
+            is_path_under_daily_directory(current.as_path(), today_before.as_path())
+                || is_path_under_daily_directory(current.as_path(), today_after.as_path())
+        );
+        assert!(current.ends_with(Path::new("fileA.txt")));
+        assert_eq!(fs::read_to_string(&current).expect("read moved file"), "A-new");
+        assert!(!source.exists());
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test38_req_newf35_noop_when_path_is_already_today_daily_dir() {
+        let root = new_temp_root("newf_test38");
+        let now = fixed_now();
+        let today_dir = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&today_dir).expect("create today directory");
+        let source = today_dir.join("fileA.txt");
+        fs::write(&source, "A-old").expect("seed source");
+
+        let renamed = rename_text_file(&RenameFileRequest {
+            user_document_dir: root.clone(),
+            current_path: source.clone(),
+            singleline_value: "fileA".to_string(),
+            now,
+        })
+        .expect("rename no-op in today directory");
+
+        assert_eq!(renamed, source);
+        assert!(renamed.exists());
+        assert_eq!(
+            fs::read_to_string(&renamed).expect("read no-op file"),
+            "A-old"
+        );
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test39_req_newf36_event_b_rename_uses_event_a_updated_path() {
+        let root = new_temp_root("newf_test39");
+        let now = fixed_now();
+        let today_dir = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&today_dir).expect("create today directory");
+        let old_dir = root.join("1999").join("01").join("01");
+        fs::create_dir_all(&old_dir).expect("create old directory");
+        let source = old_dir.join("fileA.txt");
+        fs::write(&source, "A-old").expect("seed source");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(source.clone());
+
+        let event_a_path = workflow
+            .try_rename_in_edit("fileA", root.as_path(), now)
+            .expect("event-a rename")
+            .expect("event-a path");
+        assert!(event_a_path.starts_with(today_dir.as_path()));
+        assert!(event_a_path.ends_with(Path::new("fileA.txt")));
+
+        let event_b_path = workflow
+            .try_rename_in_edit("fileB", root.as_path(), now)
+            .expect("event-b rename")
+            .expect("event-b path");
+        assert!(event_b_path.starts_with(today_dir.as_path()));
+        assert!(event_b_path.ends_with(Path::new("fileB.txt")));
+        assert!(!source.exists());
+        assert!(!event_a_path.exists());
+        assert_eq!(workflow.current_edit_path(), Some(event_b_path));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test40_req_newf36_stale_path_payload_is_rejected_after_move_commit() {
+        let root = new_temp_root("newf_test40");
+        let now = fixed_now();
+        let old_dir = root.join("1999").join("01").join("01");
+        fs::create_dir_all(&old_dir).expect("create old directory");
+        let source = old_dir.join("fileA.txt");
+        fs::write(&source, "A-old").expect("seed source");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        workflow.set_edit_from_open_file(source.clone());
+
+        let moved_path = workflow
+            .try_rename_in_edit("fileA", root.as_path(), now)
+            .expect("move via rename")
+            .expect("moved path");
+        assert!(!source.exists());
+
+        let stale_saved = workflow
+            .try_autosave_in_edit(EditorAutoSavePayload {
+                user_document_dir: root.clone(),
+                current_path: source,
+                editor_text: "STALE".to_string(),
+            })
+            .expect("stale autosave call");
+
+        assert!(!stale_saved);
+        assert_eq!(
+            fs::read_to_string(&moved_path).expect("read moved path content"),
+            "A-old"
+        );
+        assert_eq!(workflow.current_edit_path(), Some(moved_path));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
     #[test]
     fn aus_test1_autosave_event_writes_latest_editor_text() {
         let root = new_temp_root("aus_test1");
@@ -1786,7 +2100,8 @@ mod tests {
             .expect("create")
             .expect("created path");
         let payload = EditorAutoSavePayload {
-            current_path: path.clone(),
+            user_document_dir: root.clone(),
+            current_path: path,
             editor_text: "line-1\nline-2".to_string(),
         };
 
@@ -1794,7 +2109,10 @@ mod tests {
             .try_autosave_in_edit(payload)
             .expect("dispatch autosave");
         assert!(saved);
-        let content = fs::read_to_string(&path).expect("read autosaved file");
+        let current = workflow
+            .current_edit_path()
+            .expect("current path after autosave");
+        let content = fs::read_to_string(&current).expect("read autosaved file");
         assert_eq!(content, "line-1\nline-2");
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
@@ -1806,6 +2124,7 @@ mod tests {
         let workflow = SinglelineCreateFileWorkflow::new();
         let path = root.join("not_edit.txt");
         let payload = EditorAutoSavePayload {
+            user_document_dir: root.clone(),
             current_path: path.clone(),
             editor_text: "content".to_string(),
         };
@@ -1832,6 +2151,7 @@ mod tests {
             state.current_edit_path = None;
         }
         let payload = EditorAutoSavePayload {
+            user_document_dir: root.clone(),
             current_path: root.join("missing.txt"),
             editor_text: "content".to_string(),
         };
@@ -1869,6 +2189,7 @@ mod tests {
         let path_b = PathBuf::from("C:/tmp/b.txt");
         coordinator.mark_user_edit(
             EditorAutoSavePayload {
+                user_document_dir: PathBuf::from("C:/tmp"),
                 current_path: path_a,
                 editor_text: "stale".to_string(),
             },
@@ -1889,6 +2210,7 @@ mod tests {
         let path_a = PathBuf::from("C:/tmp/a.txt");
         coordinator.mark_user_edit(
             EditorAutoSavePayload {
+                user_document_dir: PathBuf::from("C:/tmp"),
                 current_path: path_a.clone(),
                 editor_text: "keep".to_string(),
             },
@@ -1921,6 +2243,7 @@ mod tests {
         workflow.set_edit_from_open_file(path_a.clone());
 
         let payload = EditorAutoSavePayload {
+            user_document_dir: root.clone(),
             current_path: path_a.clone(),
             editor_text: "A-new".to_string(),
         };
@@ -1975,13 +2298,16 @@ mod tests {
 
         fs::write(&path_a, "A-old").expect("seed fileA");
         let flushed = workflow
-            .flush_editor_content_in_edit("A-new")
+            .flush_editor_content_in_edit("A-new", root.as_path())
             .expect("flush before plus");
         assert!(flushed);
+        let updated_path = workflow
+            .current_edit_path()
+            .expect("current path after flush");
         let moved = workflow.transition_edit_to_neutral();
         assert!(moved);
 
-        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        let content_a = fs::read_to_string(&updated_path).expect("read updated fileA path");
         assert_eq!(content_a, "A-new");
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
@@ -2002,14 +2328,20 @@ mod tests {
         workflow.set_edit_from_open_file(path_a.clone());
 
         let flushed = workflow
-            .flush_editor_content_in_edit("A-new")
+            .flush_editor_content_in_edit("A-new", root.as_path())
             .expect("flush before open fileB");
         assert!(flushed);
+        let updated_path_a = workflow
+            .current_edit_path()
+            .expect("current path after pre-open flush");
+        assert_eq!(
+            fs::read_to_string(&updated_path_a).expect("read updated fileA"),
+            "A-new"
+        );
+
         workflow.set_edit_from_open_file(path_b.clone());
 
-        let content_a = fs::read_to_string(&path_a).expect("read fileA");
         let content_b = fs::read_to_string(&path_b).expect("read fileB");
-        assert_eq!(content_a, "A-new");
         assert_eq!(content_b, "B-old");
         assert_eq!(workflow.current_edit_path(), Some(path_b));
         workflow.dispatcher.shutdown();
@@ -2029,12 +2361,15 @@ mod tests {
         workflow.set_edit_from_open_file(path_a.clone());
 
         let flushed = workflow
-            .flush_editor_content_in_edit("A-new")
+            .flush_editor_content_in_edit("A-new", root.as_path())
             .expect("flush before close");
         assert!(flushed);
-        let content_a = fs::read_to_string(&path_a).expect("read fileA");
+        let updated_path = workflow
+            .current_edit_path()
+            .expect("current path after pre-close flush");
+        let content_a = fs::read_to_string(&updated_path).expect("read updated fileA");
         assert_eq!(content_a, "A-new");
-        assert_eq!(workflow.current_edit_path(), Some(path_a));
+        assert_eq!(workflow.current_edit_path(), Some(updated_path));
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }

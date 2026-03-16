@@ -445,9 +445,12 @@ mod tests {
         let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
         workflow.set_edit_from_open_file(path_a.clone());
         let flushed = workflow
-            .flush_editor_content_in_edit(stale_text_from_previous_file)
+            .flush_editor_content_in_edit(stale_text_from_previous_file, root.as_path())
             .expect("flush stale fileA content before selection switch");
         assert!(flushed);
+        let path_a_after_flush = workflow
+            .current_edit_path()
+            .expect("current fileA path after pre-switch flush");
 
         // File-tree selection must load fileB content into editor and move edit context to fileB.
         let loaded_selected_text =
@@ -457,18 +460,22 @@ mod tests {
 
         let saved = workflow
             .try_autosave_in_edit(EditorAutoSavePayload {
+                user_document_dir: root.clone(),
                 current_path: path_b.clone(),
                 editor_text: format!("{loaded_selected_text}\nB-new"),
             })
             .expect("autosave edited selected file");
         assert!(saved);
+        let path_b_after_save = workflow
+            .current_edit_path()
+            .expect("current fileB path after autosave");
 
         assert_eq!(
-            fs::read_to_string(&path_a).expect("read fileA after switch"),
+            fs::read_to_string(&path_a_after_flush).expect("read fileA after switch"),
             "A-stale"
         );
         assert_eq!(
-            fs::read_to_string(&path_b).expect("read fileB after selected-file save"),
+            fs::read_to_string(&path_b_after_save).expect("read fileB after selected-file save"),
             "B-old\nB-new"
         );
 

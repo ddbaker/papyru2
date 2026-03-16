@@ -292,7 +292,11 @@ impl crate::app::Papyru2App {
             crate::file_update_handler::SinglelineFileState::Edit => {
                 let now_local = Local::now();
                 let previous_path = self.file_workflow.current_edit_path();
-                match self.file_workflow.try_rename_in_edit(value, now_local) {
+                match self.file_workflow.try_rename_in_edit(
+                    value,
+                    self.app_paths.user_document_dir.as_path(),
+                    now_local,
+                ) {
                     Ok(Some(path)) => {
                         crate::app::trace_debug(format!(
                             "rename_flow success new_path={} value='{}'",
