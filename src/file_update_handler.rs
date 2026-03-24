@@ -242,9 +242,15 @@ pub enum FileWorkflowEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileWorkflowEventResult {
-    Created { path: PathBuf },
-    Renamed { path: PathBuf },
-    AutoSaved { path: PathBuf },
+    Created {
+        path: PathBuf,
+    },
+    Renamed {
+        path: PathBuf,
+    },
+    AutoSaved {
+        path: PathBuf,
+    },
     RpcPinned {
         path: PathBuf,
         content: String,
@@ -370,7 +376,10 @@ fn pin_existing_text_file(request: &RpcPinFileRequest) -> io::Result<RpcPinFileR
     if !request.full_path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("rpc pin target file does not exist: {}", request.full_path.display()),
+            format!(
+                "rpc pin target file does not exist: {}",
+                request.full_path.display()
+            ),
         ));
     }
 
@@ -754,7 +763,11 @@ fn is_path_under_daily_directory(current_path: &Path, daily_dir: &Path) -> bool 
         .unwrap_or(false)
 }
 
-fn relocated_daily_candidate_path(daily_dir: &Path, original_file_name: &str, suffix: usize) -> PathBuf {
+fn relocated_daily_candidate_path(
+    daily_dir: &Path,
+    original_file_name: &str,
+    suffix: usize,
+) -> PathBuf {
     if suffix == 1 {
         return daily_dir.join(original_file_name);
     }
@@ -818,7 +831,8 @@ fn move_existing_file_to_daily_directory(
 
     let mut suffix = 1usize;
     loop {
-        let target = relocated_daily_candidate_path(daily_dir.as_path(), &original_file_name, suffix);
+        let target =
+            relocated_daily_candidate_path(daily_dir.as_path(), &original_file_name, suffix);
         if target.exists() {
             suffix += 1;
             continue;
@@ -2027,8 +2041,7 @@ mod tests {
         remove_temp_root(root.as_path());
     }
 
-
-#[test]
+    #[test]
     fn newf_test36_req_newf35_rename_update_moves_existing_file_to_today_and_updates_path() {
         let root = new_temp_root("newf_test36");
         let now = fixed_now();
@@ -2087,7 +2100,10 @@ mod tests {
                 || is_path_under_daily_directory(current.as_path(), today_after.as_path())
         );
         assert!(current.ends_with(Path::new("fileA.txt")));
-        assert_eq!(fs::read_to_string(&current).expect("read moved file"), "A-new");
+        assert_eq!(
+            fs::read_to_string(&current).expect("read moved file"),
+            "A-new"
+        );
         assert!(!source.exists());
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
@@ -2522,5 +2538,4 @@ mod tests {
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
-
 }

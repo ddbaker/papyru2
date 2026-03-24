@@ -43,6 +43,21 @@ pub(crate) fn read_editor_text_from_disk(path: &Path) -> std::io::Result<String>
     std::fs::read_to_string(path)
 }
 
+const RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE: u32 = 9;
+
+fn rpc_centering_anchor_line(target_line_0_based: u32, total_lines: usize) -> u32 {
+    let bounded_total_lines = total_lines.max(1).min(u32::MAX as usize) as u32;
+    let target_line = target_line_0_based.min(bounded_total_lines.saturating_sub(1));
+
+    if bounded_total_lines <= RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE {
+        return target_line;
+    }
+
+    target_line
+        .saturating_add(RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE)
+        .min(bounded_total_lines.saturating_sub(1))
+}
+
 impl Papyru2Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input_state = cx.new(|cx| {
@@ -284,11 +299,15 @@ impl Papyru2Editor {
             .and_then(|ext| ext.to_str())
             .unwrap_or("txt")
             .to_string();
+        let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
+        let anchor_line = rpc_centering_anchor_line(cursor_line, total_lines);
+
         self.pending_programmatic_change_events += 1;
         crate::app::trace_debug(format!(
-            "editor mark programmatic change (open_content_from_rpc, pending={})",
-            self.pending_programmatic_change_events
+            "editor mark programmatic change (open_content_from_rpc, pending={}, target_line={}, anchor_line={}, total_lines={})",
+            self.pending_programmatic_change_events, cursor_line, anchor_line, total_lines
         ));
+
         self.input_state.update(cx, |state, cx| {
             state.set_highlighter(language, cx);
             state.set_value(content.clone(), window, cx);
@@ -301,6 +320,26 @@ impl Papyru2Editor {
                 cx,
             );
         });
+
+        if anchor_line != cursor_line {
+            let target_line = cursor_line;
+            let target_char = cursor_char;
+            cx.on_next_frame(window, move |this, window, cx| {
+                this.apply_cursor(anchor_line, target_char, window, cx);
+                crate::app::trace_debug(format!(
+                    "editor rpc centering frame1 anchor_line={} target_line={}",
+                    anchor_line, target_line
+                ));
+
+                cx.on_next_frame(window, move |this, window, cx| {
+                    this.apply_cursor(target_line, target_char, window, cx);
+                    crate::app::trace_debug(format!(
+                        "editor rpc centering frame2 restore_target_line={target_line}"
+                    ));
+                });
+            });
+        }
+
         self.last_value = content;
         self.last_cursor = gpui_component::input::Position {
             line: cursor_line,
@@ -445,6 +484,26 @@ mod tests {
 
     fn remove_temp_root(path: &Path) {
         let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn qsrv_editor_test1_rpc_anchor_moves_target_toward_viewport_center() {
+        // target line 30 (0-based 29) in a large file should apply centering anchor offset.
+        let anchor = super::rpc_centering_anchor_line(29, 100);
+        assert_eq!(anchor, 38);
+    }
+
+    #[test]
+    fn qsrv_editor_test2_rpc_anchor_keeps_target_for_short_files() {
+        // Requirement: when file has fewer lines than half viewport estimate, no offset adjustment.
+        let anchor = super::rpc_centering_anchor_line(3, 5);
+        assert_eq!(anchor, 3);
+    }
+
+    #[test]
+    fn qsrv_editor_test3_rpc_anchor_clamps_to_last_line() {
+        let anchor = super::rpc_centering_anchor_line(98, 100);
+        assert_eq!(anchor, 99);
     }
 
     #[test]
