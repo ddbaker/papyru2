@@ -8,6 +8,7 @@ use std::{
 };
 
 use chrono::{DateTime, Local};
+use filetime::{FileTime, set_file_mtime};
 use gpui::{Context, Window};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +53,19 @@ pub struct EditorAutoSavePayload {
 #[derive(Debug, Clone)]
 pub struct AutoSaveFileRequest {
     pub payload: EditorAutoSavePayload,
+}
+
+#[derive(Debug, Clone)]
+pub struct RpcPinFileRequest {
+    pub full_path: PathBuf,
+    pub linenum: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RpcPinFileResult {
+    pub path: PathBuf,
+    pub content: String,
+    pub linenum: u32,
 }
 
 pub const EDITOR_AUTOSAVE_IDLE_DURATION: Duration = Duration::from_secs(6);
@@ -223,6 +237,7 @@ pub enum FileWorkflowEvent {
     Create(CreateFileRequest),
     Rename(RenameFileRequest),
     AutoSave(AutoSaveFileRequest),
+    RpcPin(RpcPinFileRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +245,11 @@ pub enum FileWorkflowEventResult {
     Created { path: PathBuf },
     Renamed { path: PathBuf },
     AutoSaved { path: PathBuf },
+    RpcPinned {
+        path: PathBuf,
+        content: String,
+        linenum: u32,
+    },
 }
 
 #[derive(Debug)]
@@ -335,7 +355,43 @@ fn process_event(event: FileWorkflowEvent) -> io::Result<FileWorkflowEventResult
             let path = save_editor_text_payload_atomic(&request.payload)?;
             Ok(FileWorkflowEventResult::AutoSaved { path })
         }
+        FileWorkflowEvent::RpcPin(request) => {
+            let result = pin_existing_text_file(&request)?;
+            Ok(FileWorkflowEventResult::RpcPinned {
+                path: result.path,
+                content: result.content,
+                linenum: result.linenum,
+            })
+        }
     }
+}
+
+fn pin_existing_text_file(request: &RpcPinFileRequest) -> io::Result<RpcPinFileResult> {
+    if !request.full_path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("rpc pin target file does not exist: {}", request.full_path.display()),
+        ));
+    }
+
+    let content = fs::read_to_string(request.full_path.as_path())?;
+    let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
+    let clamped_linenum =
+        crate::quic_rpc_protocol::clamp_linenum_1_based(request.linenum, total_lines);
+
+    touch_file_modified_now(request.full_path.as_path())?;
+
+    Ok(RpcPinFileResult {
+        path: request.full_path.clone(),
+        content,
+        linenum: clamped_linenum,
+    })
+}
+
+fn touch_file_modified_now(path: &Path) -> io::Result<()> {
+    let now = FileTime::from_system_time(std::time::SystemTime::now());
+    set_file_mtime(path, now)
+        .map_err(|error| io::Error::other(format!("failed to update modified time: {error}")))
 }
 
 #[derive(Debug)]
@@ -475,7 +531,9 @@ impl SinglelineCreateFileWorkflow {
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
-            FileWorkflowEventResult::Renamed { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+            FileWorkflowEventResult::Renamed { .. }
+            | FileWorkflowEventResult::AutoSaved { .. }
+            | FileWorkflowEventResult::RpcPinned { .. } => {
                 rollback_new_to_neutral(&mut state);
                 debug_assert!(
                     false,
@@ -517,7 +575,9 @@ impl SinglelineCreateFileWorkflow {
                 state.current_edit_path = Some(path.clone());
                 Ok(Some(path))
             }
-            FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::AutoSaved { .. } => {
+            FileWorkflowEventResult::Created { .. }
+            | FileWorkflowEventResult::AutoSaved { .. }
+            | FileWorkflowEventResult::RpcPinned { .. } => {
                 debug_assert!(
                     false,
                     "rename invariant violation: rename event must only return Renamed"
@@ -565,12 +625,50 @@ impl SinglelineCreateFileWorkflow {
                 state.current_edit_path = Some(path);
                 Ok(true)
             }
-            FileWorkflowEventResult::Created { .. } | FileWorkflowEventResult::Renamed { .. } => {
+            FileWorkflowEventResult::Created { .. }
+            | FileWorkflowEventResult::Renamed { .. }
+            | FileWorkflowEventResult::RpcPinned { .. } => {
                 debug_assert!(
                     false,
                     "autosave invariant violation: autosave event must only return AutoSaved"
                 );
                 Ok(false)
+            }
+        }
+    }
+
+    pub fn try_pin_file_via_rpc(
+        &self,
+        full_path: PathBuf,
+        linenum: u32,
+    ) -> io::Result<RpcPinFileResult> {
+        let result = self
+            .dispatcher
+            .dispatch_blocking(FileWorkflowEvent::RpcPin(RpcPinFileRequest {
+                full_path,
+                linenum,
+            }))?;
+
+        match result {
+            FileWorkflowEventResult::RpcPinned {
+                path,
+                content,
+                linenum,
+            } => Ok(RpcPinFileResult {
+                path,
+                content,
+                linenum,
+            }),
+            FileWorkflowEventResult::Created { .. }
+            | FileWorkflowEventResult::Renamed { .. }
+            | FileWorkflowEventResult::AutoSaved { .. } => {
+                debug_assert!(
+                    false,
+                    "rpc-pin invariant violation: rpc pin event must only return RpcPinned"
+                );
+                Err(io::Error::other(
+                    "rpc-pin invariant violation: unexpected event result variant",
+                ))
             }
         }
     }
@@ -2373,4 +2471,56 @@ mod tests {
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
+
+    #[test]
+    fn qsrv_file_test1_rpc_pin_reads_content_clamps_line_and_updates_mtime() {
+        let root = new_temp_root("qsrv_file_test1");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let target = daily.join("fileA.txt");
+        fs::write(&target, "line1\nline2\nline3").expect("seed target file");
+
+        let old = FileTime::from_unix_time(1, 0);
+        set_file_mtime(target.as_path(), old).expect("set old modified time");
+        let modified_before = fs::metadata(&target)
+            .expect("metadata before rpc pin")
+            .modified()
+            .expect("modified before rpc pin");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let pinned = workflow
+            .try_pin_file_via_rpc(target.clone(), 999)
+            .expect("rpc pin must succeed");
+
+        assert_eq!(pinned.path, target);
+        assert_eq!(pinned.content, "line1\nline2\nline3");
+        assert_eq!(pinned.linenum, 3);
+
+        let modified_after = fs::metadata(&pinned.path)
+            .expect("metadata after rpc pin")
+            .modified()
+            .expect("modified after rpc pin");
+        assert!(modified_after >= modified_before);
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn qsrv_file_test2_rpc_pin_missing_file_returns_not_found() {
+        let root = new_temp_root("qsrv_file_test2");
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let missing = root.join("2026").join("03").join("22").join("missing.txt");
+
+        let error = workflow
+            .try_pin_file_via_rpc(missing.clone(), 1)
+            .expect_err("missing file must fail");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("does not exist"));
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
 }

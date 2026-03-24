@@ -12,6 +12,7 @@ pub enum EditorEvent {
     BackspaceAtLineHead,
     PressUpAtFirstLine,
     FocusGained,
+    UserInteraction,
     UserBufferChanged { value: String },
 }
 
@@ -149,6 +150,9 @@ impl Papyru2Editor {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !event.is_held {
+            cx.emit(EditorEvent::UserInteraction);
+        }
         let key_raw = event.keystroke.key.as_str();
         let key = key_raw.to_ascii_lowercase();
         crate::app::trace_debug(format!(
@@ -264,6 +268,45 @@ impl Papyru2Editor {
             line: cursor_line,
             character: cursor_char,
         };
+    }
+
+    pub fn open_content_from_rpc(
+        &mut self,
+        path: PathBuf,
+        content: String,
+        cursor_line: u32,
+        cursor_char: u32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let language = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("txt")
+            .to_string();
+        self.pending_programmatic_change_events += 1;
+        crate::app::trace_debug(format!(
+            "editor mark programmatic change (open_content_from_rpc, pending={})",
+            self.pending_programmatic_change_events
+        ));
+        self.input_state.update(cx, |state, cx| {
+            state.set_highlighter(language, cx);
+            state.set_value(content.clone(), window, cx);
+            state.set_cursor_position(
+                gpui_component::input::Position {
+                    line: cursor_line,
+                    character: cursor_char,
+                },
+                window,
+                cx,
+            );
+        });
+        self.last_value = content;
+        self.last_cursor = gpui_component::input::Position {
+            line: cursor_line,
+            character: cursor_char,
+        };
+        self.current_editing_file_path = Some(path);
     }
 
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -224,6 +224,8 @@ pub struct Papyru2App {
     pub(crate) app_paths: crate::path_resolver::AppPaths,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
     pub(crate) selection_focus_reassert_pending: bool,
+    pub(crate) rpc_highlight_active: bool,
+    pub(crate) rpc_highlight_line_1_based: Option<u32>,
 }
 
 impl Papyru2App {
@@ -459,6 +461,31 @@ impl Papyru2App {
             editor_autosave.clone(),
             file_workflow.clone(),
         );
+        let (quic_rpc_ui_tx, quic_rpc_ui_rx) =
+            smol::channel::unbounded::<crate::quic_rpc::QuicRpcUiCommand>();
+        crate::quic_rpc::spawn_quic_rpc_server(
+            app_paths.clone(),
+            file_workflow.clone(),
+            quic_rpc_ui_tx,
+        );
+        let quic_window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            while let Ok(command) = quic_rpc_ui_rx.recv().await {
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+                let window_handle = quic_window_handle.clone();
+                let _ = this.update(cx, move |app, cx| {
+                    if let Err(error) = cx.update_window(window_handle, |_, window, cx| {
+                        app.apply_quic_rpc_pin_command(command, window, cx);
+                    }) {
+                        trace_debug(format!("quic_rpc ui apply skipped error={error}"));
+                    }
+                });
+            }
+            trace_debug("quic_rpc ui bridge loop detached");
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while file_tree_refresh_rx.recv().await.is_ok() {
                 let Some(this) = this.upgrade() else {
@@ -552,7 +579,11 @@ impl Papyru2App {
                         }
                         this.ensure_new_file_flow("editor_focus", window, cx);
                     }
+                    crate::editor::EditorEvent::UserInteraction => {
+                        this.clear_rpc_highlight_on_editor_interaction();
+                    }
                     crate::editor::EditorEvent::UserBufferChanged { value } => {
+                        this.clear_rpc_highlight_on_editor_interaction();
                         this.on_editor_user_buffer_changed(value, cx);
                     }
                 },
@@ -622,6 +653,8 @@ impl Papyru2App {
             app_paths,
             _file_tree_watcher: file_tree_watcher,
             selection_focus_reassert_pending: false,
+            rpc_highlight_active: false,
+            rpc_highlight_line_1_based: None,
         };
 
         this.apply_req_ftr18_startup_daily_folder_positioning(startup_daily_dir, window, cx);

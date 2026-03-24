@@ -11,6 +11,10 @@ gpui-component = { version = "*" }
 gpui-component-assets = { version = "*" } 
 reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
+iroh = { version = "*" }
+irpc = { version = "*", features = ["rpc", "derive", "noq_endpoint_setup"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "sync"] }
+filetime = "0.2.25"
 
 anyhow = "1.0.102"
 lsp-types = "0.97.0"
