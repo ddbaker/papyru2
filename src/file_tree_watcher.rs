@@ -87,10 +87,16 @@ fn watcher_loop(
             match event_result {
                 Ok(event) => {
                     if should_schedule_refresh(root_dir.as_path(), &event) {
+                        let first_path = event
+                            .paths
+                            .first()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<none>".to_string());
                         crate::app::trace_debug(format!(
-                            "file_tree watcher event accepted kind={:?} path_count={}",
+                            "file_tree watcher event accepted kind={:?} path_count={} first_path={}",
                             event.kind,
-                            event.paths.len()
+                            event.paths.len(),
+                            first_path
                         ));
                         pending_deadline = Some(Instant::now() + FILE_TREE_WATCH_DEBOUNCE);
                     }
@@ -127,7 +133,10 @@ pub(crate) fn should_schedule_refresh(root_dir: &Path, event: &Event) -> bool {
 }
 
 fn event_kind_requires_refresh(kind: &EventKind) -> bool {
-    !matches!(kind, EventKind::Access(_))
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    )
 }
 
 fn path_is_under_root(root_dir: &Path, path: &Path) -> bool {
@@ -227,5 +236,18 @@ mod tests {
         assert_eq!(coalesced_refresh_count(&[0, 20, 40, 55], 200), 1);
         assert_eq!(coalesced_refresh_count(&[0, 250, 600], 200), 3);
         assert_eq!(coalesced_refresh_count(&[], 200), 0);
+    }
+
+
+    #[test]
+    fn ftr_test34_req_qsrv4_follow_watcher_filter_accepts_metadata_write_time_modify_event() {
+        let root = PathBuf::from("C:/tmp/user_document");
+        let child = root.join("2026/04/03/fileA.txt");
+        let metadata_modify = event(
+            EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::WriteTime)),
+            vec![child],
+        );
+
+        assert!(should_schedule_refresh(root.as_path(), &metadata_modify));
     }
 }

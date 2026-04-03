@@ -400,7 +400,9 @@ fn pin_existing_text_file(request: &RpcPinFileRequest) -> io::Result<RpcPinFileR
 fn touch_file_modified_now(path: &Path) -> io::Result<()> {
     let now = FileTime::from_system_time(std::time::SystemTime::now());
     set_file_mtime(path, now)
-        .map_err(|error| io::Error::other(format!("failed to update modified time: {error}")))
+        .map_err(|error| io::Error::other(format!("failed to update modified time: {error}")))?;
+    crate::app::trace_debug(format!("quic_rpc pin updated mtime path={}", path.display()));
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2517,7 +2519,38 @@ mod tests {
             .expect("metadata after rpc pin")
             .modified()
             .expect("modified after rpc pin");
-        assert!(modified_after >= modified_before);
+        assert!(modified_after > modified_before);
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+
+    #[test]
+    fn qsrv_file_test3_req_qsrv4_follow_mtime_modify_event_is_watcher_refresh_eligible() {
+        let root = new_temp_root("qsrv_file_test3");
+        let now = fixed_now();
+        let daily = daily_directory(root.as_path(), now);
+        fs::create_dir_all(&daily).expect("create daily directory");
+        let target = daily.join("fileA.txt");
+        fs::write(&target, "line1\nline2\nline3").expect("seed target file");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let pinned = workflow
+            .try_pin_file_via_rpc(target.clone(), 2)
+            .expect("rpc pin must succeed");
+
+        let mtime_modify_event = notify::Event {
+            kind: notify::EventKind::Modify(notify::event::ModifyKind::Metadata(
+                notify::event::MetadataKind::WriteTime,
+            )),
+            paths: vec![pinned.path.clone()],
+            attrs: Default::default(),
+        };
+        assert!(crate::file_tree_watcher::should_schedule_refresh(
+            root.as_path(),
+            &mtime_modify_event,
+        ));
 
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
