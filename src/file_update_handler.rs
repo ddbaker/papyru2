@@ -57,6 +57,7 @@ pub struct AutoSaveFileRequest {
 
 #[derive(Debug, Clone)]
 pub struct RpcPinFileRequest {
+    pub user_document_dir: PathBuf,
     pub full_path: PathBuf,
     pub linenum: u32,
 }
@@ -383,15 +384,26 @@ fn pin_existing_text_file(request: &RpcPinFileRequest) -> io::Result<RpcPinFileR
         ));
     }
 
-    let content = fs::read_to_string(request.full_path.as_path())?;
+    crate::app::trace_debug(format!(
+        "req-newf35 daily-move trigger source=rpc-pin path={} user_document_dir={}",
+        request.full_path.display(),
+        request.user_document_dir.display()
+    ));
+    let relocated_path = move_existing_file_to_daily_directory(
+        request.full_path.as_path(),
+        request.user_document_dir.as_path(),
+        Local::now(),
+    )?;
+
+    let content = fs::read_to_string(relocated_path.as_path())?;
     let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
     let clamped_linenum =
         crate::quic_rpc_protocol::clamp_linenum_1_based(request.linenum, total_lines);
 
-    touch_file_modified_now(request.full_path.as_path())?;
+    touch_file_modified_now(relocated_path.as_path())?;
 
     Ok(RpcPinFileResult {
-        path: request.full_path.clone(),
+        path: relocated_path,
         content,
         linenum: clamped_linenum,
     })
@@ -650,12 +662,14 @@ impl SinglelineCreateFileWorkflow {
 
     pub fn try_pin_file_via_rpc(
         &self,
+        user_document_dir: PathBuf,
         full_path: PathBuf,
         linenum: u32,
     ) -> io::Result<RpcPinFileResult> {
         let result = self
             .dispatcher
             .dispatch_blocking(FileWorkflowEvent::RpcPin(RpcPinFileRequest {
+                user_document_dir,
                 full_path,
                 linenum,
             }))?;
@@ -2508,10 +2522,28 @@ mod tests {
 
         let workflow = SinglelineCreateFileWorkflow::new();
         let pinned = workflow
-            .try_pin_file_via_rpc(target.clone(), 999)
+            .try_pin_file_via_rpc(root.clone(), target.clone(), 999)
             .expect("rpc pin must succeed");
 
-        assert_eq!(pinned.path, target);
+        let today_dir = daily_directory(root.as_path(), Local::now());
+        let expected_file_name = target
+            .file_name()
+            .expect("target file name exists")
+            .to_string_lossy()
+            .to_string();
+
+        assert!(
+            pinned.path.starts_with(today_dir.as_path()),
+            "rpc pin should relocate into today's daily directory"
+        );
+        assert_eq!(
+            pinned
+                .path
+                .file_name()
+                .expect("pinned file name exists")
+                .to_string_lossy(),
+            expected_file_name
+        );
         assert_eq!(pinned.content, "line1\nline2\nline3");
         assert_eq!(pinned.linenum, 3);
 
@@ -2537,7 +2569,7 @@ mod tests {
 
         let workflow = SinglelineCreateFileWorkflow::new();
         let pinned = workflow
-            .try_pin_file_via_rpc(target.clone(), 2)
+            .try_pin_file_via_rpc(root.clone(), target.clone(), 2)
             .expect("rpc pin must succeed");
 
         let mtime_modify_event = notify::Event {
@@ -2563,7 +2595,7 @@ mod tests {
         let missing = root.join("2026").join("03").join("22").join("missing.txt");
 
         let error = workflow
-            .try_pin_file_via_rpc(missing.clone(), 1)
+            .try_pin_file_via_rpc(root.clone(), missing.clone(), 1)
             .expect_err("missing file must fail");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(error.to_string().contains("does not exist"));
