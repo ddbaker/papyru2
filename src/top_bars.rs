@@ -11,6 +11,7 @@ use crate::singleline_input::SingleLineInput;
 pub(crate) const SHARED_INTER_PANEL_SPACING_PX: f32 = 10.0;
 
 pub(crate) const TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE: bool = true;
+pub(crate) const TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX: f32 = 15.0;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TopBarButtonSpec {
@@ -101,7 +102,9 @@ impl TopBars {
     fn render_button_group(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let button_group = h_flex().w_full().gap_2().items_center();
         let button_group = if TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE {
-            button_group.justify_end()
+            button_group
+                .justify_end()
+                .pr(px(TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX))
         } else {
             button_group.justify_start()
         };
@@ -228,13 +231,18 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        SHARED_INTER_PANEL_SPACING_PX, TOP_BARS_BUTTON_ORDER,
+        SHARED_INTER_PANEL_SPACING_PX, TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, TOP_BARS_BUTTON_ORDER,
         TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE, TopBarButtonSpec, TopBarsEvent,
     };
 
     #[test]
     fn lo_test1_req_lo2_singleline_left_spacing_is_10px() {
         assert_eq!(SHARED_INTER_PANEL_SPACING_PX, 10.0);
+    }
+
+    #[test]
+    fn ftr_test86_req_ftr23_button_group_left_shift_is_10px() {
+        assert_eq!(TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, 10.0);
     }
 
     #[test]
