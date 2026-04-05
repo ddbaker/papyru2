@@ -238,10 +238,9 @@ impl crate::app::Papyru2App {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::{handle_pin_file_request, QuicRpcUiCommand};
+    use super::{QuicRpcUiCommand, handle_pin_file_request};
     use chrono::{Datelike, Duration, Local};
     use std::{
         fs,
@@ -278,14 +277,14 @@ mod tests {
         format!("{year:04}\\{month:02}\\{day:02}\\{file_name}")
     }
 
-    fn new_workflow(
-    ) -> (
+    fn new_workflow() -> (
         crate::file_update_handler::FileWorkflowEventDispatcher,
         crate::file_update_handler::SinglelineCreateFileWorkflow,
     ) {
         let dispatcher = crate::file_update_handler::FileWorkflowEventDispatcher::new();
-        let workflow =
-            crate::file_update_handler::SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
+        let workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::with_dispatcher(
+            dispatcher.clone(),
+        );
         (dispatcher, workflow)
     }
 
@@ -303,7 +302,10 @@ mod tests {
         root: PathBuf,
         workflow: crate::file_update_handler::SinglelineCreateFileWorkflow,
         request: crate::quic_rpc_protocol::PinFileRpcService,
-    ) -> (crate::quic_rpc_protocol::PinFileRpcResponse, QuicRpcUiCommand) {
+    ) -> (
+        crate::quic_rpc_protocol::PinFileRpcResponse,
+        QuicRpcUiCommand,
+    ) {
         let (ui_tx, ui_rx) = smol::channel::unbounded::<QuicRpcUiCommand>();
         let response = smol::block_on(handle_pin_file_request(request, root, workflow, ui_tx));
         let command = smol::block_on(ui_rx.recv()).expect("receive ui command");
@@ -330,20 +332,29 @@ mod tests {
     }
 
     #[test]
-    fn qsrv_test12_req_qsrv4_follow_rpc_pin_auto_moves_file_into_today_daily_dir_without_ui_click() {
+    fn qsrv_test12_req_qsrv4_follow_rpc_pin_auto_moves_file_into_today_daily_dir_without_ui_click()
+    {
         let root = new_temp_root("qsrv_test12");
         let now = Local::now();
         let yesterday = now - Duration::days(1);
         let file_name = "qsrv_test12_target.txt";
 
-        let yesterday_dir =
-            dated_directory(root.as_path(), yesterday.year(), yesterday.month(), yesterday.day());
+        let yesterday_dir = dated_directory(
+            root.as_path(),
+            yesterday.year(),
+            yesterday.month(),
+            yesterday.day(),
+        );
         fs::create_dir_all(&yesterday_dir).expect("create yesterday dir");
         let yesterday_file = yesterday_dir.join(file_name);
         fs::write(&yesterday_file, "line1\nline2").expect("seed yesterday file");
 
-        let request_path =
-            relative_rpc_path(yesterday.year(), yesterday.month(), yesterday.day(), file_name);
+        let request_path = relative_rpc_path(
+            yesterday.year(),
+            yesterday.month(),
+            yesterday.day(),
+            file_name,
+        );
         let request = pin_request(request_path, 2);
 
         let (dispatcher, workflow) = new_workflow();
@@ -415,8 +426,12 @@ mod tests {
                 .unwrap_or(0)
         );
 
-        let yesterday_dir =
-            dated_directory(root.as_path(), yesterday.year(), yesterday.month(), yesterday.day());
+        let yesterday_dir = dated_directory(
+            root.as_path(),
+            yesterday.year(),
+            yesterday.month(),
+            yesterday.day(),
+        );
         fs::create_dir_all(&yesterday_dir).expect("create yesterday dir");
         let yesterday_file = yesterday_dir.join(unique_name.as_str());
         fs::write(&yesterday_file, "line1\nline2").expect("seed yesterday file");
@@ -441,15 +456,22 @@ mod tests {
         let lines: Vec<&str> = tail.lines().collect();
         let req_idx = lines
             .iter()
-            .position(|line| line.contains("quic_rpc request recv") && line.contains(unique_name.as_str()))
+            .position(|line| {
+                line.contains("quic_rpc request recv") && line.contains(unique_name.as_str())
+            })
             .expect("request recv trace for marker must exist");
         let move_start_idx = lines
             .iter()
-            .position(|line| line.contains("req-newf35 daily-move start") && line.contains(unique_name.as_str()))
+            .position(|line| {
+                line.contains("req-newf35 daily-move start") && line.contains(unique_name.as_str())
+            })
             .expect("daily-move start trace for marker must exist");
         let move_success_idx = lines
             .iter()
-            .position(|line| line.contains("req-newf35 daily-move success") && line.contains(unique_name.as_str()))
+            .position(|line| {
+                line.contains("req-newf35 daily-move success")
+                    && line.contains(unique_name.as_str())
+            })
             .expect("daily-move success trace for marker must exist");
 
         assert!(

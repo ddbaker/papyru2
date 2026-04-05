@@ -1,6 +1,6 @@
 use gpui::*;
 use gpui_component::{
-    IconName, Sizable,
+    IconName, IconNamed, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -14,18 +14,32 @@ pub(crate) const TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE: bool = true;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TopBarButtonSpec {
-    SearchPlaceholder,
+    RefreshFileTree,
     PlusResetToNeutral,
 }
 
 pub(crate) const TOP_BARS_BUTTON_ORDER: [TopBarButtonSpec; 2] = [
-    TopBarButtonSpec::SearchPlaceholder,
+    TopBarButtonSpec::RefreshFileTree,
     TopBarButtonSpec::PlusResetToNeutral,
 ];
 
 #[derive(Clone, Debug)]
 pub enum TopBarsEvent {
+    PressFolderRefresh,
     PressPlus,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum TopBarsIconName {
+    FolderRefresh,
+}
+
+impl IconNamed for TopBarsIconName {
+    fn path(self) -> SharedString {
+        match self {
+            Self::FolderRefresh => crate::app::FOLDER_REFRESH_ICON_PATH.into(),
+        }
+    }
 }
 
 pub struct TopBars {
@@ -74,13 +88,13 @@ impl TopBars {
             }))
     }
 
-    fn render_search_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_refresh_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("round-button2")
             .ghost()
             .xsmall()
-            .icon(IconName::Search)
-            .on_click(cx.listener(|_, _, _, _| {
-                crate::app::trace_debug("search_button placeholder click (no-op)");
+            .icon(TopBarsIconName::FolderRefresh)
+            .on_click(cx.listener(|_, _, _, cx| {
+                cx.emit(TopBarsEvent::PressFolderRefresh);
             }))
     }
 
@@ -94,19 +108,19 @@ impl TopBars {
 
         match TOP_BARS_BUTTON_ORDER {
             [
-                TopBarButtonSpec::SearchPlaceholder,
+                TopBarButtonSpec::RefreshFileTree,
                 TopBarButtonSpec::PlusResetToNeutral,
             ] => button_group
-                .child(self.render_search_button(cx))
+                .child(self.render_refresh_button(cx))
                 .child(self.render_plus_button(cx)),
             [
                 TopBarButtonSpec::PlusResetToNeutral,
-                TopBarButtonSpec::SearchPlaceholder,
+                TopBarButtonSpec::RefreshFileTree,
             ] => button_group
                 .child(self.render_plus_button(cx))
-                .child(self.render_search_button(cx)),
+                .child(self.render_refresh_button(cx)),
             _ => button_group
-                .child(self.render_search_button(cx))
+                .child(self.render_refresh_button(cx))
                 .child(self.render_plus_button(cx)),
         }
     }
@@ -229,18 +243,21 @@ mod tests {
     }
 
     #[test]
-    fn lo_test6_req_lo6_button_order_is_search_then_plus() {
+    fn ftr_test82_req_ftr23_button_order_is_refresh_then_plus() {
         assert_eq!(
             TOP_BARS_BUTTON_ORDER,
             [
-                TopBarButtonSpec::SearchPlaceholder,
+                TopBarButtonSpec::RefreshFileTree,
                 TopBarButtonSpec::PlusResetToNeutral,
             ]
         );
     }
 
     #[test]
-    fn lo_test7_req_lo6_plus_event_contract_is_unchanged() {
+    fn ftr_test83_req_ftr23_refresh_event_contract_is_present_and_plus_unchanged() {
+        let refresh_event = TopBarsEvent::PressFolderRefresh;
+        assert!(matches!(refresh_event, TopBarsEvent::PressFolderRefresh));
+
         let emitted_event = TopBarsEvent::PressPlus;
         assert!(matches!(emitted_event, TopBarsEvent::PressPlus));
         assert_eq!(

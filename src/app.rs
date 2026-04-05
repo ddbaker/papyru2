@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
@@ -11,7 +12,6 @@ use gpui_component::{
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
-use gpui_component_assets::Assets;
 
 use crate::editor::Papyru2Editor;
 use crate::file_tree::{FileTreeEvent, FileTreeView};
@@ -226,6 +226,37 @@ pub struct Papyru2App {
     pub(crate) selection_focus_reassert_pending: bool,
     pub(crate) rpc_highlight_active: bool,
     pub(crate) rpc_highlight_line_1_based: Option<u32>,
+}
+
+pub(crate) const FOLDER_REFRESH_ICON_PATH: &str = "icons/folder-refresh.svg";
+
+const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"/><path d="M14 14a4 4 0 1 0 1.2-2.8"/><path d="M14 10v4h4"/></svg>"#;
+
+#[derive(Copy, Clone, Debug, Default)]
+pub(crate) struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        if path == FOLDER_REFRESH_ICON_PATH {
+            return Ok(Some(Cow::Borrowed(FOLDER_REFRESH_ICON_SVG)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut assets = gpui_component_assets::Assets.list(path)?;
+        if FOLDER_REFRESH_ICON_PATH.starts_with(path)
+            && !assets
+                .iter()
+                .any(|entry| entry.as_ref() == FOLDER_REFRESH_ICON_PATH)
+        {
+            assets.push(FOLDER_REFRESH_ICON_PATH.into());
+        }
+        Ok(assets)
+    }
 }
 
 impl Papyru2App {
@@ -518,6 +549,10 @@ impl Papyru2App {
                 &top_bars,
                 window,
                 move |this, _, event: &crate::top_bars::TopBarsEvent, window, cx| match event {
+                    crate::top_bars::TopBarsEvent::PressFolderRefresh => {
+                        trace_debug("app received TopBarsEvent::PressFolderRefresh");
+                        this.handle_folder_refresh_button(window, cx);
+                    }
                     crate::top_bars::TopBarsEvent::PressPlus => {
                         trace_debug("app received TopBarsEvent::PressPlus");
                         this.handle_plus_button(window, cx);
@@ -1245,7 +1280,7 @@ pub fn run() {
         restored_splitter_left_size
     ));
 
-    let app = Application::new().with_assets(Assets);
+    let app = Application::new().with_assets(AppAssets);
 
     app.run(move |cx| {
         gpui_component::init(cx);

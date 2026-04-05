@@ -25,6 +25,23 @@ pub(crate) fn should_restore_selection_after_watcher_refresh(
     selected_count == 0 && current_edit_path.is_some()
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ReqFtr23DailyDirPlan {
+    RefreshOnly { ensure_error: String },
+    RefreshAndPosition { daily_dir: PathBuf },
+}
+
+pub(crate) fn req_ftr23_daily_dir_plan(
+    daily_dir_result: io::Result<PathBuf>,
+) -> ReqFtr23DailyDirPlan {
+    match daily_dir_result {
+        Ok(daily_dir) => ReqFtr23DailyDirPlan::RefreshAndPosition { daily_dir },
+        Err(error) => ReqFtr23DailyDirPlan::RefreshOnly {
+            ensure_error: error.to_string(),
+        },
+    }
+}
+
 pub(crate) fn req_editor_file_tree_font_size_policy() -> &'static str {
     crate::app::req_editor_shared_text_size_policy()
 }
@@ -1542,6 +1559,38 @@ impl crate::app::Papyru2App {
         ));
     }
 
+    pub(crate) fn handle_folder_refresh_button(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::app::trace_debug("folder_refresh_button click received");
+        let daily_dir_plan =
+            req_ftr23_daily_dir_plan(crate::file_update_handler::ensure_daily_directory(
+                self.app_paths.user_document_dir.as_path(),
+                chrono::Local::now(),
+            ));
+        self.apply_file_tree_watcher_refresh(cx);
+
+        match daily_dir_plan {
+            ReqFtr23DailyDirPlan::RefreshAndPosition { daily_dir } => {
+                crate::app::trace_debug(format!(
+                    "file_tree req-ftr23 refresh daily_dir ensured path={}",
+                    daily_dir.display()
+                ));
+                self.apply_req_ftr18_startup_daily_folder_positioning(daily_dir, window, cx);
+            }
+            ReqFtr23DailyDirPlan::RefreshOnly { ensure_error } => {
+                crate::app::trace_debug(format!(
+                    "file_tree req-ftr23 refresh daily_dir ensure failed error={ensure_error}"
+                ));
+                crate::app::trace_debug(
+                    "file_tree req-ftr23 refresh skipped req-ftr18 positioning (daily_dir unavailable)",
+                );
+            }
+        }
+    }
+
     pub(crate) fn apply_req_ftr18_startup_daily_folder_positioning(
         &mut self,
         daily_dir: PathBuf,
@@ -1770,15 +1819,15 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReqFtr17PostDeleteDecision, TreeItem, apply_expanded_folder_item_ids, build_file_items,
-        collect_tree_item_ids, collect_visible_item_ids, delete_entries_for_file_tree,
-        expanded_folder_item_ids, find_visible_index, is_delete_protected_path,
-        move_entries_to_recyclebin, replace_single_selection,
+        ReqFtr17PostDeleteDecision, ReqFtr23DailyDirPlan, TreeItem, apply_expanded_folder_item_ids,
+        build_file_items, collect_tree_item_ids, collect_visible_item_ids,
+        delete_entries_for_file_tree, expanded_folder_item_ids, find_visible_index,
+        is_delete_protected_path, move_entries_to_recyclebin, replace_single_selection,
         req_ftr17_post_delete_decision_from_filesystem,
         req_ftr17_post_delete_decision_from_remaining_files, req_ftr17_sort_key,
-        retain_existing_selections, select_range_items, selected_row_highlight_color,
-        should_restore_selection_after_watcher_refresh, toggle_item_selection,
-        use_checkbox_selection_markers,
+        req_ftr23_daily_dir_plan, retain_existing_selections, select_range_items,
+        selected_row_highlight_color, should_restore_selection_after_watcher_refresh,
+        toggle_item_selection, use_checkbox_selection_markers,
     };
     use gpui::hsla;
     use std::{
@@ -3214,5 +3263,24 @@ mod tests {
         assert!(!super::use_native_tree_selection_highlight(false, true));
         assert!(!super::use_native_tree_selection_highlight(false, false));
         assert!(super::use_native_tree_selection_highlight(true, false));
+    }
+
+    #[test]
+    fn ftr_test84_req_ftr23_daily_dir_plan_success_positions_after_refresh() {
+        let daily_dir = PathBuf::from("C:/tmp/user_document/2026/04/05");
+        let plan = req_ftr23_daily_dir_plan(Ok(daily_dir.clone()));
+        assert_eq!(plan, ReqFtr23DailyDirPlan::RefreshAndPosition { daily_dir });
+    }
+
+    #[test]
+    fn ftr_test85_req_ftr23_daily_dir_plan_failure_refresh_only_without_panic() {
+        let plan = req_ftr23_daily_dir_plan(Err(std::io::Error::other(
+            "req-ftr23 ensure daily dir failed",
+        )));
+        if let ReqFtr23DailyDirPlan::RefreshOnly { ensure_error } = plan {
+            assert!(ensure_error.contains("req-ftr23 ensure daily dir failed"));
+            return;
+        }
+        panic!("expected RefreshOnly plan on ensure_daily_directory error");
     }
 }

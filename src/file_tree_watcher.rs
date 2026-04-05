@@ -238,7 +238,6 @@ mod tests {
         assert_eq!(coalesced_refresh_count(&[], 200), 0);
     }
 
-
     #[test]
     fn ftr_test34_req_qsrv4_follow_watcher_filter_accepts_metadata_write_time_modify_event() {
         let root = PathBuf::from("C:/tmp/user_document");

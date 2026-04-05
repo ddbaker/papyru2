@@ -413,7 +413,10 @@ fn touch_file_modified_now(path: &Path) -> io::Result<()> {
     let now = FileTime::from_system_time(std::time::SystemTime::now());
     set_file_mtime(path, now)
         .map_err(|error| io::Error::other(format!("failed to update modified time: {error}")))?;
-    crate::app::trace_debug(format!("quic_rpc pin updated mtime path={}", path.display()));
+    crate::app::trace_debug(format!(
+        "quic_rpc pin updated mtime path={}",
+        path.display()
+    ));
     Ok(())
 }
 
@@ -2556,7 +2559,6 @@ mod tests {
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
-
 
     #[test]
     fn qsrv_file_test3_req_qsrv4_follow_mtime_modify_event_is_watcher_refresh_eligible() {
