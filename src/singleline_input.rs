@@ -37,7 +37,7 @@ pub(crate) fn req_editor_singleline_font_size_policy() -> &'static str {
 
 impl SingleLineInput {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Type here..."));
+        let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Subject <Enter>"));
         let (last_value, last_cursor) = {
             let initial = sl_input_state.read(cx);
             (initial.value().to_string(), initial.cursor_position())

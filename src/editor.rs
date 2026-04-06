@@ -65,7 +65,7 @@ impl Papyru2Editor {
                 .code_editor("rust")
                 .line_number(true)
                 .soft_wrap(false)
-                .placeholder("Test area (integrated editor)")
+                .placeholder("File is auto saved")
         });
 
         let (last_value, last_cursor) = {
