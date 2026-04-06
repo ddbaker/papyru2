@@ -26,7 +26,7 @@ pub(crate) const TOP_BARS_BUTTON_ORDER: [TopBarButtonSpec; 2] = [
 
 pub(crate) const FOLDER_REFRESH_ICON_PATH: &str = "icons/folder-refresh.svg";
 
-const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"/><path d="M14 14a4 4 0 1 0 1.2-2.8"/><path d="M14 10v4h4"/></svg>"#;
+const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 14.5C19.11 14.5 20.11 14.95 20.83 15.67L22 14.5V18.5H18L19.77 16.73C19.32 16.28 18.69 16 18 16C16.62 16 15.5 17.12 15.5 18.5C15.5 19.88 16.62 21 18 21C18.82 21 19.54 20.61 20 20H21.71C21.12 21.47 19.68 22.5 18 22.5C15.79 22.5 14 20.71 14 18.5C14 16.29 15.79 14.5 18 14.5M20 8H4V18H12L12 18.5C12 19 12.06 19.5 12.17 20H4C2.89 20 2 19.1 2 18L2 6C2 4.89 2.89 4 4 4H10L12 6H20C21.1 6 22 6.89 22 8V13C21.39 12.63 20.72 12.34 20 12.17V8Z" /></svg>"#;
 
 pub(crate) const PLUS_THIN_ICON_PATH: &str = "icons/plus-thin.svg";
 
