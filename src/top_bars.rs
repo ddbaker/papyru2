@@ -24,6 +24,34 @@ pub(crate) const TOP_BARS_BUTTON_ORDER: [TopBarButtonSpec; 2] = [
     TopBarButtonSpec::PlusResetToNeutral,
 ];
 
+pub(crate) const FOLDER_REFRESH_ICON_PATH: &str = "icons/folder-refresh.svg";
+
+const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"/><path d="M14 14a4 4 0 1 0 1.2-2.8"/><path d="M14 10v4h4"/></svg>"#;
+
+pub(crate) const PLUS_THIN_ICON_PATH: &str = "icons/plus-thin.svg";
+
+const PLUS_THIN_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>"#;
+
+pub(crate) fn load_top_bars_icon_asset(path: &str) -> Option<&'static [u8]> {
+    match path {
+        FOLDER_REFRESH_ICON_PATH => Some(FOLDER_REFRESH_ICON_SVG),
+        PLUS_THIN_ICON_PATH => Some(PLUS_THIN_ICON_SVG),
+        _ => None,
+    }
+}
+
+pub(crate) fn list_top_bars_icon_assets(path: &str, assets: &mut Vec<SharedString>) {
+    for custom_icon_path in [FOLDER_REFRESH_ICON_PATH, PLUS_THIN_ICON_PATH] {
+        if custom_icon_path.starts_with(path)
+            && !assets
+                .iter()
+                .any(|entry| entry.as_ref() == custom_icon_path)
+        {
+            assets.push(custom_icon_path.into());
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TopBarsEvent {
     PressFolderRefresh,
@@ -39,8 +67,8 @@ enum TopBarsIconName {
 impl IconNamed for TopBarsIconName {
     fn path(self) -> SharedString {
         match self {
-            Self::FolderRefresh => crate::app::FOLDER_REFRESH_ICON_PATH.into(),
-            Self::PlusThin => crate::app::PLUS_THIN_ICON_PATH.into(),
+            Self::FolderRefresh => FOLDER_REFRESH_ICON_PATH.into(),
+            Self::PlusThin => PLUS_THIN_ICON_PATH.into(),
         }
     }
 }
@@ -233,7 +261,8 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        SHARED_INTER_PANEL_SPACING_PX, TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, TOP_BARS_BUTTON_ORDER,
+        FOLDER_REFRESH_ICON_PATH, PLUS_THIN_ICON_PATH, SHARED_INTER_PANEL_SPACING_PX,
+        TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, TOP_BARS_BUTTON_ORDER,
         TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE, TopBarButtonSpec, TopBarsEvent, TopBarsIconName,
     };
 
@@ -281,11 +310,11 @@ mod tests {
         assert_eq!(
             <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::FolderRefresh)
                 .as_ref(),
-            crate::app::FOLDER_REFRESH_ICON_PATH
+            FOLDER_REFRESH_ICON_PATH
         );
         assert_eq!(
             <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::PlusThin).as_ref(),
-            crate::app::PLUS_THIN_ICON_PATH
+            PLUS_THIN_ICON_PATH
         );
     }
 }
