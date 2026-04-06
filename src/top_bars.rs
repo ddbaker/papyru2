@@ -1,6 +1,6 @@
 use gpui::*;
 use gpui_component::{
-    IconName, IconNamed, Sizable,
+    IconNamed, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -33,12 +33,14 @@ pub enum TopBarsEvent {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum TopBarsIconName {
     FolderRefresh,
+    PlusThin,
 }
 
 impl IconNamed for TopBarsIconName {
     fn path(self) -> SharedString {
         match self {
             Self::FolderRefresh => crate::app::FOLDER_REFRESH_ICON_PATH.into(),
+            Self::PlusThin => crate::app::PLUS_THIN_ICON_PATH.into(),
         }
     }
 }
@@ -82,8 +84,8 @@ impl TopBars {
     fn render_plus_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("round-button1")
             .ghost()
-            .xsmall()
-            .icon(IconName::Plus)
+            .large()
+            .icon(TopBarsIconName::PlusThin)
             .on_click(cx.listener(|_, _, _, cx| {
                 cx.emit(TopBarsEvent::PressPlus);
             }))
@@ -92,7 +94,7 @@ impl TopBars {
     fn render_refresh_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         Button::new("round-button2")
             .ghost()
-            .xsmall()
+            .large()
             .icon(TopBarsIconName::FolderRefresh)
             .on_click(cx.listener(|_, _, _, cx| {
                 cx.emit(TopBarsEvent::PressFolderRefresh);
@@ -232,7 +234,7 @@ impl crate::app::Papyru2App {
 mod tests {
     use super::{
         SHARED_INTER_PANEL_SPACING_PX, TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, TOP_BARS_BUTTON_ORDER,
-        TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE, TopBarButtonSpec, TopBarsEvent,
+        TOP_BARS_BUTTONS_ADJACENT_TO_SINGLELINE, TopBarButtonSpec, TopBarsEvent, TopBarsIconName,
     };
 
     #[test]
@@ -241,8 +243,8 @@ mod tests {
     }
 
     #[test]
-    fn ftr_test86_req_ftr23_button_group_left_shift_is_10px() {
-        assert_eq!(TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, 10.0);
+    fn ftr_test86_req_ftr23_button_group_left_shift_is_15px() {
+        assert_eq!(TOP_BARS_BUTTON_GROUP_LEFT_SHIFT_PX, 15.0);
     }
 
     #[test]
@@ -271,6 +273,19 @@ mod tests {
         assert_eq!(
             TOP_BARS_BUTTON_ORDER[1],
             TopBarButtonSpec::PlusResetToNeutral
+        );
+    }
+
+    #[test]
+    fn ftr_test87_req_ftr23_follow_icons_are_custom_svg_assets() {
+        assert_eq!(
+            <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::FolderRefresh)
+                .as_ref(),
+            crate::app::FOLDER_REFRESH_ICON_PATH
+        );
+        assert_eq!(
+            <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::PlusThin).as_ref(),
+            crate::app::PLUS_THIN_ICON_PATH
         );
     }
 }

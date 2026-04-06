@@ -230,7 +230,11 @@ pub struct Papyru2App {
 
 pub(crate) const FOLDER_REFRESH_ICON_PATH: &str = "icons/folder-refresh.svg";
 
-const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"/><path d="M14 14a4 4 0 1 0 1.2-2.8"/><path d="M14 10v4h4"/></svg>"#;
+const FOLDER_REFRESH_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2z"/><path d="M14 14a4 4 0 1 0 1.2-2.8"/><path d="M14 10v4h4"/></svg>"#;
+
+pub(crate) const PLUS_THIN_ICON_PATH: &str = "icons/plus-thin.svg";
+
+const PLUS_THIN_ICON_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>"#;
 
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct AppAssets;
@@ -243,17 +247,22 @@ impl AssetSource for AppAssets {
         if path == FOLDER_REFRESH_ICON_PATH {
             return Ok(Some(Cow::Borrowed(FOLDER_REFRESH_ICON_SVG)));
         }
+        if path == PLUS_THIN_ICON_PATH {
+            return Ok(Some(Cow::Borrowed(PLUS_THIN_ICON_SVG)));
+        }
         gpui_component_assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut assets = gpui_component_assets::Assets.list(path)?;
-        if FOLDER_REFRESH_ICON_PATH.starts_with(path)
-            && !assets
-                .iter()
-                .any(|entry| entry.as_ref() == FOLDER_REFRESH_ICON_PATH)
-        {
-            assets.push(FOLDER_REFRESH_ICON_PATH.into());
+        for custom_icon_path in [FOLDER_REFRESH_ICON_PATH, PLUS_THIN_ICON_PATH] {
+            if custom_icon_path.starts_with(path)
+                && !assets
+                    .iter()
+                    .any(|entry| entry.as_ref() == custom_icon_path)
+            {
+                assets.push(custom_icon_path.into());
+            }
         }
         Ok(assets)
     }
