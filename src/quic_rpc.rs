@@ -313,7 +313,7 @@ mod tests {
     }
 
     fn debug_log_path() -> PathBuf {
-        PathBuf::from("debug_assoc_trace.log")
+        crate::app::trace_debug_log_file_path()
     }
 
     fn debug_log_len() -> usize {

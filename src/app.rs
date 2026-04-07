@@ -17,6 +17,71 @@ use crate::editor::Papyru2Editor;
 use crate::file_tree::{FileTreeEvent, FileTreeView};
 use crate::top_bars::{SHARED_INTER_PANEL_SPACING_PX, TopBars};
 
+pub(crate) const PAPYRU2_DEBUG_LOG_FILE_NAME: &str = "papyru2_debug.log";
+pub(crate) const PAPYRU2_PIN_FILE_LOG_FILE_NAME: &str = "papyru2_pin_file.log";
+
+static TRACE_DEBUG_LOG_PATH: std::sync::OnceLock<std::sync::Mutex<PathBuf>> =
+    std::sync::OnceLock::new();
+
+fn default_trace_debug_log_path() -> PathBuf {
+    crate::path_resolver::AppPaths::resolve()
+        .map(|app_paths| app_paths.log_file_path(PAPYRU2_DEBUG_LOG_FILE_NAME))
+        .unwrap_or_else(|_| PathBuf::from(PAPYRU2_DEBUG_LOG_FILE_NAME))
+}
+
+fn trace_debug_log_path_lock() -> &'static std::sync::Mutex<PathBuf> {
+    TRACE_DEBUG_LOG_PATH.get_or_init(|| std::sync::Mutex::new(default_trace_debug_log_path()))
+}
+
+pub(crate) fn trace_debug_log_file_path() -> PathBuf {
+    trace_debug_log_path_lock()
+        .lock()
+        .map(|path| path.clone())
+        .unwrap_or_else(|_| default_trace_debug_log_path())
+}
+
+pub(crate) fn debug_log_path_from_app_paths(app_paths: &crate::path_resolver::AppPaths) -> PathBuf {
+    app_paths.log_file_path(PAPYRU2_DEBUG_LOG_FILE_NAME)
+}
+
+pub(crate) fn configure_trace_debug_log_path(app_paths: &crate::path_resolver::AppPaths) {
+    if let Ok(mut path) = trace_debug_log_path_lock().lock() {
+        *path = debug_log_path_from_app_paths(app_paths);
+    }
+}
+
+fn backup_log_path(log_path: &std::path::Path) -> PathBuf {
+    log_path.with_extension("log.bak")
+}
+
+fn rotate_startup_log_file(log_path: &std::path::Path) -> std::io::Result<()> {
+    let backup_path = backup_log_path(log_path);
+    if backup_path.exists() {
+        std::fs::remove_file(backup_path.as_path())?;
+    }
+    if log_path.exists() {
+        std::fs::rename(log_path, backup_path.as_path())?;
+    }
+
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)?;
+
+    Ok(())
+}
+
+pub(crate) fn prepare_startup_log_files(
+    app_paths: &crate::path_resolver::AppPaths,
+) -> std::io::Result<()> {
+    let debug_log_path = debug_log_path_from_app_paths(app_paths);
+    let pin_file_log_path = app_paths.log_file_path(PAPYRU2_PIN_FILE_LOG_FILE_NAME);
+    rotate_startup_log_file(debug_log_path.as_path())?;
+    rotate_startup_log_file(pin_file_log_path.as_path())?;
+    Ok(())
+}
+
 pub(crate) fn trace_debug(message: impl AsRef<str>) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -27,7 +92,7 @@ pub(crate) fn trace_debug(message: impl AsRef<str>) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("debug_assoc_trace.log")
+        .open(trace_debug_log_file_path())
     {
         let _ = std::io::Write::write_all(&mut file, line.as_bytes());
     }
@@ -1483,6 +1548,124 @@ mod tests {
 
         req_colr_test_cleanup(root.as_path());
     }
+
+    fn log_test_resolved_app_paths(root: &std::path::Path, suffix: &str) -> AppPaths {
+        let app_home = root.join(format!("app_home_{suffix}"));
+        let paths = AppPaths {
+            mode: RunEnvPattern::Installed,
+            app_home: app_home.clone(),
+            conf_dir: app_home.join("conf"),
+            data_dir: app_home.join("data"),
+            user_document_dir: app_home.join("data").join("user_document"),
+            recyclebin_dir: app_home.join("data").join("user_document").join("recyclebin"),
+            log_dir: app_home.join("log"),
+            bin_dir: app_home.join("bin"),
+        };
+        paths.ensure_dirs().expect("ensure app dirs");
+        paths
+    }
+
+    #[test]
+    fn log_test1_req_log1_debug_log_filename_is_renamed() {
+        assert_eq!(super::PAPYRU2_DEBUG_LOG_FILE_NAME, "papyru2_debug.log");
+    }
+
+    #[test]
+    fn log_test2_req_log2_debug_log_path_resolves_under_log_dir() {
+        let root = req_colr_test_temp_root("log_test2");
+        let paths = log_test_resolved_app_paths(root.as_path(), "log_test2");
+
+        let expected = paths.log_dir.join(super::PAPYRU2_DEBUG_LOG_FILE_NAME);
+        assert_eq!(super::debug_log_path_from_app_paths(&paths), expected);
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn log_test3_req_log3_startup_rotation_replaces_existing_bak_and_recreates_logs() {
+        let root = req_colr_test_temp_root("log_test3");
+        let paths = log_test_resolved_app_paths(root.as_path(), "log_test3");
+
+        let debug_log = super::debug_log_path_from_app_paths(&paths);
+        let pin_log = paths.log_file_path(super::PAPYRU2_PIN_FILE_LOG_FILE_NAME);
+        let debug_bak = debug_log.with_extension("log.bak");
+        let pin_bak = pin_log.with_extension("log.bak");
+
+        std::fs::write(debug_log.as_path(), "debug-current").expect("write debug log");
+        std::fs::write(pin_log.as_path(), "pin-current").expect("write pin log");
+        std::fs::write(debug_bak.as_path(), "debug-stale-bak").expect("write stale debug bak");
+        std::fs::write(pin_bak.as_path(), "pin-stale-bak").expect("write stale pin bak");
+
+        super::prepare_startup_log_files(&paths).expect("prepare startup logs");
+
+        assert_eq!(
+            std::fs::read_to_string(debug_bak.as_path()).expect("read rotated debug bak"),
+            "debug-current"
+        );
+        assert_eq!(
+            std::fs::read_to_string(pin_bak.as_path()).expect("read rotated pin bak"),
+            "pin-current"
+        );
+        assert_eq!(
+            std::fs::metadata(debug_log.as_path())
+                .expect("debug log metadata")
+                .len(),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(pin_log.as_path())
+                .expect("pin log metadata")
+                .len(),
+            0
+        );
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn log_test4_req_log3_startup_rotation_creates_logs_when_missing() {
+        let root = req_colr_test_temp_root("log_test4");
+        let paths = log_test_resolved_app_paths(root.as_path(), "log_test4");
+
+        let debug_log = super::debug_log_path_from_app_paths(&paths);
+        let pin_log = paths.log_file_path(super::PAPYRU2_PIN_FILE_LOG_FILE_NAME);
+        let debug_bak = debug_log.with_extension("log.bak");
+        let pin_bak = pin_log.with_extension("log.bak");
+
+        if debug_log.exists() {
+            std::fs::remove_file(debug_log.as_path()).expect("remove existing debug log");
+        }
+        if pin_log.exists() {
+            std::fs::remove_file(pin_log.as_path()).expect("remove existing pin log");
+        }
+        if debug_bak.exists() {
+            std::fs::remove_file(debug_bak.as_path()).expect("remove existing debug bak");
+        }
+        if pin_bak.exists() {
+            std::fs::remove_file(pin_bak.as_path()).expect("remove existing pin bak");
+        }
+
+        super::prepare_startup_log_files(&paths).expect("prepare startup logs from missing state");
+
+        assert!(debug_log.exists());
+        assert!(pin_log.exists());
+        assert_eq!(
+            std::fs::metadata(debug_log.as_path())
+                .expect("debug log metadata")
+                .len(),
+            0
+        );
+        assert_eq!(
+            std::fs::metadata(pin_log.as_path())
+                .expect("pin log metadata")
+                .len(),
+            0
+        );
+        assert!(!debug_bak.exists());
+        assert!(!pin_bak.exists());
+
+        req_colr_test_cleanup(root.as_path());
+    }
 }
 
 pub fn run() {
@@ -1496,39 +1679,43 @@ pub fn run() {
         }
     };
 
-    trace_debug(format!("path_resolver cli_override={cli_override:?}"));
-
     let resolved_paths = match cli_override {
         Some(mode) => crate::path_resolver::AppPaths::resolve_with_cli_override(Some(mode)),
         None => crate::path_resolver::AppPaths::resolve(),
     };
 
     let app_paths = match resolved_paths {
-        Ok(paths) => {
-            let config_file = paths.config_file_path("app.toml");
-            let log_file = paths.log_file_path("papyru2.log");
-            trace_debug(format!(
-                "path_resolver resolved mode={:?} reason={} app_home={} conf={} data={} user_document={} recyclebin={} log={} bin={} config_file={} app_log_file={}",
-                paths.mode,
-                paths.mode.reason(),
-                paths.app_home.display(),
-                paths.conf_dir.display(),
-                paths.data_dir.display(),
-                paths.user_document_dir.display(),
-                paths.recyclebin_dir.display(),
-                paths.log_dir.display(),
-                paths.bin_dir.display(),
-                config_file.display(),
-                log_file.display()
-            ));
-            paths
-        }
+        Ok(paths) => paths,
         Err(error) => {
             trace_debug(format!("path_resolver resolve failed error={error}"));
             eprintln!("papyru2 path resolver failed: {error}");
             return;
         }
     };
+
+    configure_trace_debug_log_path(&app_paths);
+    if let Err(error) = prepare_startup_log_files(&app_paths) {
+        eprintln!("papyru2 startup log preparation failed: {error}");
+    }
+
+    trace_debug(format!("path_resolver cli_override={cli_override:?}"));
+
+    let config_file = app_paths.config_file_path("app.toml");
+    let log_file = app_paths.log_file_path("papyru2.log");
+    trace_debug(format!(
+        "path_resolver resolved mode={:?} reason={} app_home={} conf={} data={} user_document={} recyclebin={} log={} bin={} config_file={} app_log_file={}",
+        app_paths.mode,
+        app_paths.mode.reason(),
+        app_paths.app_home.display(),
+        app_paths.conf_dir.display(),
+        app_paths.data_dir.display(),
+        app_paths.user_document_dir.display(),
+        app_paths.recyclebin_dir.display(),
+        app_paths.log_dir.display(),
+        app_paths.bin_dir.display(),
+        config_file.display(),
+        log_file.display()
+    ));
 
     let color_config_path = app_paths.config_file_path(PAPYRU2_CONF_FILE_NAME);
     let ui_color_config = load_or_create_ui_color_config(color_config_path.as_path());
