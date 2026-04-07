@@ -50,6 +50,149 @@ where
     element.text_sm()
 }
 
+pub(crate) const PAPYRU2_CONF_FILE_NAME: &str = "papyru2_conf.toml";
+pub(crate) const REQ_COLR_DEFAULT_BACKGROUND_RGB_HEX: u32 = 0xFDFDE6;
+pub(crate) const REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX: u32 = 0x000000;
+const REQ_COLR_MAX_RGB_HEX: u32 = 0x00FF_FFFF;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct UiColorConfig {
+    pub background_rgb_hex: u32,
+    pub foreground_rgb_hex: u32,
+}
+
+impl Default for UiColorConfig {
+    fn default() -> Self {
+        Self {
+            background_rgb_hex: REQ_COLR_DEFAULT_BACKGROUND_RGB_HEX,
+            foreground_rgb_hex: REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX,
+        }
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReqColrConfigFile {
+    #[serde(default)]
+    color: ReqColrColorSection,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReqColrColorSection {
+    #[serde(default)]
+    background: Option<u32>,
+    #[serde(default)]
+    foreground: Option<u32>,
+}
+
+pub(crate) fn req_colr_rgb_hex_to_hsla(rgb_hex: u32) -> Hsla {
+    Hsla::from(rgb(rgb_hex))
+}
+
+pub(crate) fn req_colr_default_ui_colors() -> UiColorConfig {
+    UiColorConfig::default()
+}
+
+fn req_colr_hex_text(rgb_hex: u32) -> String {
+    format!("#{rgb_hex:06x}")
+}
+
+fn req_colr_default_config_toml(colors: UiColorConfig) -> String {
+    format!(
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n",
+        colors.background_rgb_hex, colors.foreground_rgb_hex
+    )
+}
+
+fn req_colr_validate_rgb_hex(field_name: &str, rgb_hex: u32) -> std::io::Result<u32> {
+    if rgb_hex > REQ_COLR_MAX_RGB_HEX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "req-colr invalid color.{field_name} value=0x{rgb_hex:08x} exceeds 24-bit rgb"
+            ),
+        ));
+    }
+    Ok(rgb_hex)
+}
+
+fn write_default_ui_color_config(
+    path: &std::path::Path,
+    colors: UiColorConfig,
+) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "req-colr config path has no parent directory",
+        )
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let default_toml = req_colr_default_config_toml(colors);
+    std::fs::write(path, default_toml.as_bytes())
+}
+
+fn load_or_create_ui_color_config_result(path: &std::path::Path) -> std::io::Result<UiColorConfig> {
+    if path.exists() && !path.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("req-colr config path is not a file path={}", path.display()),
+        ));
+    }
+
+    let defaults = req_colr_default_ui_colors();
+    if !path.is_file() {
+        write_default_ui_color_config(path, defaults)?;
+        trace_debug(format!(
+            "req-colr config created path={} background={} foreground={}",
+            path.display(),
+            req_colr_hex_text(defaults.background_rgb_hex),
+            req_colr_hex_text(defaults.foreground_rgb_hex),
+        ));
+        return Ok(defaults);
+    }
+
+    let raw = std::fs::read_to_string(path)?;
+    let parsed: ReqColrConfigFile = toml::from_str(&raw)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+
+    let background_rgb_hex = req_colr_validate_rgb_hex(
+        "background",
+        parsed.color.background.unwrap_or(defaults.background_rgb_hex),
+    )?;
+    let foreground_rgb_hex = req_colr_validate_rgb_hex(
+        "foreground",
+        parsed.color.foreground.unwrap_or(defaults.foreground_rgb_hex),
+    )?;
+
+    let resolved = UiColorConfig {
+        background_rgb_hex,
+        foreground_rgb_hex,
+    };
+    trace_debug(format!(
+        "req-colr config loaded path={} background={} foreground={}",
+        path.display(),
+        req_colr_hex_text(resolved.background_rgb_hex),
+        req_colr_hex_text(resolved.foreground_rgb_hex),
+    ));
+    Ok(resolved)
+}
+
+pub(crate) fn load_or_create_ui_color_config(path: &std::path::Path) -> UiColorConfig {
+    match load_or_create_ui_color_config_result(path) {
+        Ok(colors) => colors,
+        Err(error) => {
+            let defaults = req_colr_default_ui_colors();
+            trace_debug(format!(
+                "req-colr config fallback path={} error={} defaults background={} foreground={}",
+                path.display(),
+                error,
+                req_colr_hex_text(defaults.background_rgb_hex),
+                req_colr_hex_text(defaults.foreground_rgb_hex),
+            ));
+            defaults
+        }
+    }
+}
+
 pub(crate) fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused: bool,
     editor_was_focused: bool,
@@ -400,6 +543,7 @@ impl Papyru2App {
         window: &mut Window,
         app_paths: crate::path_resolver::AppPaths,
         restored_splitter_left_size: Option<f32>,
+        ui_color_config: UiColorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
         let split_left_panel_size = normalize_split_left_panel_size(restored_splitter_left_size);
@@ -415,11 +559,12 @@ impl Papyru2App {
                 window,
                 layout_split_state.clone(),
                 split_left_panel_size,
+                ui_color_config,
                 cx,
             )
         });
         let singleline = top_bars.read(cx).singleline();
-        let editor = cx.new(|cx| Papyru2Editor::new(window, cx));
+        let editor = cx.new(|cx| Papyru2Editor::new(window, ui_color_config, cx));
         let protected_delete_roots = vec![
             app_paths.data_dir.clone(),
             app_paths.user_document_dir.clone(),
@@ -448,7 +593,12 @@ impl Papyru2App {
             }
         };
         let file_tree = cx.new(move |cx| {
-            FileTreeView::new(protected_delete_roots, file_tree_root_dir.clone(), cx)
+            FileTreeView::new(
+                protected_delete_roots,
+                file_tree_root_dir.clone(),
+                ui_color_config,
+                cx,
+            )
         });
         let (file_tree_watcher, file_tree_refresh_rx) =
             match crate::file_tree_watcher::start_file_tree_watcher(
@@ -1195,6 +1345,124 @@ mod tests {
         assert!(options.show);
         assert_eq!(options.window_bounds, Some(startup_bounds));
     }
+
+
+    fn req_colr_test_temp_root(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!(
+            "gpui_papyru2_{name}_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        std::fs::create_dir_all(&path).expect("create temp root");
+        path
+    }
+
+    fn req_colr_test_cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn colr_test1_req_colr_defaults_match_source_constants() {
+        let defaults = super::req_colr_default_ui_colors();
+        assert_eq!(
+            defaults.background_rgb_hex,
+            super::REQ_COLR_DEFAULT_BACKGROUND_RGB_HEX
+        );
+        assert_eq!(
+            defaults.foreground_rgb_hex,
+            super::REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX
+        );
+    }
+
+    #[test]
+    fn colr_test2_req_colr_missing_config_creates_default_file() {
+        let root = req_colr_test_temp_root("colr_test2");
+        let config_path = root.join("conf").join(super::PAPYRU2_CONF_FILE_NAME);
+
+        let resolved = super::load_or_create_ui_color_config(config_path.as_path());
+        assert_eq!(resolved, super::req_colr_default_ui_colors());
+        assert!(config_path.is_file());
+
+        let raw = std::fs::read_to_string(config_path.as_path()).expect("read color config");
+        assert!(raw.contains("background = 0xfdfde6"));
+        assert!(raw.contains("foreground = 0x000000"));
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn colr_test3_req_colr_valid_hex_values_override_defaults() {
+        let root = req_colr_test_temp_root("colr_test3");
+        let config_path = root.join("conf").join(super::PAPYRU2_CONF_FILE_NAME);
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
+        std::fs::write(
+            config_path.as_path(),
+            "[color]\nbackground = 0xf7f2ec\nforeground = 0x437085\n",
+        )
+        .expect("write color config");
+
+        let resolved = super::load_or_create_ui_color_config(config_path.as_path());
+        assert_eq!(resolved.background_rgb_hex, 0xF7F2EC);
+        assert_eq!(resolved.foreground_rgb_hex, 0x437085);
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn colr_test4_req_colr_partial_toml_falls_back_per_field() {
+        let root = req_colr_test_temp_root("colr_test4");
+        let config_path = root.join("conf").join(super::PAPYRU2_CONF_FILE_NAME);
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
+        std::fs::write(config_path.as_path(), "[color]\nbackground = 0xf7f2ec\n")
+            .expect("write partial config");
+
+        let resolved = super::load_or_create_ui_color_config(config_path.as_path());
+        assert_eq!(resolved.background_rgb_hex, 0xF7F2EC);
+        assert_eq!(
+            resolved.foreground_rgb_hex,
+            super::REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX
+        );
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn colr_test5_req_colr_invalid_toml_falls_back_without_panic() {
+        let root = req_colr_test_temp_root("colr_test5");
+        let config_path = root.join("conf").join(super::PAPYRU2_CONF_FILE_NAME);
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
+        std::fs::write(config_path.as_path(), "[color]\nbackground = \"red\"\n")
+            .expect("write invalid config");
+
+        let resolved = super::load_or_create_ui_color_config(config_path.as_path());
+        assert_eq!(resolved, super::req_colr_default_ui_colors());
+
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn colr_test6_req_colr_rgb_value_must_fit_within_24_bits() {
+        let root = req_colr_test_temp_root("colr_test6");
+        let config_path = root.join("conf").join(super::PAPYRU2_CONF_FILE_NAME);
+        std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
+        std::fs::write(
+            config_path.as_path(),
+            "[color]\nbackground = 0x1000000\nforeground = 0x000000\n",
+        )
+        .expect("write out-of-range config");
+
+        let result = super::load_or_create_ui_color_config_result(config_path.as_path());
+        assert!(result.is_err());
+        let error_text = result.err().expect("expected error").to_string();
+        assert!(error_text.contains("exceeds 24-bit rgb"));
+
+        req_colr_test_cleanup(root.as_path());
+    }
 }
 
 pub fn run() {
@@ -1241,6 +1509,15 @@ pub fn run() {
             return;
         }
     };
+
+    let color_config_path = app_paths.config_file_path(PAPYRU2_CONF_FILE_NAME);
+    let ui_color_config = load_or_create_ui_color_config(color_config_path.as_path());
+    trace_debug(format!(
+        "req-colr startup colors path={} background={} foreground={}",
+        color_config_path.display(),
+        req_colr_hex_text(ui_color_config.background_rgb_hex),
+        req_colr_hex_text(ui_color_config.foreground_rgb_hex),
+    ));
 
     let window_position_path =
         app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
@@ -1299,11 +1576,19 @@ pub fn run() {
         let app_paths = app_paths.clone();
         let window_position_path = window_position_path.clone();
         let restored_splitter_left_size = restored_splitter_left_size;
+        let ui_color_config = ui_color_config;
         cx.spawn(async move |cx| {
             cx.open_window(window_options, move |window, cx| {
                 let app_paths = app_paths.clone();
-                let view = cx
-                    .new(|cx| Papyru2App::new(window, app_paths, restored_splitter_left_size, cx));
+                let view = cx.new(|cx| {
+                    Papyru2App::new(
+                        window,
+                        app_paths,
+                        restored_splitter_left_size,
+                        ui_color_config,
+                        cx,
+                    )
+                });
 
                 let close_save_path = window_position_path.clone();
                 let close_view = view.clone();

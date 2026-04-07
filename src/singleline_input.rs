@@ -27,6 +27,7 @@ pub struct SingleLineInput {
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
+    ui_color_config: crate::app::UiColorConfig,
 }
 
 impl EventEmitter<SingleLineEvent> for SingleLineInput {}
@@ -36,7 +37,11 @@ pub(crate) fn req_editor_singleline_font_size_policy() -> &'static str {
 }
 
 impl SingleLineInput {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        ui_color_config: crate::app::UiColorConfig,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Subject <Enter>"));
         let (last_value, last_cursor) = {
             let initial = sl_input_state.read(cx);
@@ -79,6 +84,7 @@ impl SingleLineInput {
             current_editing_file_path: None,
             _subscriptions,
             font_size_logged_once: false,
+            ui_color_config,
         }
     }
 
@@ -222,24 +228,33 @@ impl SingleLineInput {
 impl Render for SingleLineInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
+        let background_rgb_hex = self.ui_color_config.background_rgb_hex;
+        let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
 
         if !self.font_size_logged_once {
             crate::app::trace_debug(format!(
-                "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} theme.font_size={:?} theme.mono_font_size={:?}",
+                "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_singleline_font_size_policy(),
                 experimental_text_size_px,
                 cx.theme().font_size,
                 cx.theme().mono_font_size,
+                background_rgb_hex,
+                foreground_rgb_hex,
             ));
             self.font_size_logged_once = true;
         }
 
         div()
             .w_full()
+            .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
+            .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .on_key_down(cx.listener(Self::on_key_down))
             .child(
                 crate::app::apply_req_editor_shared_text_size(
-                    Input::new(&self.sl_input_state).w_full(),
+                    Input::new(&self.sl_input_state)
+                        .appearance(false)
+                        .w_full()
+                        .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex)),
                 )
                 .text_size(experimental_text_size_px),
             )

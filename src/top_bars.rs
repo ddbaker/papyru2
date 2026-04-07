@@ -86,9 +86,10 @@ impl TopBars {
         window: &mut Window,
         layout_split_state: Entity<ResizableState>,
         left_panel_size: Pixels,
+        ui_color_config: crate::app::UiColorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
-        let singleline = cx.new(|cx| SingleLineInput::new(window, cx));
+        let singleline = cx.new(|cx| SingleLineInput::new(window, ui_color_config, cx));
         Self {
             singleline,
             layout_split_state,

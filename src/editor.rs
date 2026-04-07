@@ -31,6 +31,7 @@ pub struct Papyru2Editor {
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
+    ui_color_config: crate::app::UiColorConfig,
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
@@ -59,7 +60,11 @@ fn rpc_centering_anchor_line(target_line_0_based: u32, total_lines: usize) -> u3
 }
 
 impl Papyru2Editor {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        ui_color_config: crate::app::UiColorConfig,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .code_editor("rust")
@@ -161,6 +166,7 @@ impl Papyru2Editor {
             current_editing_file_path: None,
             _subscriptions,
             font_size_logged_once: false,
+            ui_color_config,
         }
     }
 
@@ -427,28 +433,36 @@ impl Papyru2Editor {
 impl Render for Papyru2Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
+        let background_rgb_hex = self.ui_color_config.background_rgb_hex;
+        let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
 
         if !self.font_size_logged_once {
             crate::app::trace_debug(format!(
-                "req-editor-font-size snapshot component=editor policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} mono_font_family={} theme.font_size={:?} theme.mono_font_size={:?}",
+                "req-editor-font-size snapshot component=editor policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} mono_font_family={} theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_editor_font_size_policy(),
                 experimental_text_size_px,
                 cx.theme().mono_font_family,
                 cx.theme().font_size,
                 cx.theme().mono_font_size,
+                background_rgb_hex,
+                foreground_rgb_hex,
             ));
             self.font_size_logged_once = true;
         }
 
         div()
             .size_full()
+            .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
+            .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::on_move_up_action))
             .child(
                 crate::app::apply_req_editor_shared_text_size(
                     Input::new(&self.input_state)
+                        .appearance(false)
                         .size_full()
-                        .font_family(cx.theme().mono_font_family.clone()),
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex)),
                 )
                 .text_size(experimental_text_size_px),
             )

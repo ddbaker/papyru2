@@ -57,6 +57,7 @@ pub struct FileTreeView {
     selection_anchor_item_id: Option<String>,
     visible_item_ids: Vec<String>,
     font_size_logged_once: bool,
+    ui_color_config: crate::app::UiColorConfig,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
@@ -65,6 +66,7 @@ impl FileTreeView {
     pub fn new(
         protected_delete_roots: Vec<PathBuf>,
         tree_root_dir: PathBuf,
+        ui_color_config: crate::app::UiColorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
@@ -81,6 +83,7 @@ impl FileTreeView {
             selection_anchor_item_id: None,
             visible_item_ids: Vec::new(),
             font_size_logged_once: false,
+            ui_color_config,
         };
         crate::app::trace_debug(format!(
             "file_tree init root_dir={}",
@@ -595,12 +598,17 @@ impl FileTreeView {
 
 impl Render for FileTreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let background_rgb_hex = self.ui_color_config.background_rgb_hex;
+        let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
+
         if !self.font_size_logged_once {
             crate::app::trace_debug(format!(
-                "req-editor-font-size snapshot component=file_tree policy={} tree_text_size=text_sm theme.font_size={:?} theme.mono_font_size={:?}",
+                "req-editor-font-size snapshot component=file_tree policy={} tree_text_size=text_sm theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_file_tree_font_size_policy(),
                 cx.theme().font_size,
                 cx.theme().mono_font_size,
+                background_rgb_hex,
+                foreground_rgb_hex,
             ));
             self.font_size_logged_once = true;
         }
@@ -616,7 +624,14 @@ impl Render for FileTreeView {
                     let item_id = item.id.to_string();
 
                     if is_req_ftr18_scroll_padding_item_id(item_id.as_str()) {
-                        return ListItem::new(ix).w_full().py_0p5().px_2().child(" ");
+                        return ListItem::new(ix)
+                            .w_full()
+                            .py_0p5()
+                            .px_2()
+                            .text_color(crate::app::req_colr_rgb_hex_to_hsla(
+                                this.ui_color_config.foreground_rgb_hex,
+                            ))
+                            .child(" ");
                     }
 
                     let is_selected = this.selected_item_ids.contains(&item_id);
@@ -647,6 +662,9 @@ impl Render for FileTreeView {
                         .py_0p5()
                         .px_2()
                         .pl(px(16.) * entry.depth() + px(8.))
+                        .text_color(crate::app::req_colr_rgb_hex_to_hsla(
+                            this.ui_color_config.foreground_rgb_hex,
+                        ))
                         .child(row_content)
                         .on_click(cx.listener({
                             let item = item.clone();
@@ -663,10 +681,14 @@ impl Render for FileTreeView {
             },
         ))
         .p_1()
-        .h_full();
+        .h_full()
+        .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
+        .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex));
 
         div()
             .size_full()
+            .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
+            .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(Self::on_key_down))
             .child(tree_view)
