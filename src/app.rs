@@ -193,6 +193,26 @@ pub(crate) fn load_or_create_ui_color_config(path: &std::path::Path) -> UiColorC
     }
 }
 
+pub(crate) fn apply_req_colr_theme_overrides(ui_color_config: UiColorConfig, cx: &mut App) {
+    let background = req_colr_rgb_hex_to_hsla(ui_color_config.background_rgb_hex);
+    let foreground = req_colr_rgb_hex_to_hsla(ui_color_config.foreground_rgb_hex);
+
+    let theme = gpui_component::Theme::global_mut(cx);
+    theme.background = background;
+    theme.foreground = foreground;
+
+    let mut highlight_theme = (*theme.highlight_theme).clone();
+    highlight_theme.style.editor_background = Some(background);
+    highlight_theme.style.editor_foreground = Some(foreground);
+    theme.highlight_theme = std::sync::Arc::new(highlight_theme);
+
+    trace_debug(format!(
+        "req-colr theme override applied background={} foreground={} editor_background_synced=true",
+        req_colr_hex_text(ui_color_config.background_rgb_hex),
+        req_colr_hex_text(ui_color_config.foreground_rgb_hex),
+    ));
+}
+
 pub(crate) fn should_restore_singleline_focus_after_new_file(
     singleline_was_focused: bool,
     editor_was_focused: bool,
@@ -1551,6 +1571,7 @@ pub fn run() {
 
     app.run(move |cx| {
         gpui_component::init(cx);
+        apply_req_colr_theme_overrides(ui_color_config, cx);
 
         let primary_display_bounds = cx.primary_display().map(|display| display.bounds());
         let default_centered_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
