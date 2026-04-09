@@ -113,7 +113,7 @@ impl EditorAutoSaveCoordinator {
                 if let Some(payload) = state.pending_payload.as_ref()
                     && payload.current_path != path
                 {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "autosave drop pending on path switch old={} new={}",
                         payload.current_path.display(),
                         path.display()
@@ -156,7 +156,7 @@ impl EditorAutoSaveCoordinator {
             let delta_secs = delta.as_secs();
             if state.last_delta_trace_secs != Some(delta_secs) {
                 state.last_delta_trace_secs = Some(delta_secs);
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "autosave step-3 delta_ms={} threshold_ms={} armed=true",
                     delta.as_millis(),
                     idle_duration.as_millis()
@@ -189,7 +189,7 @@ pub fn spawn_editor_autosave_worker(
     autosave_workflow: SinglelineCreateFileWorkflow,
 ) {
     thread::spawn(move || {
-        crate::app::trace_debug("autosave timer thread started");
+        crate::log::trace_debug("autosave timer thread started");
         loop {
             thread::sleep(EDITOR_AUTOSAVE_TICK_DURATION);
             let Some(payload) =
@@ -200,20 +200,20 @@ pub fn spawn_editor_autosave_worker(
 
             let target = payload.current_path.display().to_string();
             let editor_len = payload.editor_text.len();
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave step-5 raise event path={} text_len={}",
                 target, editor_len
             ));
 
             match autosave_workflow.try_autosave_in_edit(payload) {
                 Ok(true) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "autosave success path={} text_len={} (step-6 reset)",
                         target, editor_len
                     ));
                 }
                 Ok(false) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "autosave critical skipped (state/path invalid) path={}",
                         target
                     ));
@@ -223,7 +223,7 @@ pub fn spawn_editor_autosave_worker(
                     );
                 }
                 Err(error) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "autosave failure path={} error={error} (step-6 reset)",
                         target
                     ));
@@ -384,7 +384,7 @@ fn pin_existing_text_file(request: &RpcPinFileRequest) -> io::Result<RpcPinFileR
         ));
     }
 
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "req-newf35 daily-move trigger source=rpc-pin path={} user_document_dir={}",
         request.full_path.display(),
         request.user_document_dir.display()
@@ -413,7 +413,7 @@ fn touch_file_modified_now(path: &Path) -> io::Result<()> {
     let now = FileTime::from_system_time(std::time::SystemTime::now());
     set_file_mtime(path, now)
         .map_err(|error| io::Error::other(format!("failed to update modified time: {error}")))?;
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "quic_rpc pin updated mtime path={}",
         path.display()
     ));
@@ -642,7 +642,7 @@ impl SinglelineCreateFileWorkflow {
                         .as_ref()
                         .map(|old| old.display().to_string())
                         .unwrap_or_else(|| "<none>".to_string());
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "req-newf35 autosave path updated old={} new={}",
                         previous,
                         path.display()
@@ -823,7 +823,7 @@ fn move_existing_file_to_daily_directory(
 
     let daily_dir = ensure_daily_directory(user_document_dir, now)?;
     if is_path_under_daily_directory(current_path, daily_dir.as_path()) {
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "req-newf35 daily-move noop path={} daily_dir={}",
             current_path.display(),
             daily_dir.display()
@@ -842,7 +842,7 @@ fn move_existing_file_to_daily_directory(
         .to_string_lossy()
         .to_string();
 
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "req-newf35 daily-move start from={} to_dir={}",
         current_path.display(),
         daily_dir.display()
@@ -859,7 +859,7 @@ fn move_existing_file_to_daily_directory(
 
         match fs::rename(current_path, &target) {
             Ok(_) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "req-newf35 daily-move success from={} to={}",
                     current_path.display(),
                     target.display()
@@ -1159,7 +1159,7 @@ impl crate::app::Papyru2App {
 
         let sl_path = self.singleline.read(cx).current_editing_file_path();
         let ed_path = self.editor.read(cx).current_editing_file_path();
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "current_edit_path sync singleline={} editor={}",
             sl_path
                 .as_ref()
@@ -1180,13 +1180,13 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let Some(forced_stem) = forced_stem else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "{trace_label} force singleline stem update skipped (req-newf32)"
             ));
             return;
         };
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "{trace_label} force singleline stem update='{}'",
             crate::app::compact_text(&forced_stem)
         ));
@@ -1213,7 +1213,7 @@ impl crate::app::Papyru2App {
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
         let singleline_was_focused = self.singleline.read(cx).is_focused(window, cx);
         let editor_was_focused = self.editor.read(cx).is_focused(window, cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "new_file_flow trigger={} state=NEUTRAL singleline='{}' singleline_focused={} editor_focused={}",
             trigger,
             crate::app::compact_text(&singleline_snapshot.value),
@@ -1229,10 +1229,10 @@ impl crate::app::Papyru2App {
             now_local,
         ) {
             Ok(Some(path)) => {
-                crate::app::trace_debug(format!("new_file_flow created path={}", path.display()));
+                crate::log::trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                 if crate::app::req_ftr14_create_flow_uses_watcher_refresh_only() {
-                    crate::app::trace_debug(
+                    crate::log::trace_debug(
                         "new_file_flow watcher_refresh_only=true direct_refresh_skipped",
                     );
                 }
@@ -1259,7 +1259,7 @@ impl crate::app::Papyru2App {
                         .cursor_char
                         .min(singleline_after.value.chars().count());
 
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "new_file_flow restore singleline focus cursor={} (rule-1)",
                         restore_cursor_char
                     ));
@@ -1268,17 +1268,17 @@ impl crate::app::Papyru2App {
                         singleline.focus(window, cx);
                     });
                 } else {
-                    crate::app::trace_debug("new_file_flow no focus restore (rule-2)");
+                    crate::log::trace_debug("new_file_flow no focus restore (rule-2)");
                 }
             }
             Ok(None) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "new_file_flow trigger={} skipped (state/throttle gate)",
                     trigger
                 ));
             }
             Err(error) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "new_file_flow trigger={} failed error={error}",
                     trigger
                 ));
@@ -1289,7 +1289,7 @@ impl crate::app::Papyru2App {
     pub(crate) fn on_editor_user_buffer_changed(&mut self, value: &str, cx: &mut Context<Self>) {
         let snapshot = self.file_workflow.snapshot();
         let Some(current_path) = snapshot.current_edit_path.clone() else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave critical invalid path on user edit state={:?} text_len={}",
                 snapshot.state,
                 value.len()
@@ -1302,7 +1302,7 @@ impl crate::app::Papyru2App {
         };
 
         if snapshot.state != SinglelineFileState::Edit {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave critical invalid state on user edit state={:?} path={}",
                 snapshot.state,
                 current_path.display()
@@ -1316,7 +1316,7 @@ impl crate::app::Papyru2App {
 
         let editor_path = self.editor.read(cx).current_editing_file_path();
         if editor_path.as_ref() != Some(&current_path) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave path mismatch workflow={} editor={} (resync)",
                 current_path.display(),
                 editor_path
@@ -1327,7 +1327,7 @@ impl crate::app::Papyru2App {
             self.sync_current_editing_path_to_components(Some(current_path.clone()), cx);
         }
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "autosave step-2 pin user edit path={} text_len={}",
             current_path.display(),
             value.len()
@@ -1350,7 +1350,7 @@ impl crate::app::Papyru2App {
     ) -> bool {
         let snapshot = self.file_workflow.snapshot();
         if snapshot.state != SinglelineFileState::Edit {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave pre-switch trigger={} skipped state={:?}",
                 trigger, snapshot.state
             ));
@@ -1358,7 +1358,7 @@ impl crate::app::Papyru2App {
         }
 
         let Some(current_path) = snapshot.current_edit_path.clone() else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "autosave pre-switch trigger={} critical missing path state={:?}",
                 trigger, snapshot.state
             ));
@@ -1370,7 +1370,7 @@ impl crate::app::Papyru2App {
         };
 
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "autosave pre-switch trigger={} raise path={} text_len={}",
             trigger,
             current_path.display(),
@@ -1390,14 +1390,14 @@ impl crate::app::Papyru2App {
                     .current_edit_path()
                     .unwrap_or_else(|| current_path.clone());
                 if resolved_path != current_path {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "req-newf35 pre-switch path updated old={} new={}",
                         current_path.display(),
                         resolved_path.display()
                     ));
                     self.sync_current_editing_path_to_components(Some(resolved_path.clone()), cx);
                 }
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "autosave pre-switch trigger={} consumed path={}",
                     trigger,
                     resolved_path.display()
@@ -1405,7 +1405,7 @@ impl crate::app::Papyru2App {
                 true
             }
             Ok(false) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "autosave pre-switch trigger={} no-op by workflow gate path={}",
                     trigger,
                     current_path.display()
@@ -1413,7 +1413,7 @@ impl crate::app::Papyru2App {
                 true
             }
             Err(error) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "autosave pre-switch trigger={} failed path={} error={error}",
                     trigger,
                     current_path.display()

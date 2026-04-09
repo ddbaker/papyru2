@@ -37,7 +37,7 @@ pub fn start_file_tree_watcher(root_dir: PathBuf) -> io::Result<(FileTreeWatcher
     watcher
         .watch(root_dir.as_path(), RecursiveMode::Recursive)
         .map_err(notify_error_to_io)?;
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "file_tree watcher started root_dir={} debounce_ms={}",
         root_dir.display(),
         FILE_TREE_WATCH_DEBOUNCE.as_millis()
@@ -92,7 +92,7 @@ fn watcher_loop(
                             .first()
                             .map(|path| path.display().to_string())
                             .unwrap_or_else(|| "<none>".to_string());
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "file_tree watcher event accepted kind={:?} path_count={} first_path={}",
                             event.kind,
                             event.paths.len(),
@@ -102,7 +102,7 @@ fn watcher_loop(
                     }
                 }
                 Err(error) => {
-                    crate::app::trace_debug(format!("file_tree watcher event error={error}"));
+                    crate::log::trace_debug(format!("file_tree watcher event error={error}"));
                 }
             }
             continue;
@@ -112,13 +112,13 @@ fn watcher_loop(
             continue;
         }
 
-        crate::app::trace_debug("file_tree watcher debounce flush");
+        crate::log::trace_debug("file_tree watcher debounce flush");
         if refresh_tx.send_blocking(()).is_err() {
             break;
         }
     }
 
-    crate::app::trace_debug("file_tree watcher loop stopped");
+    crate::log::trace_debug("file_tree watcher loop stopped");
 }
 
 pub(crate) fn should_schedule_refresh(root_dir: &Path, event: &Event) -> bool {

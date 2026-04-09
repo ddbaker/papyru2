@@ -84,7 +84,7 @@ impl Papyru2Editor {
                     let state = state.read(cx);
                     let cursor = state.cursor_position();
                     let value = state.value().to_string();
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "editor InputEvent::Change cursor=({}, {}) value='{}'",
                         cursor.line,
                         cursor.character,
@@ -93,7 +93,7 @@ impl Papyru2Editor {
 
                     if this.pending_programmatic_change_events > 0 {
                         this.pending_programmatic_change_events -= 1;
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "editor InputEvent::Change ignored as programmatic (remaining={})",
                             this.pending_programmatic_change_events
                         ));
@@ -113,7 +113,7 @@ impl Papyru2Editor {
                         && cursor.character == 0
                         && (first_line_non_empty || has_non_empty_tail_line)
                     {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}), first_line_non_empty={}, has_non_empty_tail_line={})",
                             this.last_cursor.line,
                             this.last_cursor.character,
@@ -124,7 +124,7 @@ impl Papyru2Editor {
                     }
 
                     if !is_noop_change {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "editor emit UserBufferChanged len={} cursor=({}, {})",
                             value.len(),
                             cursor.line,
@@ -139,21 +139,21 @@ impl Papyru2Editor {
                     this.last_cursor = cursor;
                 }
                 InputEvent::PressEnter { secondary } => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "editor InputEvent::PressEnter secondary={secondary}"
                     ));
                 }
                 InputEvent::Focus => {
-                    crate::app::trace_debug("editor InputEvent::Focus");
+                    crate::log::trace_debug("editor InputEvent::Focus");
                     cx.emit(EditorEvent::FocusGained);
                 }
                 InputEvent::Blur => {
-                    crate::app::trace_debug("editor InputEvent::Blur");
+                    crate::log::trace_debug("editor InputEvent::Blur");
                 }
             }
         })];
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "req-editor8 editor font_size_policy={}",
             req_editor_editor_font_size_policy()
         ));
@@ -176,7 +176,7 @@ impl Papyru2Editor {
         }
         let key_raw = event.keystroke.key.as_str();
         let key = key_raw.to_ascii_lowercase();
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor keydown raw='{}' key='{}' held={} key_char={}",
             key_raw,
             key,
@@ -186,7 +186,7 @@ impl Papyru2Editor {
 
         if key == "backspace" || key == "delete" {
             let snapshot = self.snapshot(cx);
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "editor backspace candidate cursor=({}, {}) value='{}'",
                 snapshot.cursor_line,
                 snapshot.cursor_char,
@@ -204,7 +204,7 @@ impl Papyru2Editor {
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor action MoveUp captured cursor=({}, {}) value='{}'",
             snapshot.cursor_line,
             snapshot.cursor_char,
@@ -212,7 +212,7 @@ impl Papyru2Editor {
         ));
 
         if snapshot.cursor_line == 0 {
-            crate::app::trace_debug("editor action MoveUp emit PressUpAtFirstLine");
+            crate::log::trace_debug("editor action MoveUp emit PressUpAtFirstLine");
             cx.emit(EditorEvent::PressUpAtFirstLine);
             cx.stop_propagation();
         } else {
@@ -243,7 +243,7 @@ impl Papyru2Editor {
         let text_owned = text.to_string();
 
         self.pending_programmatic_change_events += 1;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor mark programmatic change (apply_text_and_cursor, pending={})",
             self.pending_programmatic_change_events
         ));
@@ -309,7 +309,7 @@ impl Papyru2Editor {
         let anchor_line = rpc_centering_anchor_line(cursor_line, total_lines);
 
         self.pending_programmatic_change_events += 1;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor mark programmatic change (open_content_from_rpc, pending={}, target_line={}, anchor_line={}, total_lines={})",
             self.pending_programmatic_change_events, cursor_line, anchor_line, total_lines
         ));
@@ -332,14 +332,14 @@ impl Papyru2Editor {
             let target_char = cursor_char;
             cx.on_next_frame(window, move |this, window, cx| {
                 this.apply_cursor(anchor_line, target_char, window, cx);
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "editor rpc centering frame1 anchor_line={} target_line={}",
                     anchor_line, target_line
                 ));
 
                 cx.on_next_frame(window, move |this, window, cx| {
                     this.apply_cursor(target_line, target_char, window, cx);
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "editor rpc centering frame2 restore_target_line={target_line}"
                     ));
                 });
@@ -375,14 +375,14 @@ impl Papyru2Editor {
         let content = match read_editor_text_from_disk(path.as_path()) {
             Ok(content) => content,
             Err(error) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "editor open_file read_failed path={} error={error}",
                     path.display()
                 ));
                 return false;
             }
         };
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor open_file content_loaded path={} bytes={}",
             path.display(),
             content.len()
@@ -395,7 +395,7 @@ impl Papyru2Editor {
             .to_string();
 
         self.pending_programmatic_change_events += 1;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "editor mark programmatic change (open_file, pending={})",
             self.pending_programmatic_change_events
         ));
@@ -437,7 +437,7 @@ impl Render for Papyru2Editor {
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
 
         if !self.font_size_logged_once {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "req-editor-font-size snapshot component=editor policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} mono_font_family={} theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_editor_font_size_policy(),
                 experimental_text_size_px,

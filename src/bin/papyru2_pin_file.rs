@@ -142,6 +142,42 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn qcli_test_temp_root(suffix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("papyru2_qcli_{suffix}_{nanos}"))
+    }
+
+    fn qcli_test_cleanup(root: &std::path::Path) {
+        if root.exists() {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    fn qcli_test_resolved_app_paths(
+        root: &std::path::Path,
+        suffix: &str,
+    ) -> path_resolver::AppPaths {
+        let app_home = root.join(format!("app_home_{suffix}"));
+        let paths = path_resolver::AppPaths {
+            mode: path_resolver::RunEnvPattern::Installed,
+            app_home: app_home.clone(),
+            conf_dir: app_home.join("conf"),
+            data_dir: app_home.join("data"),
+            user_document_dir: app_home.join("data").join("user_document"),
+            recyclebin_dir: app_home
+                .join("data")
+                .join("user_document")
+                .join("recyclebin"),
+            log_dir: app_home.join("log"),
+            bin_dir: app_home.join("bin"),
+        };
+        paths.ensure_dirs().expect("ensure app dirs");
+        paths
+    }
+
     #[test]
     fn qcli_test4_server_unavailable_path_returns_error() {
         let request = quic_rpc_protocol::PinFileRpcRequest {
@@ -170,5 +206,55 @@ mod tests {
         let log_path = app_paths.log_file_path("papyru2_pin_file.log");
         let text = fs::read_to_string(log_path).expect("read cli log file");
         assert!(text.contains(marker.as_str()));
+    }
+
+    #[test]
+    fn qcli_test6_req_log7_cli_log_ignores_papyru2_conf_debug_false() {
+        let root = qcli_test_temp_root("qcli_test6");
+        let app_paths = qcli_test_resolved_app_paths(root.as_path(), "qcli_test6");
+        let conf_path = app_paths.config_file_path("papyru2_conf.toml");
+        fs::write(
+            conf_path.as_path(),
+            "[debug]\nlog = false\n\n[color]\nbackground = 0xf7f2ec\nforeground = 0x437085\n",
+        )
+        .expect("write conf with debug false");
+
+        let marker = format!(
+            "qcli_test6_marker_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        );
+        append_cli_log(&app_paths, marker.as_str());
+
+        let log_path = app_paths.log_file_path("papyru2_pin_file.log");
+        let text = fs::read_to_string(log_path.as_path()).expect("read cli log file");
+        assert!(text.contains(marker.as_str()));
+
+        qcli_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn qcli_test7_req_log7_cli_log_does_not_depend_on_papyru2_conf_file_shape() {
+        let root = qcli_test_temp_root("qcli_test7");
+        let app_paths = qcli_test_resolved_app_paths(root.as_path(), "qcli_test7");
+        let conf_path = app_paths.config_file_path("papyru2_conf.toml");
+        fs::create_dir_all(conf_path.as_path()).expect("create conf path as dir");
+
+        let marker = format!(
+            "qcli_test7_marker_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        );
+        append_cli_log(&app_paths, marker.as_str());
+
+        let log_path = app_paths.log_file_path("papyru2_pin_file.log");
+        let text = fs::read_to_string(log_path.as_path()).expect("read cli log file");
+        assert!(text.contains(marker.as_str()));
+
+        qcli_test_cleanup(root.as_path());
     }
 }

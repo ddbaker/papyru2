@@ -250,7 +250,7 @@ impl crate::app::Papyru2App {
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_enter before sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&singleline_snapshot.value),
             singleline_snapshot.cursor_char,
@@ -264,11 +264,11 @@ impl crate::app::Papyru2App {
             singleline_snapshot.cursor_char,
             &editor_snapshot.value,
         ) else {
-            crate::app::trace_debug("transfer_enter skipped (no right side)");
+            crate::log::trace_debug("transfer_enter skipped (no right side)");
             return;
         };
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_enter result sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&result.new_singleline_text),
             result.new_singleline_cursor_char,
@@ -309,7 +309,7 @@ impl crate::app::Papyru2App {
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_enter after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,
@@ -323,7 +323,7 @@ impl crate::app::Papyru2App {
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_down before sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&singleline_snapshot.value),
             singleline_snapshot.cursor_char,
@@ -334,7 +334,7 @@ impl crate::app::Papyru2App {
 
         let result = transfer_on_down(singleline_snapshot.cursor_char, &editor_snapshot.value);
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_down result ed_cursor=({}, {}) focus={:?}",
             result.new_editor_cursor_line, result.new_editor_cursor_char, result.focus_target
         ));
@@ -352,7 +352,7 @@ impl crate::app::Papyru2App {
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_down after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,
@@ -368,7 +368,7 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_backspace before ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&editor_snapshot.value),
             editor_snapshot.cursor_line,
@@ -376,12 +376,12 @@ impl crate::app::Papyru2App {
         ));
 
         if !should_transfer_backspace(editor_snapshot.cursor_line, editor_snapshot.cursor_char) {
-            crate::app::trace_debug("transfer_backspace skipped (cursor not at line-1 head)");
+            crate::log::trace_debug("transfer_backspace skipped (cursor not at line-1 head)");
             return;
         }
 
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_backspace before sl='{}' sl_cursor={}",
             crate::app::compact_text(&singleline_snapshot.value),
             singleline_snapshot.cursor_char
@@ -392,11 +392,11 @@ impl crate::app::Papyru2App {
             singleline_snapshot.cursor_char,
             &editor_snapshot.value,
         ) else {
-            crate::app::trace_debug("transfer_backspace skipped (editor line-1 empty)");
+            crate::log::trace_debug("transfer_backspace skipped (editor line-1 empty)");
             return;
         };
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_backspace result sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&result.new_singleline_text),
             result.new_singleline_cursor_char,
@@ -428,7 +428,7 @@ impl crate::app::Papyru2App {
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_backspace after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,
@@ -442,7 +442,7 @@ impl crate::app::Papyru2App {
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_up before ed='{}' ed_cursor=({}, {}) sl='{}' sl_cursor={}",
             crate::app::compact_text(&editor_snapshot.value),
             editor_snapshot.cursor_line,
@@ -456,11 +456,11 @@ impl crate::app::Papyru2App {
             editor_snapshot.cursor_char,
             &singleline_snapshot.value,
         ) else {
-            crate::app::trace_debug("transfer_up skipped (editor cursor not on line-1)");
+            crate::log::trace_debug("transfer_up skipped (editor cursor not on line-1)");
             return;
         };
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_up result sl_cursor={} focus={:?}",
             result.new_singleline_cursor_char, result.focus_target
         ));
@@ -473,7 +473,7 @@ impl crate::app::Papyru2App {
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "transfer_up after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,

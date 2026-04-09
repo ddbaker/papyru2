@@ -420,7 +420,7 @@ impl crate::app::Papyru2App {
             self.split_left_panel_size,
         );
         if splitter_sizes != actual_splitter_sizes {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "window_position splitter persistence fallback left_size={} actual_sizes={:?}",
                 f32::from(self.split_left_panel_size),
                 actual_splitter_sizes

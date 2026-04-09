@@ -17,7 +17,7 @@ pub fn spawn_quic_rpc_server(
 ) {
     thread::spawn(move || {
         let bind_addr = crate::quic_rpc_protocol::quic_server_socket_addr();
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc server thread start addr={bind_addr} host={} port={}",
             crate::quic_rpc_protocol::QUIC_RPC_HOST,
             crate::quic_rpc_protocol::QUIC_RPC_PORT
@@ -29,7 +29,7 @@ pub fn spawn_quic_rpc_server(
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                crate::app::trace_debug(format!("quic_rpc runtime init failed error={error}"));
+                crate::log::trace_debug(format!("quic_rpc runtime init failed error={error}"));
                 return;
             }
         };
@@ -38,13 +38,13 @@ pub fn spawn_quic_rpc_server(
             let (endpoint, server_cert_der) = match irpc::util::make_server_endpoint(bind_addr) {
                 Ok(value) => value,
                 Err(error) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "quic_rpc make_server_endpoint failed addr={bind_addr} error={error}"
                     ));
                     return;
                 }
             };
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "quic_rpc server endpoint ready addr={bind_addr} cert_der_len={}",
                 server_cert_der.len()
             ));
@@ -71,7 +71,7 @@ pub fn spawn_quic_rpc_server(
             });
 
             irpc::rpc::listen(endpoint, handler).await;
-            crate::app::trace_debug("quic_rpc listen returned");
+            crate::log::trace_debug("quic_rpc listen returned");
         });
     });
 }
@@ -84,7 +84,7 @@ async fn handle_pin_file_request(
 ) -> crate::quic_rpc_protocol::PinFileRpcResponse {
     let crate::quic_rpc_protocol::PinFileRpcService::PinFile(payload) = request;
 
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "quic_rpc request recv file_path='{}' linenum={} platform='{}'",
         crate::app::compact_text(&payload.file_path),
         payload.linenum,
@@ -95,13 +95,13 @@ async fn handle_pin_file_request(
         let response = crate::quic_rpc_protocol::PinFileRpcResponse::invalid_request(
             "platform must be one of windows/linux/macos (case insensitive)",
         );
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc request reject invalid platform='{}'",
             payload.platform
         ));
         return response;
     };
-    crate::app::trace_debug(format!("quic_rpc request platform normalized={platform}"));
+    crate::log::trace_debug(format!("quic_rpc request platform normalized={platform}"));
 
     let resolved_path = match crate::quic_rpc_protocol::resolve_request_file_path(
         user_document_dir.as_path(),
@@ -109,7 +109,7 @@ async fn handle_pin_file_request(
     ) {
         Ok(path) => path,
         Err(error) => {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "quic_rpc request reject path='{}' error={error}",
                 crate::app::compact_text(&payload.file_path)
             ));
@@ -124,7 +124,7 @@ async fn handle_pin_file_request(
     ) {
         Ok(result) => result,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "quic_rpc pin file not found path={} error={error}",
                 resolved_path.display()
             ));
@@ -133,7 +133,7 @@ async fn handle_pin_file_request(
             );
         }
         Err(error) => {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "quic_rpc pin internal failure path={} error={error}",
                 resolved_path.display()
             ));
@@ -149,7 +149,7 @@ async fn handle_pin_file_request(
         linenum_1_based: pin_result.linenum,
     };
     if let Err(error) = ui_tx.send(command).await {
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc ui bridge send failed path={} error={error}",
             pin_result.path.display()
         ));
@@ -158,7 +158,7 @@ async fn handle_pin_file_request(
         );
     }
 
-    crate::app::trace_debug(format!(
+    crate::log::trace_debug(format!(
         "quic_rpc pin accepted path={} linenum={}",
         pin_result.path.display(),
         pin_result.linenum
@@ -176,7 +176,7 @@ impl crate::app::Papyru2App {
         let target_path = command.resolved_path.clone();
         let cursor_line = command.linenum_1_based.saturating_sub(1);
         let requested_line = command.linenum_1_based;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc ui apply start path={} linenum={} cursor_line={}",
             target_path.display(),
             requested_line,
@@ -219,7 +219,7 @@ impl crate::app::Papyru2App {
 
         self.rpc_highlight_active = true;
         self.rpc_highlight_line_1_based = Some(requested_line);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc ui apply done path={} highlight_line={} tree_selection_cleared=true",
             target_path.display(),
             requested_line
@@ -232,7 +232,7 @@ impl crate::app::Papyru2App {
         }
         let line = self.rpc_highlight_line_1_based.take().unwrap_or(0);
         self.rpc_highlight_active = false;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "quic_rpc highlight cleared by editor interaction line={line}"
         ));
     }
@@ -313,7 +313,7 @@ mod tests {
     }
 
     fn debug_log_path() -> PathBuf {
-        crate::app::trace_debug_log_file_path()
+        crate::log::trace_debug_log_file_path()
     }
 
     fn debug_log_len() -> usize {

@@ -85,11 +85,11 @@ impl FileTreeView {
             font_size_logged_once: false,
             ui_color_config,
         };
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree init root_dir={}",
             this.tree_root_dir.display()
         ));
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "req-editor6 file_tree font_size_policy={}",
             req_editor_file_tree_font_size_policy()
         ));
@@ -109,7 +109,7 @@ impl FileTreeView {
         match key.as_str() {
             _ if is_delete_key => {
                 let requested = self.request_recyclebin_delete(cx);
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree keydown key={} requested={requested}",
                     key
                 ));
@@ -154,7 +154,7 @@ impl FileTreeView {
                 daily_dir,
             )
         else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr18 startup positioning skipped daily_dir={} root_dir={}",
                 daily_dir.display(),
                 self.tree_root_dir.display()
@@ -164,7 +164,7 @@ impl FileTreeView {
 
         self.set_items_from_model(cx);
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree req-ftr18 startup positioning prepared daily_dir={} expanded_count={} target_index={} last_index={}",
             daily_dir.display(),
             expanded_count,
@@ -201,7 +201,7 @@ impl FileTreeView {
         self.tree_state.update(cx, |state, cx| {
             state.set_selected_index(Some(selected_index), cx);
         });
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree watcher selection restore item={} index={} delete_shortcut_armed={}",
             item_id, selected_index, self.delete_shortcut_armed
         ));
@@ -216,7 +216,7 @@ impl FileTreeView {
         self.tree_state.update(cx, |state, cx| {
             state.set_selected_index(None, cx);
         });
-        crate::app::trace_debug("file_tree req-ftr17 case3_reset_neutral clear_tree_selection");
+        crate::log::trace_debug("file_tree req-ftr17 case3_reset_neutral clear_tree_selection");
         cx.notify();
     }
 
@@ -231,7 +231,7 @@ impl FileTreeView {
             keep
         });
         if removed_protected_count > 0 {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree delete guard removed protected selections count={}",
                 removed_protected_count
             ));
@@ -239,7 +239,7 @@ impl FileTreeView {
         }
 
         let selected_paths = self.selected_paths();
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree recyclebin delete requested selected_count={}",
             selected_paths.len()
         ));
@@ -259,7 +259,7 @@ impl FileTreeView {
         }
 
         self.delete_shortcut_armed = false;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree delete shortcut consumed_for_editor selected_count={}",
             self.selected_item_ids.len()
         ));
@@ -272,7 +272,7 @@ impl FileTreeView {
         }
 
         self.delete_shortcut_armed = false;
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree delete shortcut disarmed reason={reason} selected_count={}",
             self.selected_item_ids.len()
         ));
@@ -301,14 +301,14 @@ impl FileTreeView {
         if req_ftr19_daily_dir_count > 0 {
             let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
             daily_dirs.sort();
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr19 first_file_auto_open daily_dirs={} opened_folder_count={}",
                 daily_dirs.join(","),
                 req_ftr19_opened_folder_count
             ));
         }
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={}",
             self.tree_root_dir.display(),
             self.root_items.len(),
@@ -365,7 +365,7 @@ impl FileTreeView {
         }
 
         self.apply_single_selection_by_id(item_id.as_str(), "enter_key", cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree enter select item={} folder={} total_selected={}",
             item_id,
             is_folder,
@@ -375,7 +375,7 @@ impl FileTreeView {
             return;
         }
 
-        crate::app::trace_debug(format!("file_tree enter open file item={item_id}"));
+        crate::log::trace_debug(format!("file_tree enter open file item={item_id}"));
         self.disarm_delete_shortcut("enter_open_file");
         cx.emit(FileTreeEvent::OpenFile(PathBuf::from(item_id)));
     }
@@ -422,7 +422,7 @@ impl FileTreeView {
                 "shift_arrow",
                 cx,
             );
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree keydown {key} shift_range=true current_index={} next_index={} selected_count={}",
                 current_index,
                 next_index,
@@ -430,7 +430,7 @@ impl FileTreeView {
             ));
         } else if let Some(item_id) = self.visible_item_ids.get(next_index).cloned() {
             self.apply_single_selection_by_id(item_id.as_str(), "arrow_key", cx);
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree keydown {key} shift_range=false current_index={} next_index={} selected_item={}",
                 current_index, next_index, item_id
             ));
@@ -466,7 +466,7 @@ impl FileTreeView {
                 self.tree_state
                     .update(cx, |state, cx| state.set_selected_index(None, cx));
             }
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree row click shift_range=true item={} index={} selected_count={}",
                 item.id,
                 row_index,
@@ -483,7 +483,7 @@ impl FileTreeView {
                 self.tree_state
                     .update(cx, |state, cx| state.set_selected_index(None, cx));
             }
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree row click secondary_toggle=true item={} selected_now={} index={} selected_count={} delete_shortcut_armed={}",
                 item.id,
                 selected_now,
@@ -496,7 +496,7 @@ impl FileTreeView {
         }
 
         self.apply_single_selection_by_id(item.id.as_ref(), "row_click", cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree row click select item={} folder={} index={} focused={}",
             item.id,
             item.is_folder(),
@@ -507,7 +507,7 @@ impl FileTreeView {
             return;
         }
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree row click selection_changed item={} (open deferred to enter)",
             item.id
         ));
@@ -541,7 +541,7 @@ impl FileTreeView {
         replace_single_selection(&mut self.selected_item_ids, item_id);
         self.delete_shortcut_armed = true;
         self.selection_anchor_item_id = Some(item_id.to_string());
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree selection single reason={reason} item={} total_selected={} delete_shortcut_armed={}",
             item_id,
             self.selected_item_ids.len(),
@@ -584,7 +584,7 @@ impl FileTreeView {
         );
         self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
         self.selection_anchor_item_id = Some(derived_anchor_item_id.clone());
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree selection range reason={reason} anchor_item={} anchor_index={} target_index={} total_selected={} delete_shortcut_armed={}",
             derived_anchor_item_id,
             anchor_index,
@@ -602,7 +602,7 @@ impl Render for FileTreeView {
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
 
         if !self.font_size_logged_once {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "req-editor-font-size snapshot component=file_tree policy={} tree_text_size=text_sm theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_file_tree_font_size_policy(),
                 cx.theme().font_size,
@@ -974,7 +974,7 @@ fn apply_req_ftr19_first_file_auto_open(
         let Some(expanded_ids) =
             req_ftr18_daily_folder_chain_item_ids(tree_root_dir, daily_dir_path)
         else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr19 first_file_auto_open skipped_chain daily_dir={} root_dir={}",
                 daily_dir_path.display(),
                 tree_root_dir.display()
@@ -1209,7 +1209,7 @@ pub(crate) fn move_entries_to_recyclebin(
             continue;
         }
         if is_path_within(source_path, recyclebin_dir) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree recyclebin move skipped source already in recyclebin source={} recyclebin={}",
                 source_path.display(),
                 recyclebin_dir.display()
@@ -1217,7 +1217,7 @@ pub(crate) fn move_entries_to_recyclebin(
             continue;
         }
         if is_path_within(recyclebin_dir, source_path) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree recyclebin move skipped source is ancestor of recyclebin source={} recyclebin={}",
                 source_path.display(),
                 recyclebin_dir.display()
@@ -1231,7 +1231,7 @@ pub(crate) fn move_entries_to_recyclebin(
         match fs::rename(source_path, &target) {
             Ok(()) => moved.push((source_path.clone(), target)),
             Err(error) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree recyclebin move skipped rename error source={} target={} error={error}",
                     source_path.display(),
                     target.display()
@@ -1275,7 +1275,7 @@ pub(crate) fn delete_entries_for_file_tree(
         }
 
         if is_same_path(source_path, recyclebin_dir) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree permanent delete skipped recyclebin root source={} recyclebin={}",
                 source_path.display(),
                 recyclebin_dir.display()
@@ -1286,7 +1286,7 @@ pub(crate) fn delete_entries_for_file_tree(
         if is_path_within(source_path, recyclebin_dir) {
             match remove_path_permanently(source_path) {
                 Ok(()) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "file_tree permanent delete success source={} recyclebin={}",
                         source_path.display(),
                         recyclebin_dir.display()
@@ -1294,7 +1294,7 @@ pub(crate) fn delete_entries_for_file_tree(
                     outcome.permanently_deleted.push(source_path.clone());
                 }
                 Err(error) => {
-                    crate::app::trace_debug(format!(
+                    crate::log::trace_debug(format!(
                         "file_tree permanent delete failed source={} error={error}",
                         source_path.display()
                     ));
@@ -1304,7 +1304,7 @@ pub(crate) fn delete_entries_for_file_tree(
         }
 
         if is_path_within(recyclebin_dir, source_path) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree recyclebin move skipped source is ancestor of recyclebin source={} recyclebin={}",
                 source_path.display(),
                 recyclebin_dir.display()
@@ -1317,7 +1317,7 @@ pub(crate) fn delete_entries_for_file_tree(
         };
         match fs::rename(source_path, &target) {
             Ok(()) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree recyclebin move success source={} target={}",
                     source_path.display(),
                     target.display()
@@ -1327,7 +1327,7 @@ pub(crate) fn delete_entries_for_file_tree(
                     .push((source_path.clone(), target));
             }
             Err(error) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree recyclebin move skipped rename error source={} target={} error={error}",
                     source_path.display(),
                     target.display()
@@ -1461,12 +1461,12 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         self.sync_singleline_from_file_tree_selection(path.as_path(), window, cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree selection load_editor requested path={}",
             path.display()
         ));
         let loaded = self.open_file(path.clone(), window, cx);
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree selection load_editor result path={} loaded={}",
             path.display(),
             loaded
@@ -1474,7 +1474,7 @@ impl crate::app::Papyru2App {
         let transition = crate::app::transition_selection_load_result(loaded);
         self.selection_focus_reassert_pending = transition.next_focus_reassert_pending;
         if transition.schedule_focus_reassert {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree selection focus_reassert scheduled path={} pending={}",
                 path.display(),
                 self.selection_focus_reassert_pending
@@ -1485,7 +1485,7 @@ impl crate::app::Papyru2App {
                 );
                 this.selection_focus_reassert_pending = tick_transition.next_focus_reassert_pending;
                 if !tick_transition.run_focus_reassert {
-                    crate::app::trace_debug("file_tree selection focus_reassert skipped pending=false");
+                    crate::log::trace_debug("file_tree selection focus_reassert skipped pending=false");
                     return;
                 }
                 this.file_tree.update(cx, |file_tree, _| {
@@ -1493,7 +1493,7 @@ impl crate::app::Papyru2App {
                 });
                 let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
                 let editor_focused = this.editor.read(cx).is_focused(window, cx);
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree selection focus_reassert done file_tree_focused={} editor_focused={} pending={}",
                     file_tree_focused,
                     editor_focused,
@@ -1502,7 +1502,7 @@ impl crate::app::Papyru2App {
             });
         }
         if loaded {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree selection promoted_to_edit path={}",
                 path.display()
             ));
@@ -1541,7 +1541,7 @@ impl crate::app::Papyru2App {
             }
         }
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree req-ftr17 case3_reset_neutral transition_to_neutral={}",
             transitioned
         ));
@@ -1552,7 +1552,7 @@ impl crate::app::Papyru2App {
             });
             let singleline_focused = this.singleline.read(cx).is_focused(window, cx);
             let editor_focused = this.editor.read(cx).is_focused(window, cx);
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr17 case3_reset_neutral deferred_focus singleline_focused={} editor_focused={}",
                 singleline_focused,
                 editor_focused
@@ -1574,7 +1574,7 @@ impl crate::app::Papyru2App {
                 restored_selection = file_tree.restore_selection_for_path(path, cx);
             }
         });
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree watcher refresh applied current_edit_path_present={} restored_selection={}",
             current_edit_path.is_some(),
             restored_selection
@@ -1586,7 +1586,7 @@ impl crate::app::Papyru2App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        crate::app::trace_debug("folder_refresh_button click received");
+        crate::log::trace_debug("folder_refresh_button click received");
         let daily_dir_plan =
             req_ftr23_daily_dir_plan(crate::file_update_handler::ensure_daily_directory(
                 self.app_paths.user_document_dir.as_path(),
@@ -1596,17 +1596,17 @@ impl crate::app::Papyru2App {
 
         match daily_dir_plan {
             ReqFtr23DailyDirPlan::RefreshAndPosition { daily_dir } => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree req-ftr23 refresh daily_dir ensured path={}",
                     daily_dir.display()
                 ));
                 self.apply_req_ftr18_startup_daily_folder_positioning(daily_dir, window, cx);
             }
             ReqFtr23DailyDirPlan::RefreshOnly { ensure_error } => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree req-ftr23 refresh daily_dir ensure failed error={ensure_error}"
                 ));
-                crate::app::trace_debug(
+                crate::log::trace_debug(
                     "file_tree req-ftr23 refresh skipped req-ftr18 positioning (daily_dir unavailable)",
                 );
             }
@@ -1623,7 +1623,7 @@ impl crate::app::Papyru2App {
             file_tree.apply_req_ftr18_startup_daily_folder_position(daily_dir.as_path(), cx)
         });
         let Some((target_index, last_index)) = immediate_plan else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr18 startup immediate prepared=false daily_dir={}",
                 daily_dir.display()
             ));
@@ -1636,7 +1636,7 @@ impl crate::app::Papyru2App {
                 state.scroll_to_item(last_index, gpui::ScrollStrategy::Bottom);
             });
         });
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree req-ftr18 startup immediate primed_bottom=true target_index={} last_index={} daily_dir={}",
             target_index,
             last_index,
@@ -1661,7 +1661,7 @@ impl crate::app::Papyru2App {
                 });
             }
 
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree req-ftr18 startup next_frame_1 prepared={} daily_dir={}",
                 next_frame_plan.is_some(),
                 daily_dir_next_frame.display()
@@ -1681,7 +1681,7 @@ impl crate::app::Papyru2App {
                     });
                 }
 
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree req-ftr18 startup next_frame_2 prepared={} daily_dir={}",
                     second_next_frame_plan.is_some(),
                     daily_dir.display()
@@ -1696,7 +1696,7 @@ impl crate::app::Papyru2App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree delete request selected_count={} recyclebin={}",
             paths.len(),
             self.app_paths.recyclebin_dir.display()
@@ -1704,7 +1704,7 @@ impl crate::app::Papyru2App {
 
         match delete_entries_for_file_tree(&paths, self.app_paths.recyclebin_dir.as_path()) {
             Ok(outcome) => {
-                crate::app::trace_debug(format!(
+                crate::log::trace_debug(format!(
                     "file_tree delete success moved_count={} permanently_deleted_count={} selected_count={}",
                     outcome.moved_to_recyclebin.len(),
                     outcome.permanently_deleted.len(),
@@ -1713,7 +1713,7 @@ impl crate::app::Papyru2App {
 
                 match req_ftr17_post_delete_decision_for_outcome(&outcome) {
                     Ok(Some((deleted_anchor_source, decision))) => {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "file_tree req-ftr20 anchor_selected_bottom_file={} moved_count={} permanently_deleted_count={}",
                             deleted_anchor_source.display(),
                             outcome.moved_to_recyclebin.len(),
@@ -1737,7 +1737,7 @@ impl crate::app::Papyru2App {
                                     let transitioned =
                                         self.file_workflow.transition_edit_to_neutral();
                                     self.sync_current_editing_path_to_components(None, cx);
-                                    crate::app::trace_debug(format!(
+                                    crate::log::trace_debug(format!(
                                         "file_tree req-ftr17 case1_next deleted_current_edit_path transition_to_neutral={}",
                                         transitioned
                                     ));
@@ -1746,7 +1746,7 @@ impl crate::app::Papyru2App {
                                     self.file_tree.update(cx, |file_tree, cx| {
                                         file_tree.restore_selection_for_path(path.as_path(), cx)
                                     });
-                                crate::app::trace_debug(format!(
+                                crate::log::trace_debug(format!(
                                     "file_tree req-ftr17 case1_next target={} restored_selection={}",
                                     path.display(),
                                     restored_selection
@@ -1758,7 +1758,7 @@ impl crate::app::Papyru2App {
                                     let transitioned =
                                         self.file_workflow.transition_edit_to_neutral();
                                     self.sync_current_editing_path_to_components(None, cx);
-                                    crate::app::trace_debug(format!(
+                                    crate::log::trace_debug(format!(
                                         "file_tree req-ftr17 case2_prev deleted_current_edit_path transition_to_neutral={}",
                                         transitioned
                                     ));
@@ -1767,7 +1767,7 @@ impl crate::app::Papyru2App {
                                     self.file_tree.update(cx, |file_tree, cx| {
                                         file_tree.restore_selection_for_path(path.as_path(), cx)
                                     });
-                                crate::app::trace_debug(format!(
+                                crate::log::trace_debug(format!(
                                     "file_tree req-ftr17 case2_prev target={} restored_selection={}",
                                     path.display(),
                                     restored_selection
@@ -1775,7 +1775,7 @@ impl crate::app::Papyru2App {
                                 self.handle_file_tree_selection_changed(path, window, cx);
                             }
                             ReqFtr17PostDeleteDecision::ResetToNeutral => {
-                                crate::app::trace_debug(
+                                crate::log::trace_debug(
                                     "file_tree req-ftr17 case3_reset_neutral no_remaining_file=true",
                                 );
                                 self.apply_req_ftr17_case3_reset_to_neutral(window, cx);
@@ -1783,27 +1783,27 @@ impl crate::app::Papyru2App {
                         }
                     }
                     Ok(None) => {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "file_tree req-ftr17 skipped moved_count={} permanently_deleted_count={}",
                             outcome.moved_to_recyclebin.len(),
                             outcome.permanently_deleted.len()
                         ));
                     }
                     Err(error) => {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "file_tree req-ftr17 decision failed error={error}"
                         ));
                     }
                 }
 
                 if crate::app::req_ftr14_delete_flow_uses_watcher_refresh_only() {
-                    crate::app::trace_debug(
+                    crate::log::trace_debug(
                         "file_tree delete success watcher_refresh_only=true direct_refresh_skipped",
                     );
                 }
             }
             Err(error) => {
-                crate::app::trace_debug(format!("file_tree delete move failed error={error}"));
+                crate::log::trace_debug(format!("file_tree delete move failed error={error}"));
             }
         }
     }
@@ -1815,7 +1815,7 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) -> bool {
         if !self.flush_editor_content_before_context_switch("req-aus8-open-file", cx) {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "open_file aborted path={} (pre-switch autosave failed)",
                 path.display()
             ));
@@ -1828,7 +1828,7 @@ impl crate::app::Papyru2App {
         });
 
         if !opened {
-            crate::app::trace_debug(format!("open_file failed path={}", path.display()));
+            crate::log::trace_debug(format!("open_file failed path={}", path.display()));
             return false;
         }
 

@@ -42,7 +42,8 @@ impl SingleLineInput {
         ui_color_config: crate::app::UiColorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sl_input_state = cx.new(|cx| InputState::new(window, cx).placeholder("Subject <Enter>"));
+        let sl_input_state =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Subject <Enter>"));
         let (last_value, last_cursor) = {
             let initial = sl_input_state.read(cx);
             (initial.value().to_string(), initial.cursor_position())
@@ -71,7 +72,7 @@ impl SingleLineInput {
             }
         })];
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "req-editor7 singleline_input font_size_policy={}",
             req_editor_singleline_font_size_policy()
         ));
@@ -96,10 +97,10 @@ impl SingleLineInput {
 
         let key_raw = event.keystroke.key.as_str();
         let key = key_raw.to_ascii_lowercase();
-        crate::app::trace_debug(format!("singleline keydown key={key}"));
+        crate::log::trace_debug(format!("singleline keydown key={key}"));
 
         if key == "enter" || key == "return" {
-            crate::app::trace_debug("singleline emit PressEnter");
+            crate::log::trace_debug("singleline emit PressEnter");
             cx.emit(SingleLineEvent::PressEnter);
             cx.stop_propagation();
             return;
@@ -107,12 +108,12 @@ impl SingleLineInput {
 
         if key == "down" || key == "arrowdown" {
             let snapshot = self.snapshot(cx);
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "singleline down candidate cursor={} value='{}'",
                 snapshot.cursor_char,
                 crate::app::compact_text(&snapshot.value)
             ));
-            crate::app::trace_debug("singleline emit PressDown");
+            crate::log::trace_debug("singleline emit PressDown");
             cx.emit(SingleLineEvent::PressDown);
             cx.stop_propagation();
             return;
@@ -232,7 +233,7 @@ impl Render for SingleLineInput {
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
 
         if !self.font_size_logged_once {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "req-editor-font-size snapshot component=singleline_input policy={} input_size_variant=medium_default wrapper_text_size=text_sm experimental_text_size_plus_0p5px={:?} theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_singleline_font_size_policy(),
                 experimental_text_size_px,
@@ -277,14 +278,14 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let Some(stem) = singleline_stem_from_file_tree_selection(path) else {
-            crate::app::trace_debug(format!(
+            crate::log::trace_debug(format!(
                 "file_tree selection sync skipped path={} (no filename)",
                 path.display()
             ));
             return;
         };
 
-        crate::app::trace_debug(format!(
+        crate::log::trace_debug(format!(
             "file_tree selection sync path={} stem='{}'",
             path.display(),
             crate::app::compact_text(&stem)
@@ -313,14 +314,14 @@ impl crate::app::Papyru2App {
                     now_local,
                 ) {
                     Ok(Some(path)) => {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "rename_flow success new_path={} value='{}'",
                             path.display(),
                             crate::app::compact_text(value)
                         ));
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                         if crate::app::req_ftr14_rename_flow_uses_watcher_refresh_only() {
-                            crate::app::trace_debug(format!(
+                            crate::log::trace_debug(format!(
                                 "rename_flow watcher_refresh_only=true previous_path={} direct_tree_patch_skipped",
                                 previous_path
                                     .as_ref()
@@ -341,7 +342,7 @@ impl crate::app::Papyru2App {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        crate::app::trace_debug(format!(
+                        crate::log::trace_debug(format!(
                             "rename_flow failed value='{}' error={error}",
                             crate::app::compact_text(value)
                         ));
