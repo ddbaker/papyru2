@@ -1,0 +1,9 @@
+[alias]
+# Builds the Windows executable with embedded PE icon metadata from build.rs/winres.
+release-win = "build --release --target x86_64-pc-windows-msvc"
+
+# Creates platform bundle artifacts using [package.metadata.bundle] icons.
+bundle-release = "bundle --release"
+bundle-linux = "bundle --release --target x86_64-unknown-linux-gnu"
+bundle-macos-arm64 = "bundle --release --target aarch64-apple-darwin"
+bundle-macos-x64 = "bundle --release --target x86_64-apple-darwin"

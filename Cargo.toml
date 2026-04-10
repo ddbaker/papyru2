@@ -3,6 +3,22 @@ name = "papyru2"
 version = "0.10.0"
 publish = false
 edition = "2024"
+build = "build.rs"
+
+[package.metadata.bundle]
+name = "papyru2"
+identifier = "com.papyru2.app"
+icon = [
+    "assets/icons/linux/papyru2_16x16.png",
+    "assets/icons/linux/papyru2_32x32.png",
+    "assets/icons/linux/papyru2_64x64.png",
+    "assets/icons/linux/papyru2_128x128.png",
+    "assets/icons/linux/papyru2_256x256.png",
+    "assets/icons/linux/papyru2_512x512.png",
+    "assets/icons/linux/papyru2_1024x1024.png",
+    "assets/icons/macos/papyru2_app_icon.icns",
+    "assets/icons/windows/papyru2_app_icon.ico",
+]
 
 [dependencies]
 gpui = { version = "*" }
@@ -31,3 +47,6 @@ notify = "8.2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
