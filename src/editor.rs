@@ -63,13 +63,15 @@ impl Papyru2Editor {
     pub fn new(
         window: &mut Window,
         ui_color_config: crate::app::UiColorConfig,
+        editor_config: crate::app::EditorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
         let input_state = cx.new(|cx| {
             InputState::new(window, cx)
-                .code_editor("rust")
-                .line_number(true)
-                .soft_wrap(false)
+                .code_editor(editor_config.code_editor.clone())
+                .line_number(editor_config.line_number)
+                .soft_wrap(editor_config.soft_wrap)
+                .searchable(true)
                 .placeholder("File is auto saved")
         });
 
@@ -157,6 +159,18 @@ impl Papyru2Editor {
             "req-editor8 editor font_size_policy={}",
             req_editor_editor_font_size_policy()
         ));
+        crate::log::trace_debug(format!(
+            "req-editor startup editor_config code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
+            editor_config.code_editor,
+            editor_config.soft_wrap,
+            editor_config.line_number,
+            editor_config.show_whitespaces
+        ));
+        if editor_config.show_whitespaces {
+            crate::log::trace_debug(
+                "req-editor10 show_whitespaces=true requested but current gpui-component API has no show_whitespaces toggle; preserving config for future API support",
+            );
+        }
 
         Self {
             input_state,
