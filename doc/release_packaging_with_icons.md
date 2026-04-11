@@ -43,6 +43,10 @@ cargo release-win
 cargo bundle-release
 ```
 
+Use this only on Linux/macOS. On Windows, `cargo bundle-release` invokes
+experimental MSI packaging and is not the recommended workflow for this
+project.
+
 - Linux bundle:
 
 ```bash
@@ -63,8 +67,8 @@ cargo bundle-macos-x64
 
 ## expected outputs
 
-- Windows build: `target/x86_64-pc-windows-msvc/release/papyru2.exe`
-- Bundle output root: `target/<triple>/release/bundle/` (format depends on platform/toolchain)
+- Windows executable build: `target/x86_64-pc-windows-msvc/release/papyru2.exe`
+- Linux/macOS bundle output root: `target/<triple>/release/bundle/` (format depends on platform/toolchain)
 
 ## verification checklist after packaging
 
