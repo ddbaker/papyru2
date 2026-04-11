@@ -1,4 +1,4 @@
-# papyru2 ![appicon](assets\icons\source\papyru2_app_icon_base.png)
+# papyru2 ![appicon](assets/icons/source/papyru2_app_icon_base.png)
 A simple desktop note taking application built with Rust, `gpui`, and `gpui-component`.
 
 
