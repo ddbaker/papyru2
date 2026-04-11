@@ -1,0 +1,11 @@
+[color]
+background = 0xf7f2ec
+foreground = 0x437085
+
+[editor]
+soft_wrap = true
+line_number = false
+
+[debug]
+#log = false
+

@@ -1,0 +1,160 @@
+name: Release Portable Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing git tag to publish portable archives for.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve-release:
+    name: Resolve release target
+    runs-on: ubuntu-24.04
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: resolve
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_tag="${INPUT_RELEASE_TAG}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${release_tag}" ]]; then
+            echo "::error::No release tag was provided."
+            exit 1
+          fi
+
+          git fetch --tags --force
+
+          if ! git rev-parse --verify "refs/tags/${release_tag}" >/dev/null 2>&1; then
+            echo "::error::Git tag ${release_tag} does not exist in this repository."
+            exit 1
+          fi
+
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists."
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --title "${RELEASE_TAG}" \
+              --notes ""
+          fi
+
+  build-portable:
+    name: Build ${{ matrix.platform }} portable zip
+    needs: resolve-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-latest
+          - platform: linux
+            runner: ubuntu-24.04
+          - platform: macos
+            runner: macos-15-intel
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install Linux build prerequisites
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libgit2-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libzstd-dev \
+            pkg-config
+
+      - name: Show Rust toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Build release binaries
+        run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin release_portable_packager
+
+      - name: Create portable zip
+        run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: papyru2-${{ matrix.platform }}-portable-zip
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release-assets:
+    name: Publish release assets
+    needs:
+      - resolve-release
+      - build-portable
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+
+          assets=(dist-artifacts/**/*.zip)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            echo "::error::No portable zip assets were found."
+            exit 1
+          fi
+
+          gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber --repo "${GITHUB_REPOSITORY}"
