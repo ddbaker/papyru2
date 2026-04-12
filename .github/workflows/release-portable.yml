@@ -118,7 +118,7 @@ jobs:
           cargo --version
 
       - name: Build release binaries
-        run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin release_portable_packager
+        run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 
       - name: Create portable zip
         run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml

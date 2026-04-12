@@ -11,8 +11,14 @@ use zip::write::SimpleFileOptions;
 
 const APP_BINARY_NAME: &str = "papyru2";
 const PIN_BINARY_NAME: &str = "papyru2_pin_file";
+const TEXTFILE_IMPORT_BINARY_NAME: &str = "papyru2_textfile_import";
 const PORTABLE_MARKER_FILE: &str = "papyru2.portable";
 const CONFIG_FILE_NAME: &str = "papyru2_conf.toml";
+const PORTABLE_BINARY_NAMES: [&str; 3] = [
+    APP_BINARY_NAME,
+    PIN_BINARY_NAME,
+    TEXTFILE_IMPORT_BINARY_NAME,
+];
 
 fn main() {
     if let Err(error) = run() {
@@ -181,7 +187,7 @@ fn package_portable_release(
     File::create(&marker_path)
         .with_context(|| format!("failed to create {}", marker_path.display()))?;
 
-    for binary_name in [APP_BINARY_NAME, PIN_BINARY_NAME] {
+    for binary_name in PORTABLE_BINARY_NAMES {
         let source = bin_dir.join(platform.executable_name(binary_name));
         ensure_path_exists(&source, "release binary")?;
         let destination =
@@ -292,28 +298,19 @@ fn write_portable_zip(
         &format!("{archive_stem}/{PORTABLE_MARKER_FILE}"),
         file_options,
     )?;
-    add_file_to_zip(
-        &mut zip,
-        &staged_root
-            .join("bin")
-            .join(platform.executable_name(APP_BINARY_NAME)),
-        &format!(
-            "{archive_stem}/bin/{}",
-            platform.executable_name(APP_BINARY_NAME)
-        ),
-        executable_options,
-    )?;
-    add_file_to_zip(
-        &mut zip,
-        &staged_root
-            .join("bin")
-            .join(platform.executable_name(PIN_BINARY_NAME)),
-        &format!(
-            "{archive_stem}/bin/{}",
-            platform.executable_name(PIN_BINARY_NAME)
-        ),
-        executable_options,
-    )?;
+    for binary_name in PORTABLE_BINARY_NAMES {
+        add_file_to_zip(
+            &mut zip,
+            &staged_root
+                .join("bin")
+                .join(platform.executable_name(binary_name)),
+            &format!(
+                "{archive_stem}/bin/{}",
+                platform.executable_name(binary_name)
+            ),
+            executable_options,
+        )?;
+    }
     add_file_to_zip(
         &mut zip,
         &staged_root.join("conf").join(CONFIG_FILE_NAME),
@@ -377,8 +374,10 @@ mod tests {
 
         let app_binary = platform.executable_name(APP_BINARY_NAME);
         let pin_binary = platform.executable_name(PIN_BINARY_NAME);
+        let import_binary = platform.executable_name(TEXTFILE_IMPORT_BINARY_NAME);
         fs::write(bin_dir.join(&app_binary), b"main-binary")?;
         fs::write(bin_dir.join(&pin_binary), b"pin-binary")?;
+        fs::write(bin_dir.join(&import_binary), b"import-binary")?;
 
         let artifact =
             package_portable_release(platform, version, &bin_dir, &out_dir, &config_path)?;
@@ -407,6 +406,11 @@ mod tests {
         assert!(
             archive
                 .by_name(&format!("{root_name}/bin/{pin_binary}"))
+                .is_ok()
+        );
+        assert!(
+            archive
+                .by_name(&format!("{root_name}/bin/{import_binary}"))
                 .is_ok()
         );
         assert!(

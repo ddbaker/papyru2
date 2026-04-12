@@ -751,6 +751,7 @@ pub fn stem_from_singleline_value(value: &str, now: DateTime<Local>) -> String {
     sanitized
 }
 
+#[cfg(test)]
 pub fn daily_directory(user_document_dir: &Path, now: DateTime<Local>) -> PathBuf {
     user_document_dir.join(now.format("%Y/%m/%d").to_string())
 }
@@ -759,7 +760,7 @@ pub fn ensure_daily_directory(
     user_document_dir: &Path,
     now: DateTime<Local>,
 ) -> io::Result<PathBuf> {
-    let dir = daily_directory(user_document_dir, now);
+    let dir = user_document_dir.join(now.format("%Y/%m/%d").to_string());
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }

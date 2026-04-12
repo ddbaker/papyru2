@@ -18,11 +18,12 @@ The portable version zip package includes (Windows example):
 
 ```directory
 papyru2
-   │  papyru2.portable
+   │ papyru2.portable
    │
    ├─bin
    │      papyru2.exe
    │      papyru2_pin_file.exe
+   │      papyru2_textfile_import.exe
    │
    └─conf
           papyru2_conf.toml
@@ -30,11 +31,16 @@ papyru2
 
 - `papyru2.portable`: Empty marker file, do not remove
 - `papyru2.exe`: Application binary
-- `papyru2_pin_file.exe`: standalone helper application
+- `papyru2_pin_file.exe`: standalone helper CLI for 3rd party text search program integration
+- `papyru2_textfile_import.exe`: standalone helper CLI for existing text file import
 - `papyru2_conf.toml`: config file
 
 > [!IMPORTANT]
 > Keep this "portable" folder structure
+
+> [!NOTE]
+> GitHub portable releases are built by [.github/workflows/release-portable.yml](.github/workflows/release-portable.yml) and upload Windows/Linux/macOS zip assets to the matching GitHub Release for an existing `v*` tag.
+
 
 ## Build from source code
 
@@ -45,8 +51,6 @@ cargo release-win
 ```
 
 See [doc/release_packaging_with_icons.md](doc/release_packaging_with_icons.md) for Linux/MacOS build.
-
-GitHub portable releases are built by [.github/workflows/release-portable.yml](.github/workflows/release-portable.yml) and upload Windows/Linux/macOS zip assets to the matching GitHub Release for an existing `v*` tag.
 
 > [!NOTE]
 > Windows icon embedding is wired in `build.rs` and uses `assets/icons/windows/papyru2_app_icon.ico`.
