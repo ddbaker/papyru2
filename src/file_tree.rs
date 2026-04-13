@@ -685,7 +685,7 @@ impl Render for FileTreeView {
                                 this.on_row_click(&item, ix, event, window, cx);
                             }
                         }));
-                    if let Some(color) = selected_row_highlight_color(is_selected) {
+                    if let Some(color) = selected_row_highlight_color(tree_selected, is_selected) {
                         row.bg(color)
                     } else {
                         row
@@ -1151,12 +1151,12 @@ fn collect_visible_item_ids_including_padding(items: &[TreeItem], ids: &mut Vec<
     }
 }
 
-fn use_native_tree_selection_highlight(tree_selected: bool, is_selected: bool) -> bool {
-    tree_selected && !is_selected
+fn use_native_tree_selection_highlight(_tree_selected: bool, _is_selected: bool) -> bool {
+    false
 }
 
-fn selected_row_highlight_color(is_selected: bool) -> Option<Hsla> {
-    if !is_selected {
+fn selected_row_highlight_color(tree_selected: bool, is_selected: bool) -> Option<Hsla> {
+    if !(tree_selected || is_selected) {
         return None;
     }
     Some(hsla(0.58, 0.65, 0.88, 1.0))
@@ -2254,10 +2254,18 @@ mod tests {
     #[test]
     fn ftr_test20_req_ftr10_selected_rows_use_pale_blue_highlight() {
         assert_eq!(
-            selected_row_highlight_color(true),
+            selected_row_highlight_color(false, true),
             Some(hsla(0.58, 0.65, 0.88, 1.0))
         );
-        assert_eq!(selected_row_highlight_color(false), None);
+        assert_eq!(
+            selected_row_highlight_color(true, false),
+            Some(hsla(0.58, 0.65, 0.88, 1.0))
+        );
+        assert_eq!(
+            selected_row_highlight_color(true, true),
+            Some(hsla(0.58, 0.65, 0.88, 1.0))
+        );
+        assert_eq!(selected_row_highlight_color(false, false), None);
     }
 
     #[test]
@@ -3325,7 +3333,7 @@ mod tests {
         assert!(!super::use_native_tree_selection_highlight(true, true));
         assert!(!super::use_native_tree_selection_highlight(false, true));
         assert!(!super::use_native_tree_selection_highlight(false, false));
-        assert!(super::use_native_tree_selection_highlight(true, false));
+        assert!(!super::use_native_tree_selection_highlight(true, false));
     }
 
     #[test]
