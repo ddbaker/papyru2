@@ -51,6 +51,7 @@ pub struct FileTreeView {
     focus_handle: FocusHandle,
     tree_root_dir: PathBuf,
     root_items: Vec<TreeItem>,
+    directory_item_ids: HashSet<String>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
     delete_shortcut_armed: bool,
@@ -77,6 +78,7 @@ impl FileTreeView {
             focus_handle,
             tree_root_dir,
             root_items: Vec::new(),
+            directory_item_ids: HashSet::new(),
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
             delete_shortcut_armed: false,
@@ -281,7 +283,11 @@ impl FileTreeView {
     fn load_files(&mut self, cx: &mut Context<Self>) {
         let previous_items = self.root_items.clone();
         let expanded_folder_item_ids = expanded_folder_item_ids(&previous_items);
+
         let mut refreshed_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
+        let mut directory_item_ids = HashSet::new();
+        collect_directory_item_ids_from_tree(&refreshed_items, &mut directory_item_ids);
+
         let expanded_restored_count =
             apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
         let req_ftr19_daily_dirs = req_ftr19_first_file_daily_dirs(
@@ -297,6 +303,7 @@ impl FileTreeView {
         let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
         req_ftr18_append_scroll_padding_items(&mut refreshed_items);
         self.root_items = refreshed_items;
+        self.directory_item_ids = directory_item_ids;
 
         if req_ftr19_daily_dir_count > 0 {
             let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
@@ -309,13 +316,14 @@ impl FileTreeView {
         }
 
         crate::log::trace_debug(format!(
-            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={}",
+            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={} directory_item_count={}",
             self.tree_root_dir.display(),
             self.root_items.len(),
             expanded_folder_item_ids.len(),
             expanded_restored_count,
             req_ftr19_daily_dir_count,
-            req_ftr19_opened_folder_count
+            req_ftr19_opened_folder_count,
+            self.directory_item_ids.len()
         ));
         self.set_items_from_model(cx);
     }
@@ -520,11 +528,9 @@ impl FileTreeView {
         let state = self.tree_state.read(cx);
         let selected_index = state.selected_index()?;
         let entry = state.selected_entry()?;
-        Some((
-            selected_index,
-            entry.item().id.to_string(),
-            entry.is_folder(),
-        ))
+        let item_id = entry.item().id.to_string();
+        let is_folder = self.directory_item_ids.contains(&item_id) || entry.is_folder();
+        Some((selected_index, item_id, is_folder))
     }
 
     fn rebuild_visible_item_ids(&mut self) {
@@ -635,8 +641,9 @@ impl Render for FileTreeView {
                     }
 
                     let is_selected = this.selected_item_ids.contains(&item_id);
+                    let is_folder = this.directory_item_ids.contains(&item_id) || entry.is_folder();
 
-                    let icon = if !entry.is_folder() {
+                    let icon = if !is_folder {
                         IconName::File
                     } else if entry.is_expanded() {
                         IconName::FolderOpen
@@ -730,6 +737,17 @@ fn build_file_items(root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
     sort_tree_items(&mut items);
     items
 }
+
+fn collect_directory_item_ids_from_tree(items: &[TreeItem], directory_item_ids: &mut HashSet<String>) {
+    for item in items {
+        if Path::new(item.id.as_ref()).is_dir() {
+            directory_item_ids.insert(item.id.to_string());
+        }
+        collect_directory_item_ids_from_tree(&item.children, directory_item_ids);
+    }
+}
+
+
 
 fn sort_tree_items(items: &mut [TreeItem]) {
     items.sort_by(|a, b| {
@@ -3304,5 +3322,33 @@ mod tests {
             return;
         }
         panic!("expected RefreshOnly plan on ensure_daily_directory error");
+    }
+
+    #[test]
+    fn ftr_test86_empty_directory_is_tracked_as_directory_item_id() {
+        let root = new_temp_root("ftr_test86_empty_directory_is_tracked_as_directory_item_id");
+        let empty_dir = root.join("recyclebin");
+        fs::create_dir_all(&empty_dir).expect("create empty directory");
+
+        let file_path = root.join("note.txt");
+        fs::write(&file_path, "note").expect("create sibling file");
+
+        let empty_dir_id = empty_dir.to_string_lossy().to_string();
+        let file_id = file_path.to_string_lossy().to_string();
+
+        let items = super::build_file_items(&root, &root);
+        let mut directory_item_ids = HashSet::new();
+        super::collect_directory_item_ids_from_tree(&items, &mut directory_item_ids);
+
+        assert!(
+            directory_item_ids.contains(&empty_dir_id),
+            "empty directory should remain classified as a folder"
+        );
+        assert!(
+            !directory_item_ids.contains(&file_id),
+            "regular files must not be classified as folders"
+        );
+
+        remove_temp_root(&root);
     }
 }
