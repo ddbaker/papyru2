@@ -25,6 +25,12 @@ pub(crate) fn should_restore_selection_after_watcher_refresh(
     selected_count == 0 && current_edit_path.is_some()
 }
 
+pub(crate) fn should_apply_req_newf38_tree_selection(
+    forced_singleline_stem: Option<&str>,
+) -> bool {
+    forced_singleline_stem.is_some_and(|stem| stem.starts_with("notitle-"))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReqFtr23DailyDirPlan {
     RefreshOnly { ensure_error: String },
@@ -1597,6 +1603,23 @@ impl crate::app::Papyru2App {
             current_edit_path.is_some(),
             restored_selection
         ));
+    }
+
+    pub(crate) fn select_created_file_in_tree_after_new_file(
+        &mut self,
+        created_path: &Path,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let restored_selection = self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.refresh_from_filesystem(cx);
+            file_tree.restore_selection_for_path(created_path, cx)
+        });
+        crate::log::trace_debug(format!(
+            "file_tree req-newf38 create_select target={} restored_selection={}",
+            created_path.display(),
+            restored_selection
+        ));
+        restored_selection
     }
 
     pub(crate) fn handle_folder_refresh_button(
@@ -3350,5 +3373,14 @@ mod tests {
         );
 
         remove_temp_root(&root);
+    }
+
+    #[test]
+    fn newf_test42_req_newf38_empty_create_select_policy_uses_notitle_stem() {
+        assert!(super::should_apply_req_newf38_tree_selection(Some(
+            "notitle-20260413235959999"
+        )));
+        assert!(!super::should_apply_req_newf38_tree_selection(Some("filename")));
+        assert!(!super::should_apply_req_newf38_tree_selection(None));
     }
 }

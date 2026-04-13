@@ -881,7 +881,28 @@ pub fn forced_singleline_stem_after_create(
     created_path: &Path,
     now: DateTime<Local>,
 ) -> Option<String> {
+    if let Some(notitle_stem) = req_newf37_notitle_stem_for_empty_create(singleline_value, created_path)
+    {
+        return Some(notitle_stem);
+    }
+
     forced_singleline_stem_after_resolution(singleline_value, created_path, now)
+}
+
+fn req_newf37_notitle_stem_for_empty_create(
+    singleline_value: &str,
+    created_path: &Path,
+) -> Option<String> {
+    if !singleline_value.is_empty() {
+        return None;
+    }
+
+    let created_stem = created_path.file_stem()?.to_str()?;
+    if !created_stem.starts_with("notitle-") {
+        return None;
+    }
+
+    Some(created_stem.to_string())
 }
 
 pub fn forced_singleline_stem_after_rename(
@@ -1232,24 +1253,49 @@ impl crate::app::Papyru2App {
             Ok(Some(path)) => {
                 crate::log::trace_debug(format!("new_file_flow created path={}", path.display()));
                 self.sync_current_editing_path_to_components(Some(path.clone()), cx);
+
                 if crate::app::req_ftr14_create_flow_uses_watcher_refresh_only() {
-                    crate::log::trace_debug(
-                        "new_file_flow watcher_refresh_only=true direct_refresh_skipped",
-                    );
+                    crate::log::trace_debug("new_file_flow watcher_refresh_only=true");
+                }
+
+                let forced_singleline_stem = forced_singleline_stem_after_create(
+                    &singleline_snapshot.value,
+                    path.as_path(),
+                    now_local,
+                );
+                if let Some(stem) = forced_singleline_stem.as_ref() {
+                    crate::log::trace_debug(format!(
+                        "new_file_flow req-newf37 singleline_rewrite old='{}' new='{}' trigger={}",
+                        crate::app::compact_text(&singleline_snapshot.value),
+                        crate::app::compact_text(stem),
+                        trigger
+                    ));
                 }
                 self.apply_forced_singleline_stem(
-                    forced_singleline_stem_after_create(
-                        &singleline_snapshot.value,
-                        path.as_path(),
-                        now_local,
-                    ),
+                    forced_singleline_stem.clone(),
                     "new_file_flow",
                     window,
                     cx,
                 );
+
                 self.editor.update(cx, |editor, cx| {
-                    let _ = editor.open_file(path, window, cx);
+                    let _ = editor.open_file(path.clone(), window, cx);
                 });
+
+                let should_select_created_path = crate::file_tree::should_apply_req_newf38_tree_selection(
+                    forced_singleline_stem.as_deref(),
+                );
+                let restored_selection = if should_select_created_path {
+                    self.select_created_file_in_tree_after_new_file(path.as_path(), cx)
+                } else {
+                    false
+                };
+                crate::log::trace_debug(format!(
+                    "new_file_flow req-newf38 target={} should_select={} restored_selection={}",
+                    path.display(),
+                    should_select_created_path,
+                    restored_selection
+                ));
 
                 if crate::app::should_restore_singleline_focus_after_new_file(
                     singleline_was_focused,
@@ -2221,6 +2267,77 @@ mod tests {
             "A-old"
         );
         assert_eq!(workflow.current_edit_path(), Some(moved_path));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test41_req_newf37_empty_create_syncs_notitle_stem() {
+        let root = new_temp_root("newf_test41");
+        let now = fixed_now();
+        let workflow = SinglelineCreateFileWorkflow::new();
+
+        let created_path = workflow
+            .try_create_from_neutral("", root.as_path(), Instant::now(), now)
+            .expect("create from empty singleline")
+            .expect("created path");
+        let expected_stem = created_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("created path stem")
+            .to_string();
+
+        let forced = forced_singleline_stem_after_create("", created_path.as_path(), now);
+
+        assert!(expected_stem.starts_with("notitle-"));
+        assert_eq!(forced, Some(expected_stem));
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn newf_test43_req_newf37_preserves_req_newf32_nonempty_no_forced_rewrite() {
+        let root = new_temp_root("newf_test43");
+        let now = fixed_now();
+        let first_instant = Instant::now();
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let _first_path = workflow
+            .try_create_from_neutral("filename", root.as_path(), first_instant, now)
+            .expect("first create")
+            .expect("first path");
+        let transitioned = workflow.transition_edit_to_neutral();
+        assert!(transitioned, "workflow should transition back to neutral");
+
+        let second_path = workflow
+            .try_create_from_neutral(
+                "filename",
+                root.as_path(),
+                first_instant + CREATE_EVENT_MIN_INTERVAL + Duration::from_millis(1),
+                now,
+            )
+            .expect("second create with collision")
+            .expect("second path");
+        let second_stem = second_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("second path stem")
+            .to_string();
+
+        assert!(
+            second_stem.starts_with("filename"),
+            "resolved stem should keep filename prefix"
+        );
+        assert_eq!(
+            forced_singleline_stem_after_create("filename", second_path.as_path(), now),
+            None
+        );
+        assert_eq!(
+            forced_singleline_stem_after_rename("filename", second_path.as_path(), now),
+            None
+        );
+
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
