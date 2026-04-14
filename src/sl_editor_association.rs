@@ -60,6 +60,18 @@ fn split_first_line(text: &str) -> (&str, &str) {
     }
 }
 
+fn blank_line_count_if_only_blanks(text: &str) -> Option<usize> {
+    if text.is_empty() {
+        return Some(1);
+    }
+
+    if text.split('\n').all(|line| line.is_empty()) {
+        return Some(text.chars().filter(|ch| *ch == '\n').count() + 1);
+    }
+
+    None
+}
+
 fn clamp_char_index(index: usize, text: &str) -> usize {
     index.min(text.chars().count())
 }
@@ -116,6 +128,13 @@ pub fn should_transfer_backspace(editor_cursor_line: u32, editor_cursor_char: u3
     editor_cursor_line == 0 && editor_cursor_char == 0
 }
 
+fn should_dispatch_filename_update_for_singleline_change(
+    singleline_before: &str,
+    singleline_after: &str,
+) -> bool {
+    singleline_before != singleline_after
+}
+
 pub fn transfer_on_enter(
     singleline_text: &str,
     singleline_cursor_char: usize,
@@ -154,49 +173,44 @@ pub fn transfer_on_backspace(
     singleline_cursor_char: usize,
     editor_text: &str,
 ) -> Option<BackspaceTransferResult> {
+    let singleline_tail_cursor = singleline_text.chars().count();
+    if singleline_cursor_char > singleline_tail_cursor {
+        return None;
+    }
+
     let (editor_head, editor_tail) = split_first_line(editor_text);
+
     if editor_head.is_empty() {
         if editor_tail.is_empty() {
             return Some(make_backspace_result(
                 singleline_text.to_string(),
-                singleline_text.chars().count(),
+                singleline_tail_cursor,
                 String::new(),
             ));
         }
 
         return Some(make_backspace_result(
             singleline_text.to_string(),
-            singleline_text.chars().count(),
+            singleline_tail_cursor,
             editor_tail.to_string(),
         ));
     }
 
-    let (prefix, suffix) = split_at_char_index(singleline_text, singleline_cursor_char)?;
-
-    if editor_tail.is_empty() {
-        let mut new_singleline_text =
-            String::with_capacity(prefix.len() + suffix.len() + editor_head.len());
-        new_singleline_text.push_str(prefix);
-        new_singleline_text.push_str(suffix);
-        new_singleline_text.push_str(editor_head);
-        let new_singleline_cursor_char = new_singleline_text.chars().count();
-
+    if singleline_text.is_empty() {
         return Some(make_backspace_result(
-            new_singleline_text,
-            new_singleline_cursor_char,
-            String::new(),
+            editor_head.to_string(),
+            ORIGIN_CHAR as usize,
+            editor_tail.to_string(),
         ));
     }
 
-    let mut new_singleline_text =
-        String::with_capacity(prefix.len() + editor_head.len() + suffix.len());
-    new_singleline_text.push_str(prefix);
+    let mut new_singleline_text = String::with_capacity(singleline_text.len() + editor_head.len());
+    new_singleline_text.push_str(singleline_text);
     new_singleline_text.push_str(editor_head);
-    new_singleline_text.push_str(suffix);
 
     Some(make_backspace_result(
         new_singleline_text,
-        prefix.chars().count(),
+        singleline_tail_cursor,
         editor_tail.to_string(),
     ))
 }
@@ -244,6 +258,46 @@ impl crate::app::Papyru2App {
                 });
             }
         }
+    }
+
+    fn dispatch_singleline_filename_update_if_changed(
+        &mut self,
+        reason: &str,
+        singleline_before: &str,
+        singleline_after: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let should_dispatch = should_dispatch_filename_update_for_singleline_change(
+            singleline_before,
+            singleline_after,
+        );
+
+        let file_state_label = match self.file_workflow.state() {
+            crate::file_update_handler::SinglelineFileState::Neutral => "Neutral",
+            crate::file_update_handler::SinglelineFileState::Edit => "Edit",
+            crate::file_update_handler::SinglelineFileState::New => "New",
+        };
+
+        crate::log::trace_debug(format!(
+            "{reason} filename_update_dispatch candidate changed={} state={} before='{}' after='{}'",
+            should_dispatch,
+            file_state_label,
+            crate::app::compact_text(singleline_before),
+            crate::app::compact_text(singleline_after)
+        ));
+
+        if !should_dispatch {
+            return false;
+        }
+
+        crate::log::trace_debug(format!(
+            "{reason} filename_update_dispatch start value='{}'",
+            crate::app::compact_text(singleline_after)
+        ));
+        self.on_singleline_value_changed(singleline_after, window, cx);
+        crate::log::trace_debug(format!("{reason} filename_update_dispatch done"));
+        true
     }
 
     pub(crate) fn transfer_singleline_enter(
@@ -309,17 +363,26 @@ impl crate::app::Papyru2App {
             }
         });
 
+        let filename_update_dispatched = self.dispatch_singleline_filename_update_if_changed(
+            "transfer_enter",
+            &singleline_snapshot.value,
+            &result.new_singleline_text,
+            window,
+            cx,
+        );
+
         self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
         let ed_after = self.editor.read(cx).snapshot(cx);
         crate::log::trace_debug(format!(
-            "transfer_enter after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {})",
+            "transfer_enter after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {}) filename_update_dispatched={}",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,
             crate::app::compact_text(&ed_after.value),
             ed_after.cursor_line,
-            ed_after.cursor_char
+            ed_after.cursor_char,
+            filename_update_dispatched
         ));
     }
 
@@ -386,6 +449,8 @@ impl crate::app::Papyru2App {
 
         let (editor_head, editor_tail) = split_first_line(&editor_snapshot.value);
         let req_assoc14_blank_line1 = editor_head.is_empty() && editor_tail.is_empty();
+        let req_assoc17_blank_stack_before =
+            blank_line_count_if_only_blanks(&editor_snapshot.value).filter(|count| *count >= 2);
 
         let singleline_snapshot = self.singleline.read(cx).snapshot(cx);
         crate::log::trace_debug(format!(
@@ -393,6 +458,36 @@ impl crate::app::Papyru2App {
             crate::app::compact_text(&singleline_snapshot.value),
             singleline_snapshot.cursor_char
         ));
+
+        let req_assoc15_candidate = singleline_snapshot.value.is_empty() && !editor_head.is_empty();
+        let req_assoc16_candidate = !singleline_snapshot.value.is_empty()
+            && !editor_head.is_empty()
+            && editor_tail.is_empty();
+
+        if req_assoc15_candidate {
+            crate::log::trace_debug(format!(
+                "transfer_backspace req-assoc15 candidate sl_before='{}' ed_line1='{}'",
+                crate::app::compact_text(&singleline_snapshot.value),
+                crate::app::compact_text(editor_head)
+            ));
+        }
+
+        if req_assoc16_candidate {
+            crate::log::trace_debug(format!(
+                "transfer_backspace req-assoc16 candidate sl_before='{}' sl_cursor={} ed_line1='{}'",
+                crate::app::compact_text(&singleline_snapshot.value),
+                singleline_snapshot.cursor_char,
+                crate::app::compact_text(editor_head)
+            ));
+        }
+
+        if let Some(blank_lines_before) = req_assoc17_blank_stack_before {
+            crate::log::trace_debug(format!(
+                "transfer_backspace req-assoc17 candidate blank_lines_before={} sl_before='{}'",
+                blank_lines_before,
+                crate::app::compact_text(&singleline_snapshot.value)
+            ));
+        }
 
         let Some(result) = transfer_on_backspace(
             &singleline_snapshot.value,
@@ -410,6 +505,23 @@ impl crate::app::Papyru2App {
                 result.new_singleline_cursor_char,
                 result.new_editor_cursor_line,
                 result.new_editor_cursor_char
+            ));
+        }
+
+        if req_assoc16_candidate {
+            let seam_cursor = singleline_snapshot.value.chars().count();
+            crate::log::trace_debug(format!(
+                "transfer_backspace req-assoc16 seam_cursor_expected={} seam_cursor_actual={}",
+                seam_cursor, result.new_singleline_cursor_char
+            ));
+        }
+
+        if let Some(blank_lines_before) = req_assoc17_blank_stack_before {
+            let blank_lines_after =
+                blank_line_count_if_only_blanks(&result.new_editor_text).unwrap_or(0);
+            crate::log::trace_debug(format!(
+                "transfer_backspace req-assoc17 blank_lines_before={} blank_lines_after={}",
+                blank_lines_before, blank_lines_after
             ));
         }
 
@@ -451,6 +563,14 @@ impl crate::app::Papyru2App {
             }
         });
 
+        let filename_update_dispatched = self.dispatch_singleline_filename_update_if_changed(
+            "transfer_backspace",
+            &singleline_snapshot.value,
+            &result.new_singleline_text,
+            window,
+            cx,
+        );
+
         self.apply_focus_target(result.focus_target, window, cx);
 
         let sl_after = self.singleline.read(cx).snapshot(cx);
@@ -458,14 +578,15 @@ impl crate::app::Papyru2App {
         let singleline_focused = self.singleline.read(cx).is_focused(window, cx);
         let editor_focused = self.editor.read(cx).is_focused(window, cx);
         crate::log::trace_debug(format!(
-            "transfer_backspace after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {}) singleline_focused={} editor_focused={}",
+            "transfer_backspace after sl='{}' sl_cursor={} ed='{}' ed_cursor=({}, {}) singleline_focused={} editor_focused={} filename_update_dispatched={}",
             crate::app::compact_text(&sl_after.value),
             sl_after.cursor_char,
             crate::app::compact_text(&ed_after.value),
             ed_after.cursor_line,
             ed_after.cursor_char,
             singleline_focused,
-            editor_focused
+            editor_focused,
+            filename_update_dispatched
         ));
     }
 
@@ -609,7 +730,7 @@ mod tests {
         let result = transfer_on_backspace("abcdefghijkl", 6, "xyz").expect("expected transfer");
 
         assert_eq!(result.new_singleline_text, "abcdefghijklxyz");
-        assert_eq!(result.new_singleline_cursor_char, 15);
+        assert_eq!(result.new_singleline_cursor_char, 12);
         assert_eq!(result.new_editor_text, "");
         assert_eq!(result.new_editor_cursor_line, 0);
         assert_eq!(result.new_editor_cursor_char, 0);
@@ -743,10 +864,245 @@ mod tests {
 
         let result = transfer_on_backspace("abc", 3, "xyz").expect("expected transfer");
         assert_eq!(result.new_singleline_text, "abcxyz");
-        assert_eq!(result.new_singleline_cursor_char, 6);
+        assert_eq!(result.new_singleline_cursor_char, 3);
         assert_eq!(result.new_editor_text, "");
         assert_eq!(result.new_editor_cursor_line, 0);
         assert_eq!(result.new_editor_cursor_char, 0);
         assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test25_req_assoc15_core_transfer_blank_singleline_editor_head_moves_text_to_singleline_head()
+     {
+        let result = transfer_on_backspace("", 0, "abc").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abc");
+        assert_eq!(result.new_singleline_cursor_char, 0);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test26_req_assoc15_cursor_focus_end_at_singleline_head() {
+        let result = transfer_on_backspace("", 0, "abc").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test27_req_assoc15_filename_update_dispatch_condition_is_immediate() {
+        let req_assoc15_result = transfer_on_backspace("", 0, "abc").expect("expected transfer");
+        assert!(
+            super::should_dispatch_filename_update_for_singleline_change(
+                "",
+                &req_assoc15_result.new_singleline_text,
+            )
+        );
+
+        let req_assoc14_result = transfer_on_backspace("abcdef", 3, "").expect("expected transfer");
+        assert!(
+            !super::should_dispatch_filename_update_for_singleline_change(
+                "abcdef",
+                &req_assoc14_result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test28_req_assoc14_regression_blank_editor_head_keeps_tail_focus_path() {
+        let result = transfer_on_backspace("abcdefg", 2, "").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test29_non_line1_or_non_head_backspace_keeps_normal_editor_behavior() {
+        assert!(should_transfer_backspace(0, 0));
+        assert!(!should_transfer_backspace(0, 1));
+        assert!(!should_transfer_backspace(1, 0));
+    }
+
+    #[test]
+    fn assoc_test30_req_assoc16_core_transfer_nonblank_singleline_editor_head_moves_at_seam() {
+        let result = transfer_on_backspace("abc", 0, "efg").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcefg");
+        assert_eq!(result.new_singleline_cursor_char, 3);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test44_req_assoc2_reverse_transfer_cursor_seam_ignores_stale_singleline_cursor() {
+        let result = transfer_on_backspace("abcdef", 0, "ghijkl\nxyz").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefghijkl");
+        assert_eq!(result.new_singleline_cursor_char, 6);
+        assert_eq!(result.new_editor_text, "xyz");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test45_req_assoc4_reverse_transfer_multibyte_cursor_seam_ignores_stale_cursor() {
+        let result =
+            transfer_on_backspace("こんにち", 0, "は世界\n大好き").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "こんにちは世界");
+        assert_eq!(result.new_singleline_cursor_char, 4);
+        assert_eq!(result.new_editor_text, "大好き");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test31_req_assoc16_seam_cursor_matches_old_singleline_len() {
+        let before = "abc";
+        let result = transfer_on_backspace(before, before.chars().count(), "efg")
+            .expect("expected transfer");
+
+        assert_eq!(result.new_singleline_cursor_char, before.chars().count());
+    }
+
+    #[test]
+    fn assoc_test32_req_assoc16_filename_update_dispatch_condition_is_immediate() {
+        let result = transfer_on_backspace("abc", 3, "efg").expect("expected transfer");
+
+        assert!(
+            super::should_dispatch_filename_update_for_singleline_change(
+                "abc",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test33_correction_audit_enter_transfer_dispatches_on_singleline_change() {
+        let result = transfer_on_enter("abcdef", 3, "xyz").expect("expected transfer");
+
+        assert!(
+            super::should_dispatch_filename_update_for_singleline_change(
+                "abcdef",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test34_correction_audit_reverse_transfer_dispatches_on_singleline_growth() {
+        let result = transfer_on_backspace("abc", 3, "efg").expect("expected transfer");
+
+        assert!(
+            super::should_dispatch_filename_update_for_singleline_change(
+                "abc",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test35_no_dispatch_when_singleline_text_is_unchanged_req_assoc14_path() {
+        let result = transfer_on_backspace("abcdef", 3, "").expect("expected transfer");
+
+        assert!(
+            !super::should_dispatch_filename_update_for_singleline_change(
+                "abcdef",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test36_req_assoc15_regression_keeps_blank_singleline_behavior_and_dispatch() {
+        let result = transfer_on_backspace("", 0, "abc").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abc");
+        assert_eq!(result.new_singleline_cursor_char, 0);
+        assert!(
+            super::should_dispatch_filename_update_for_singleline_change(
+                "",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test37_non_head_or_non_line1_paths_do_not_force_dispatch() {
+        assert!(!should_transfer_backspace(0, 1));
+        assert!(!should_transfer_backspace(1, 0));
+        assert!(!super::should_dispatch_filename_update_for_singleline_change("abc", "abc",));
+    }
+
+    #[test]
+    fn assoc_test38_req_assoc17_core_blank_stack_shrinks_by_one_line() {
+        let result = transfer_on_backspace("abcdefg", 3, "\n\n").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "\n");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test39_req_assoc17_scale_blank_stack_n10_shrinks_to_n9() {
+        let editor_before = "\n".repeat(9);
+        let editor_after_expected = "\n".repeat(8);
+        let result =
+            transfer_on_backspace("abcdefg", 0, &editor_before).expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, editor_after_expected);
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test40_req_assoc17_no_filename_update_dispatch_when_singleline_unchanged() {
+        let result = transfer_on_backspace("abcdefg", 2, "\n\n").expect("expected transfer");
+
+        assert!(
+            !super::should_dispatch_filename_update_for_singleline_change(
+                "abcdefg",
+                &result.new_singleline_text,
+            )
+        );
+    }
+
+    #[test]
+    fn assoc_test41_req_assoc12_regression_nonblank_tail_keeps_existing_behavior() {
+        let result = transfer_on_backspace("abcdefg", 1, "\nxyz").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "xyz");
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test42_req_assoc14_regression_single_blank_line_keeps_existing_behavior() {
+        let result = transfer_on_backspace("abcdefg", 2, "").expect("expected transfer");
+
+        assert_eq!(result.new_singleline_text, "abcdefg");
+        assert_eq!(result.new_singleline_cursor_char, 7);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.focus_target, FocusTarget::SingleLine);
+    }
+
+    #[test]
+    fn assoc_test43_non_line1_or_non_head_backspace_stays_on_normal_editor_behavior() {
+        assert!(!should_transfer_backspace(0, 1));
+        assert!(!should_transfer_backspace(1, 0));
     }
 }

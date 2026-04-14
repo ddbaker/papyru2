@@ -26,9 +26,18 @@ pub(crate) fn should_restore_selection_after_watcher_refresh(
 }
 
 pub(crate) fn should_apply_req_newf38_tree_selection(
-    forced_singleline_stem: Option<&str>,
+    singleline_value: &str,
+    created_path: &Path,
 ) -> bool {
-    forced_singleline_stem.is_some_and(|stem| stem.starts_with("notitle-"))
+    if !singleline_value.is_empty() {
+        return false;
+    }
+
+    let Some(created_stem) = created_path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+
+    created_stem.starts_with("notitle-")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -796,7 +805,10 @@ fn build_file_items(root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
     items
 }
 
-fn collect_directory_item_ids_from_tree(items: &[TreeItem], directory_item_ids: &mut HashSet<String>) {
+fn collect_directory_item_ids_from_tree(
+    items: &[TreeItem],
+    directory_item_ids: &mut HashSet<String>,
+) {
     for item in items {
         if Path::new(item.id.as_ref()).is_dir() {
             directory_item_ids.insert(item.id.to_string());
@@ -804,8 +816,6 @@ fn collect_directory_item_ids_from_tree(items: &[TreeItem], directory_item_ids: 
         collect_directory_item_ids_from_tree(&item.children, directory_item_ids);
     }
 }
-
-
 
 fn sort_tree_items(items: &mut [TreeItem]) {
     items.sort_by(|a, b| {
@@ -1601,8 +1611,7 @@ impl crate::app::Papyru2App {
 
         crate::log::trace_debug(format!(
             "app req-ftr22 neutral_selection_release done reason={reason} selected_count_after={} tree_selected_index_after={:?}",
-            release_state.selected_count_after,
-            release_state.tree_selected_index_after
+            release_state.selected_count_after, release_state.tree_selected_index_after
         ));
     }
 
@@ -3440,8 +3449,8 @@ mod tests {
     }
 
     #[test]
-    fn ftr_test92_req_ftr22_20260414_neutral_transition_plan_releases_selection_only_on_transition(
-    ) {
+    fn ftr_test92_req_ftr22_20260414_neutral_transition_plan_releases_selection_only_on_transition()
+    {
         assert_eq!(
             req_ftr22_neutral_transition_plan(true),
             ReqFtr22NeutralTransitionPlan {
@@ -3525,10 +3534,17 @@ mod tests {
 
     #[test]
     fn newf_test42_req_newf38_empty_create_select_policy_uses_notitle_stem() {
-        assert!(super::should_apply_req_newf38_tree_selection(Some(
-            "notitle-20260413235959999"
-        )));
-        assert!(!super::should_apply_req_newf38_tree_selection(Some("filename")));
-        assert!(!super::should_apply_req_newf38_tree_selection(None));
+        assert!(super::should_apply_req_newf38_tree_selection(
+            "",
+            Path::new("C:/tmp/notitle-20260413235959999.txt")
+        ));
+        assert!(!super::should_apply_req_newf38_tree_selection(
+            "filename",
+            Path::new("C:/tmp/notitle-20260413235959999.txt")
+        ));
+        assert!(!super::should_apply_req_newf38_tree_selection(
+            "",
+            Path::new("C:/tmp/filename.txt")
+        ));
     }
 }

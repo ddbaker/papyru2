@@ -881,28 +881,7 @@ pub fn forced_singleline_stem_after_create(
     created_path: &Path,
     now: DateTime<Local>,
 ) -> Option<String> {
-    if let Some(notitle_stem) = req_newf37_notitle_stem_for_empty_create(singleline_value, created_path)
-    {
-        return Some(notitle_stem);
-    }
-
     forced_singleline_stem_after_resolution(singleline_value, created_path, now)
-}
-
-fn req_newf37_notitle_stem_for_empty_create(
-    singleline_value: &str,
-    created_path: &Path,
-) -> Option<String> {
-    if !singleline_value.is_empty() {
-        return None;
-    }
-
-    let created_stem = created_path.file_stem()?.to_str()?;
-    if !created_stem.starts_with("notitle-") {
-        return None;
-    }
-
-    Some(created_stem.to_string())
 }
 
 pub fn forced_singleline_stem_after_rename(
@@ -1263,16 +1242,21 @@ impl crate::app::Papyru2App {
                     path.as_path(),
                     now_local,
                 );
-                if let Some(stem) = forced_singleline_stem.as_ref() {
+                let should_select_created_path =
+                    crate::file_tree::should_apply_req_newf38_tree_selection(
+                        &singleline_snapshot.value,
+                        path.as_path(),
+                    );
+                if should_select_created_path && forced_singleline_stem.is_none() {
                     crate::log::trace_debug(format!(
-                        "new_file_flow req-newf37 singleline_rewrite old='{}' new='{}' trigger={}",
+                        "new_file_flow req-newf37-revert keep_singleline_blank trigger={} singleline_before='{}' created_path={}",
+                        trigger,
                         crate::app::compact_text(&singleline_snapshot.value),
-                        crate::app::compact_text(stem),
-                        trigger
+                        path.display()
                     ));
                 }
                 self.apply_forced_singleline_stem(
-                    forced_singleline_stem.clone(),
+                    forced_singleline_stem,
                     "new_file_flow",
                     window,
                     cx,
@@ -1282,9 +1266,6 @@ impl crate::app::Papyru2App {
                     let _ = editor.open_file(path.clone(), window, cx);
                 });
 
-                let should_select_created_path = crate::file_tree::should_apply_req_newf38_tree_selection(
-                    forced_singleline_stem.as_deref(),
-                );
                 let restored_selection = if should_select_created_path {
                     self.select_created_file_in_tree_after_new_file(path.as_path(), cx)
                 } else {
@@ -1296,6 +1277,15 @@ impl crate::app::Papyru2App {
                     should_select_created_path,
                     restored_selection
                 ));
+                if should_select_created_path {
+                    let singleline_after = self.singleline.read(cx).snapshot(cx);
+                    crate::log::trace_debug(format!(
+                        "new_file_flow req-newf37-revert singleline_after_create value='{}' cursor={} is_blank={}",
+                        crate::app::compact_text(&singleline_after.value),
+                        singleline_after.cursor_char,
+                        singleline_after.value.is_empty()
+                    ));
+                }
 
                 if crate::app::should_restore_singleline_focus_after_new_file(
                     singleline_was_focused,
@@ -2272,7 +2262,7 @@ mod tests {
     }
 
     #[test]
-    fn newf_test41_req_newf37_empty_create_syncs_notitle_stem() {
+    fn newf_test41_req_newf37_revert_empty_create_keeps_singleline_blank() {
         let root = new_temp_root("newf_test41");
         let now = fixed_now();
         let workflow = SinglelineCreateFileWorkflow::new();
@@ -2290,7 +2280,7 @@ mod tests {
         let forced = forced_singleline_stem_after_create("", created_path.as_path(), now);
 
         assert!(expected_stem.starts_with("notitle-"));
-        assert_eq!(forced, Some(expected_stem));
+        assert_eq!(forced, None);
 
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());

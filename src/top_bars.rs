@@ -212,7 +212,8 @@ impl crate::app::Papyru2App {
         ));
         self.sync_current_editing_path_to_components(None, cx);
 
-        let neutral_plan = crate::file_tree::req_ftr22_neutral_transition_plan(transitioned_to_neutral);
+        let neutral_plan =
+            crate::file_tree::req_ftr22_neutral_transition_plan(transitioned_to_neutral);
         crate::log::trace_debug(format!(
             "plus_button req-ftr22 neutral_plan release_file_tree_selection={}",
             neutral_plan.release_file_tree_selection

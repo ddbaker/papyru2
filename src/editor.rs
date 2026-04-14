@@ -56,7 +56,10 @@ fn should_emit_backspace_at_line_head_on_change(
         return false;
     }
 
-    let first_line_non_empty = value.split('\n').next().is_some_and(|line| !line.is_empty());
+    let first_line_non_empty = value
+        .split('\n')
+        .next()
+        .is_some_and(|line| !line.is_empty());
     let has_non_empty_tail_line = value.split('\n').skip(1).any(|line| !line.is_empty());
 
     let req_assoc12_candidate = first_line_non_empty || has_non_empty_tail_line;
@@ -64,8 +67,13 @@ fn should_emit_backspace_at_line_head_on_change(
         && previous_value.is_empty()
         && previous_cursor.line == 0
         && previous_cursor.character == 0;
+    let req_assoc17_blank_multiline_noop = !value.is_empty()
+        && value.contains('\n')
+        && value.split('\n').all(|line| line.is_empty())
+        && previous_cursor.line == 0
+        && previous_cursor.character == 0;
 
-    req_assoc12_candidate || req_assoc14_candidate
+    req_assoc12_candidate || req_assoc14_candidate || req_assoc17_blank_multiline_noop
 }
 
 const RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE: u32 = 9;
@@ -146,14 +154,22 @@ impl Papyru2Editor {
                             && this.last_cursor.character == 0
                             && cursor.line == 0
                             && cursor.character == 0;
+                        let req_assoc17_blank_multiline_noop = !value.is_empty()
+                            && value.contains('\n')
+                            && value.split('\n').all(|line| line.is_empty())
+                            && this.last_cursor.line == 0
+                            && this.last_cursor.character == 0
+                            && cursor.line == 0
+                            && cursor.character == 0;
 
                         crate::log::trace_debug(format!(
-                            "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}), first_line_non_empty={}, has_non_empty_tail_line={}, req_assoc14_blank_origin_noop={})",
+                            "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}), first_line_non_empty={}, has_non_empty_tail_line={}, req_assoc14_blank_origin_noop={}, req_assoc17_blank_multiline_noop={})",
                             this.last_cursor.line,
                             this.last_cursor.character,
                             first_line_non_empty,
                             has_non_empty_tail_line,
-                            req_assoc14_blank_origin_noop
+                            req_assoc14_blank_origin_noop,
+                            req_assoc17_blank_multiline_noop
                         ));
                         cx.emit(EditorEvent::BackspaceAtLineHead);
                     }
@@ -705,6 +721,36 @@ mod tests {
             "abc",
             &origin_cursor,
             "",
+            &origin_cursor,
+        ));
+    }
+
+    #[test]
+    fn assoc_test23_req_assoc17_blank_multiline_noop_change_emits_backspace_signal() {
+        let origin_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 0,
+        };
+
+        assert!(super::should_emit_backspace_at_line_head_on_change(
+            "\n\n",
+            &origin_cursor,
+            "\n\n",
+            &origin_cursor,
+        ));
+    }
+
+    #[test]
+    fn assoc_test24_req_assoc17_changed_multiline_does_not_emit_duplicate_backspace_signal() {
+        let origin_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 0,
+        };
+
+        assert!(!super::should_emit_backspace_at_line_head_on_change(
+            "\n\n",
+            &origin_cursor,
+            "\n",
             &origin_cursor,
         ));
     }
