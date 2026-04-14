@@ -474,11 +474,15 @@ pub(crate) fn persisted_splitter_sizes(
     ]
 }
 
-fn build_startup_window_options(startup_bounds: WindowBounds) -> WindowOptions {
+fn build_startup_window_options(
+    startup_bounds: WindowBounds,
+    startup_display_id: Option<DisplayId>,
+) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(startup_bounds),
         focus: true,
         show: true,
+        display_id: startup_display_id,
         ..Default::default()
     }
 }
@@ -1471,11 +1475,12 @@ mod tests {
             point(px(50.0), px(60.0)),
             size(px(1200.0), px(800.0)),
         ));
-        let options = build_startup_window_options(startup_bounds);
+        let options = build_startup_window_options(startup_bounds, None);
 
         assert!(options.focus);
         assert!(options.show);
         assert_eq!(options.window_bounds, Some(startup_bounds));
+        assert_eq!(options.display_id, None);
     }
 
     fn req_colr_test_temp_root(name: &str) -> PathBuf {
@@ -1837,25 +1842,90 @@ pub fn run() {
         gpui_component::init(cx);
         apply_req_colr_theme_overrides(ui_color_config, cx);
 
-        let primary_display_bounds = cx.primary_display().map(|display| display.bounds());
+        let primary_display = cx.primary_display();
+        let primary_monitor_id = primary_display.as_ref().map(|display| u32::from(display.id()));
+
+        let mut startup_displays: Vec<(DisplayId, crate::window_position::StartupDisplaySnapshot)> =
+            cx.displays()
+                .into_iter()
+                .map(|display| {
+                    let display_id = display.id();
+                    (
+                        display_id,
+                        crate::window_position::StartupDisplaySnapshot {
+                            monitor_id: u32::from(display_id),
+                            monitor_uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
+                            bounds: display.bounds(),
+                        },
+                    )
+                })
+                .collect();
+
+        if startup_displays.is_empty() {
+            if let Some(primary_display) = primary_display.as_ref() {
+                let display_id = primary_display.id();
+                startup_displays.push((
+                    display_id,
+                    crate::window_position::StartupDisplaySnapshot {
+                        monitor_id: u32::from(display_id),
+                        monitor_uuid: primary_display.uuid().ok().map(|uuid| uuid.to_string()),
+                        bounds: primary_display.bounds(),
+                    },
+                ));
+            }
+        }
+
+        let startup_display_snapshots: Vec<crate::window_position::StartupDisplaySnapshot> =
+            startup_displays
+                .iter()
+                .map(|(_, snapshot)| snapshot.clone())
+                .collect();
+
+        let startup_display_resolution = crate::window_position::resolve_startup_display_resolution(
+            persisted_window_position.as_ref(),
+            startup_display_snapshots.as_slice(),
+            primary_monitor_id,
+        );
+
+        let startup_display_id = startup_display_resolution.monitor_id.and_then(|resolved_monitor_id| {
+            startup_displays
+                .iter()
+                .find(|(_, snapshot)| snapshot.monitor_id == resolved_monitor_id)
+                .map(|(display_id, _)| *display_id)
+        });
+
+        trace_debug(format!(
+            "window_position startup monitor resolve saved_monitor_id={:?} saved_monitor_uuid={:?} primary_monitor_id={primary_monitor_id:?} source={:?} resolved_monitor_id={:?} resolved_bounds={:?}",
+            persisted_window_position
+                .as_ref()
+                .and_then(|state| state.monitor_id),
+            persisted_window_position
+                .as_ref()
+                .and_then(|state| state.monitor_uuid.as_deref()),
+            startup_display_resolution.source,
+            startup_display_resolution.monitor_id,
+            startup_display_resolution.display_bounds,
+        ));
+
         let default_centered_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
         let fallback_bounds = crate::window_position::first_launch_fallback_bounds(
-            primary_display_bounds.clone(),
+            startup_display_resolution.display_bounds,
             default_centered_bounds,
         );
         let startup_bounds = crate::window_position::resolve_startup_window_bounds(
             persisted_window_position.as_ref(),
             fallback_bounds,
-            primary_display_bounds,
+            startup_display_resolution.display_bounds,
             crate::window_position::should_ignore_exact_position_for_wayland(),
         );
 
-        let window_options = build_startup_window_options(startup_bounds);
+        let window_options = build_startup_window_options(startup_bounds, startup_display_id);
         trace_debug(format!(
-            "window_options startup focus={} show={} has_bounds={}",
+            "window_options startup focus={} show={} has_bounds={} startup_monitor_id={:?}",
             window_options.focus,
             window_options.show,
-            window_options.window_bounds.is_some()
+            window_options.window_bounds.is_some(),
+            startup_display_resolution.monitor_id,
         ));
 
         let app_paths = app_paths.clone();

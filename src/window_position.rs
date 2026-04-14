@@ -99,6 +99,88 @@ impl WindowPositionState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartupDisplaySnapshot {
+    pub monitor_id: u32,
+    pub monitor_uuid: Option<String>,
+    pub bounds: Bounds<Pixels>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupDisplayResolutionSource {
+    PersistedUuid,
+    PersistedMonitorId,
+    PrimaryFallback,
+    FirstAvailableFallback,
+    NoDisplayFallback,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StartupDisplayResolution {
+    pub monitor_id: Option<u32>,
+    pub display_bounds: Option<Bounds<Pixels>>,
+    pub source: StartupDisplayResolutionSource,
+}
+
+pub fn resolve_startup_display_resolution(
+    persisted: Option<&WindowPositionState>,
+    available_displays: &[StartupDisplaySnapshot],
+    primary_monitor_id: Option<u32>,
+) -> StartupDisplayResolution {
+    let lookup_by_monitor_id = |monitor_id: u32| {
+        available_displays
+            .iter()
+            .find(|display| display.monitor_id == monitor_id)
+    };
+
+    if let Some(saved_uuid) = persisted.and_then(|state| state.monitor_uuid.as_deref()) {
+        if let Some(display) = available_displays
+            .iter()
+            .find(|display| display.monitor_uuid.as_deref() == Some(saved_uuid))
+        {
+            return StartupDisplayResolution {
+                monitor_id: Some(display.monitor_id),
+                display_bounds: Some(display.bounds),
+                source: StartupDisplayResolutionSource::PersistedUuid,
+            };
+        }
+    }
+
+    if let Some(saved_monitor_id) = persisted.and_then(|state| state.monitor_id) {
+        if let Some(display) = lookup_by_monitor_id(saved_monitor_id) {
+            return StartupDisplayResolution {
+                monitor_id: Some(display.monitor_id),
+                display_bounds: Some(display.bounds),
+                source: StartupDisplayResolutionSource::PersistedMonitorId,
+            };
+        }
+    }
+
+    if let Some(primary_monitor_id) = primary_monitor_id {
+        if let Some(display) = lookup_by_monitor_id(primary_monitor_id) {
+            return StartupDisplayResolution {
+                monitor_id: Some(display.monitor_id),
+                display_bounds: Some(display.bounds),
+                source: StartupDisplayResolutionSource::PrimaryFallback,
+            };
+        }
+    }
+
+    if let Some(display) = available_displays.first() {
+        return StartupDisplayResolution {
+            monitor_id: Some(display.monitor_id),
+            display_bounds: Some(display.bounds),
+            source: StartupDisplayResolutionSource::FirstAvailableFallback,
+        };
+    }
+
+    StartupDisplayResolution {
+        monitor_id: None,
+        display_bounds: None,
+        source: StartupDisplayResolutionSource::NoDisplayFallback,
+    }
+}
+
 pub fn load_window_position(path: &Path) -> io::Result<Option<WindowPositionState>> {
     if !path.is_file() {
         return Ok(None);
@@ -460,6 +542,22 @@ mod tests {
 
     fn display_bounds(width: f32, height: f32) -> Bounds<Pixels> {
         bounds(point(px(0.0), px(0.0)), size(px(width), px(height)))
+    }
+
+    fn display_bounds_at(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        bounds(point(px(x), px(y)), size(px(width), px(height)))
+    }
+
+    fn startup_display_snapshot(
+        monitor_id: u32,
+        monitor_uuid: Option<&str>,
+        bounds: Bounds<Pixels>,
+    ) -> StartupDisplaySnapshot {
+        StartupDisplaySnapshot {
+            monitor_id,
+            monitor_uuid: monitor_uuid.map(ToString::to_string),
+            bounds,
+        }
     }
 
     #[test]
@@ -860,5 +958,147 @@ window_mode = "minimized"
         assert_eq!(invalid_nan.splitter_left_size(), None);
         assert_eq!(invalid_count.splitter_left_size(), None);
         assert_eq!(missing.splitter_left_size(), None);
+    }
+
+    #[test]
+    fn win_test15_startup_monitor_restore_uses_saved_monitor_uuid_when_available() {
+        let state = WindowPositionState {
+            x: 2100.0,
+            y: 80.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(0),
+            monitor_uuid: Some("display-1".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+
+        assert_eq!(resolved.source, StartupDisplayResolutionSource::PersistedUuid);
+        assert_eq!(resolved.monitor_id, Some(1));
+        assert_eq!(
+            resolved.display_bounds,
+            Some(display_bounds_at(1920.0, 0.0, 1920.0, 1080.0))
+        );
+    }
+
+    #[test]
+    fn win_test16_startup_monitor_restore_falls_back_to_saved_monitor_id_when_uuid_unavailable() {
+        let state = WindowPositionState {
+            x: 2200.0,
+            y: 90.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("missing-uuid".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+
+        assert_eq!(
+            resolved.source,
+            StartupDisplayResolutionSource::PersistedMonitorId
+        );
+        assert_eq!(resolved.monitor_id, Some(1));
+        assert_eq!(
+            resolved.display_bounds,
+            Some(display_bounds_at(1920.0, 0.0, 1920.0, 1080.0))
+        );
+    }
+
+    #[test]
+    fn win_test17_startup_monitor_restore_falls_back_safely_when_saved_targets_are_unavailable() {
+        let state = WindowPositionState {
+            x: 100.0,
+            y: 100.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(99),
+            monitor_uuid: Some("missing-uuid".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+
+        assert_eq!(resolved.source, StartupDisplayResolutionSource::PrimaryFallback);
+        assert_eq!(resolved.monitor_id, Some(0));
+        assert_eq!(
+            resolved.display_bounds,
+            Some(display_bounds_at(0.0, 0.0, 1920.0, 1080.0))
+        );
+    }
+
+    #[test]
+    fn win_test18_monitor_restore_fix_keeps_geometry_restore_on_target_monitor() {
+        let state = WindowPositionState {
+            x: 2050.0,
+            y: 120.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("missing-uuid".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let display_resolution =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        assert_eq!(
+            display_resolution.source,
+            StartupDisplayResolutionSource::PersistedMonitorId
+        );
+
+        let fallback_bounds = first_launch_fallback_bounds(
+            display_resolution.display_bounds,
+            windowed(0.0, 0.0, 1200.0, 800.0),
+        );
+        let resolved_bounds = resolve_startup_window_bounds(
+            Some(&state),
+            fallback_bounds,
+            display_resolution.display_bounds,
+            false,
+        );
+
+        assert_eq!(resolved_bounds, windowed(2050.0, 120.0, 900.0, 700.0));
     }
 }
