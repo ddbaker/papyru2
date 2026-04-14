@@ -48,6 +48,40 @@ pub(crate) fn req_ftr23_daily_dir_plan(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReqFtr22NeutralTransitionPlan {
+    pub release_file_tree_selection: bool,
+}
+
+pub(crate) fn req_ftr22_neutral_transition_plan(
+    transitioned_to_neutral: bool,
+) -> ReqFtr22NeutralTransitionPlan {
+    ReqFtr22NeutralTransitionPlan {
+        release_file_tree_selection: transitioned_to_neutral,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReqFtr22SelectionReleaseState {
+    pub selected_count_after: usize,
+    pub selection_anchor_after: Option<String>,
+    pub tree_selected_index_after: Option<usize>,
+}
+
+pub(crate) fn req_ftr22_release_selection_state(
+    selected_item_ids: &mut HashSet<String>,
+    selection_anchor_item_id: &mut Option<String>,
+) -> ReqFtr22SelectionReleaseState {
+    selected_item_ids.clear();
+    *selection_anchor_item_id = None;
+
+    ReqFtr22SelectionReleaseState {
+        selected_count_after: selected_item_ids.len(),
+        selection_anchor_after: selection_anchor_item_id.clone(),
+        tree_selected_index_after: None,
+    }
+}
+
 pub(crate) fn req_editor_file_tree_font_size_policy() -> &'static str {
     crate::app::req_editor_shared_text_size_policy()
 }
@@ -218,14 +252,32 @@ impl FileTreeView {
     }
 
     pub fn clear_selection_for_req_ftr17_case3(&mut self, cx: &mut Context<Self>) {
-        self.selected_item_ids.clear();
-        self.selection_anchor_item_id = None;
-        self.disarm_delete_shortcut("req_ftr17_case3_clear_selection");
-        self.tree_state.update(cx, |state, cx| {
-            state.set_selected_index(None, cx);
-        });
+        let _ = self.clear_selection_for_neutral_transition("req-ftr17-case3", cx);
         crate::log::trace_debug("file_tree req-ftr17 case3_reset_neutral clear_tree_selection");
+    }
+
+    pub fn clear_selection_for_neutral_transition(
+        &mut self,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) -> ReqFtr22SelectionReleaseState {
+        let selected_count_before = self.selected_item_ids.len();
+        let release_state = req_ftr22_release_selection_state(
+            &mut self.selected_item_ids,
+            &mut self.selection_anchor_item_id,
+        );
+        self.disarm_delete_shortcut("req_ftr22_neutral_clear_selection");
+        self.tree_state.update(cx, |state, cx| {
+            state.set_selected_index(release_state.tree_selected_index_after, cx);
+        });
+        crate::log::trace_debug(format!(
+            "file_tree req-ftr22 neutral_selection_release reason={reason} selected_count_before={} selected_count_after={} tree_selected_index_after={:?}",
+            selected_count_before,
+            release_state.selected_count_after,
+            release_state.tree_selected_index_after
+        ));
         cx.notify();
+        release_state
     }
 
     pub fn request_recyclebin_delete(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1533,6 +1585,27 @@ impl crate::app::Papyru2App {
         }
     }
 
+    pub(crate) fn apply_req_ftr22_neutral_selection_release(
+        &mut self,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let selected_count_before = self.file_tree.read(cx).selection_count();
+        crate::log::trace_debug(format!(
+            "app req-ftr22 neutral_selection_release start reason={reason} selected_count_before={selected_count_before}"
+        ));
+
+        let release_state = self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.clear_selection_for_neutral_transition(reason, cx)
+        });
+
+        crate::log::trace_debug(format!(
+            "app req-ftr22 neutral_selection_release done reason={reason} selected_count_after={} tree_selected_index_after={:?}",
+            release_state.selected_count_after,
+            release_state.tree_selected_index_after
+        ));
+    }
+
     fn apply_req_ftr17_case3_reset_to_neutral(
         &mut self,
         window: &mut Window,
@@ -1541,9 +1614,15 @@ impl crate::app::Papyru2App {
         let transitioned = self.file_workflow.transition_edit_to_neutral();
         self.sync_current_editing_path_to_components(None, cx);
         self.selection_focus_reassert_pending = false;
-        self.file_tree.update(cx, |file_tree, cx| {
-            file_tree.clear_selection_for_req_ftr17_case3(cx);
-        });
+
+        let neutral_plan = req_ftr22_neutral_transition_plan(transitioned);
+        crate::log::trace_debug(format!(
+            "file_tree req-ftr17 case3_reset_neutral plan release_file_tree_selection={}",
+            neutral_plan.release_file_tree_selection
+        ));
+        if neutral_plan.release_file_tree_selection {
+            self.apply_req_ftr22_neutral_selection_release("req-ftr17-case3-reset-to-neutral", cx);
+        }
 
         for step in crate::app::req_newf34_plus_button_reset_steps() {
             match step {
@@ -1898,6 +1977,11 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        ReqFtr22NeutralTransitionPlan, ReqFtr22SelectionReleaseState,
+        req_ftr22_neutral_transition_plan, req_ftr22_release_selection_state,
     };
 
     fn new_temp_root(name: &str) -> PathBuf {
@@ -3353,6 +3437,62 @@ mod tests {
             return;
         }
         panic!("expected RefreshOnly plan on ensure_daily_directory error");
+    }
+
+    #[test]
+    fn ftr_test92_req_ftr22_20260414_neutral_transition_plan_releases_selection_only_on_transition(
+    ) {
+        assert_eq!(
+            req_ftr22_neutral_transition_plan(true),
+            ReqFtr22NeutralTransitionPlan {
+                release_file_tree_selection: true,
+            }
+        );
+        assert_eq!(
+            req_ftr22_neutral_transition_plan(false),
+            ReqFtr22NeutralTransitionPlan {
+                release_file_tree_selection: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test93_req_ftr22_20260414_release_state_clears_selected_items_and_anchor() {
+        let mut selected_item_ids: HashSet<String> = HashSet::new();
+        selected_item_ids.insert("C:/tmp/file-a.txt".to_string());
+        selected_item_ids.insert("C:/tmp/file-b.txt".to_string());
+        let mut selection_anchor_item_id = Some("C:/tmp/file-b.txt".to_string());
+
+        let release_state = req_ftr22_release_selection_state(
+            &mut selected_item_ids,
+            &mut selection_anchor_item_id,
+        );
+
+        assert!(selected_item_ids.is_empty());
+        assert!(selection_anchor_item_id.is_none());
+        assert_eq!(release_state.selected_count_after, 0);
+        assert_eq!(release_state.selection_anchor_after, None);
+    }
+
+    #[test]
+    fn ftr_test94_req_ftr22_20260414_release_state_requests_tree_selected_index_none() {
+        let mut selected_item_ids: HashSet<String> = HashSet::new();
+        selected_item_ids.insert("C:/tmp/file-z.txt".to_string());
+        let mut selection_anchor_item_id = Some("C:/tmp/file-z.txt".to_string());
+
+        let release_state = req_ftr22_release_selection_state(
+            &mut selected_item_ids,
+            &mut selection_anchor_item_id,
+        );
+
+        assert_eq!(
+            release_state,
+            ReqFtr22SelectionReleaseState {
+                selected_count_after: 0,
+                selection_anchor_after: None,
+                tree_selected_index_after: None,
+            }
+        );
     }
 
     #[test]

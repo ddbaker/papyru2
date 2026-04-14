@@ -196,7 +196,8 @@ impl crate::app::Papyru2App {
             editor_was_focused, singleline_was_focused
         ));
 
-        if !self.file_workflow.transition_edit_to_neutral() {
+        let transitioned_to_neutral = self.file_workflow.transition_edit_to_neutral();
+        if !transitioned_to_neutral {
             crate::log::trace_debug("plus_button no-op (state is not EDIT)");
             return;
         }
@@ -210,6 +211,15 @@ impl crate::app::Papyru2App {
                 .unwrap_or_else(|| "<none>".to_string())
         ));
         self.sync_current_editing_path_to_components(None, cx);
+
+        let neutral_plan = crate::file_tree::req_ftr22_neutral_transition_plan(transitioned_to_neutral);
+        crate::log::trace_debug(format!(
+            "plus_button req-ftr22 neutral_plan release_file_tree_selection={}",
+            neutral_plan.release_file_tree_selection
+        ));
+        if neutral_plan.release_file_tree_selection {
+            self.apply_req_ftr22_neutral_selection_release("plus_button", cx);
+        }
 
         // req-newf34: enforce deterministic reset order so final focus/cursor lands on singleline.
         for step in crate::app::req_newf34_plus_button_reset_steps() {
