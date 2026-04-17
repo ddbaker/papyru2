@@ -25,7 +25,9 @@ gpui = { version = "*" }
 gpui-macros  = { version = "*" }
 gpui-component = { version = "*", features = ["tree-sitter-languages"] }
 gpui-component-assets = { version = "*" } 
+raw-window-handle = "=0.6.2"
 reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
+windows = { version = "=0.57.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
 iroh = { version = "*" }
 irpc = { version = "*", features = ["rpc", "derive", "noq_endpoint_setup"] }

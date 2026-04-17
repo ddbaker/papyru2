@@ -974,7 +974,11 @@ window_mode = "minimized"
             splitter_sizes: None,
         };
         let displays = vec![
-            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
             startup_display_snapshot(
                 1,
                 Some("display-1"),
@@ -982,9 +986,13 @@ window_mode = "minimized"
             ),
         ];
 
-        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        let resolved =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
 
-        assert_eq!(resolved.source, StartupDisplayResolutionSource::PersistedUuid);
+        assert_eq!(
+            resolved.source,
+            StartupDisplayResolutionSource::PersistedUuid
+        );
         assert_eq!(resolved.monitor_id, Some(1));
         assert_eq!(
             resolved.display_bounds,
@@ -1006,7 +1014,11 @@ window_mode = "minimized"
             splitter_sizes: None,
         };
         let displays = vec![
-            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
             startup_display_snapshot(
                 1,
                 Some("display-1"),
@@ -1014,7 +1026,8 @@ window_mode = "minimized"
             ),
         ];
 
-        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        let resolved =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
 
         assert_eq!(
             resolved.source,
@@ -1041,7 +1054,11 @@ window_mode = "minimized"
             splitter_sizes: None,
         };
         let displays = vec![
-            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
             startup_display_snapshot(
                 1,
                 Some("display-1"),
@@ -1049,9 +1066,13 @@ window_mode = "minimized"
             ),
         ];
 
-        let resolved = resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        let resolved =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
 
-        assert_eq!(resolved.source, StartupDisplayResolutionSource::PrimaryFallback);
+        assert_eq!(
+            resolved.source,
+            StartupDisplayResolutionSource::PrimaryFallback
+        );
         assert_eq!(resolved.monitor_id, Some(0));
         assert_eq!(
             resolved.display_bounds,
@@ -1073,7 +1094,11 @@ window_mode = "minimized"
             splitter_sizes: None,
         };
         let displays = vec![
-            startup_display_snapshot(0, Some("display-0"), display_bounds_at(0.0, 0.0, 1920.0, 1080.0)),
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
             startup_display_snapshot(
                 1,
                 Some("display-1"),
@@ -1087,6 +1112,150 @@ window_mode = "minimized"
             display_resolution.source,
             StartupDisplayResolutionSource::PersistedMonitorId
         );
+
+        let fallback_bounds = first_launch_fallback_bounds(
+            display_resolution.display_bounds,
+            windowed(0.0, 0.0, 1200.0, 800.0),
+        );
+        let resolved_bounds = resolve_startup_window_bounds(
+            Some(&state),
+            fallback_bounds,
+            display_resolution.display_bounds,
+            false,
+        );
+
+        assert_eq!(resolved_bounds, windowed(2050.0, 120.0, 900.0, 700.0));
+    }
+
+    #[test]
+    fn win_test19_req_win20_negative_y_topology_keeps_exact_persisted_geometry() {
+        let state = WindowPositionState {
+            x: 350.0,
+            y: -559.0,
+            width: 839.0,
+            height: 343.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("display-1".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(0.0, -1080.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let display_resolution =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        assert_eq!(
+            display_resolution.source,
+            StartupDisplayResolutionSource::PersistedUuid
+        );
+        assert_eq!(display_resolution.monitor_id, Some(1));
+
+        let fallback_bounds = first_launch_fallback_bounds(
+            display_resolution.display_bounds,
+            windowed(0.0, 0.0, 1200.0, 800.0),
+        );
+        let resolved_bounds = resolve_startup_window_bounds(
+            Some(&state),
+            fallback_bounds,
+            display_resolution.display_bounds,
+            false,
+        );
+
+        assert_eq!(resolved_bounds, windowed(350.0, -559.0, 839.0, 343.0));
+    }
+
+    #[test]
+    fn win_test20_req_win20_negative_x_topology_keeps_exact_persisted_geometry() {
+        let state = WindowPositionState {
+            x: -1570.0,
+            y: 120.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("display-1".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(-1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let display_resolution =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        assert_eq!(
+            display_resolution.source,
+            StartupDisplayResolutionSource::PersistedUuid
+        );
+        assert_eq!(display_resolution.monitor_id, Some(1));
+
+        let fallback_bounds = first_launch_fallback_bounds(
+            display_resolution.display_bounds,
+            windowed(0.0, 0.0, 1200.0, 800.0),
+        );
+        let resolved_bounds = resolve_startup_window_bounds(
+            Some(&state),
+            fallback_bounds,
+            display_resolution.display_bounds,
+            false,
+        );
+
+        assert_eq!(resolved_bounds, windowed(-1570.0, 120.0, 900.0, 700.0));
+    }
+
+    #[test]
+    fn win_test21_req_win20_positive_x_topology_remains_unchanged() {
+        let state = WindowPositionState {
+            x: 2050.0,
+            y: 120.0,
+            width: 900.0,
+            height: 700.0,
+            window_mode: PersistedWindowMode::Windowed,
+            monitor_id: Some(1),
+            monitor_uuid: Some("display-1".to_string()),
+            dpi_scale: Some(1.0),
+            splitter_sizes: None,
+        };
+        let displays = vec![
+            startup_display_snapshot(
+                0,
+                Some("display-0"),
+                display_bounds_at(0.0, 0.0, 1920.0, 1080.0),
+            ),
+            startup_display_snapshot(
+                1,
+                Some("display-1"),
+                display_bounds_at(1920.0, 0.0, 1920.0, 1080.0),
+            ),
+        ];
+
+        let display_resolution =
+            resolve_startup_display_resolution(Some(&state), displays.as_slice(), Some(0));
+        assert_eq!(
+            display_resolution.source,
+            StartupDisplayResolutionSource::PersistedUuid
+        );
+        assert_eq!(display_resolution.monitor_id, Some(1));
 
         let fallback_bounds = first_launch_fallback_bounds(
             display_resolution.display_bounds,

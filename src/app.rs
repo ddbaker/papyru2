@@ -13,6 +13,16 @@ use gpui_component::{
     v_flex,
 };
 
+#[cfg(target_os = "windows")]
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+#[cfg(target_os = "windows")]
+use windows::Win32::{
+    Foundation::{HWND, RECT},
+    UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER, SetWindowPos,
+    },
+};
+
 use crate::editor::Papyru2Editor;
 use crate::file_tree::{FileTreeEvent, FileTreeView};
 use crate::top_bars::{SHARED_INTER_PANEL_SPACING_PX, TopBars};
@@ -487,6 +497,199 @@ fn build_startup_window_options(
     }
 }
 
+fn startup_display_id_for_window_options(
+    _persisted_window_position: Option<&crate::window_position::WindowPositionState>,
+    _startup_bounds: WindowBounds,
+    resolved_startup_display_id: Option<DisplayId>,
+) -> Option<DisplayId> {
+    // Exact persisted geometry still needs a target display to avoid defaulting to primary.
+    resolved_startup_display_id
+}
+
+fn window_position_state_trace(state: &crate::window_position::WindowPositionState) -> String {
+    format!(
+        "x={} y={} width={} height={} mode={:?} monitor_id={:?} monitor_uuid={:?} dpi_scale={:?} splitter_sizes={:?}",
+        state.x,
+        state.y,
+        state.width,
+        state.height,
+        state.window_mode,
+        state.monitor_id,
+        state.monitor_uuid.as_deref(),
+        state.dpi_scale,
+        state.splitter_sizes,
+    )
+}
+
+const STARTUP_WINDOW_POSITION_CORRECTION_ATTEMPTS: u8 = 3;
+const STARTUP_WINDOW_POSITION_TOLERANCE_PX: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StartupWindowPositionGuard {
+    expected_bounds: WindowBounds,
+    correction_attempts_remaining: u8,
+}
+
+fn startup_window_position_guard(
+    expected_bounds: Option<WindowBounds>,
+) -> Option<StartupWindowPositionGuard> {
+    expected_bounds.map(|expected_bounds| StartupWindowPositionGuard {
+        expected_bounds,
+        correction_attempts_remaining: STARTUP_WINDOW_POSITION_CORRECTION_ATTEMPTS,
+    })
+}
+
+fn window_bounds_mode_matches(lhs: WindowBounds, rhs: WindowBounds) -> bool {
+    matches!(
+        (lhs, rhs),
+        (WindowBounds::Windowed(_), WindowBounds::Windowed(_))
+            | (WindowBounds::Maximized(_), WindowBounds::Maximized(_))
+            | (WindowBounds::Fullscreen(_), WindowBounds::Fullscreen(_))
+    )
+}
+
+fn window_bounds_within_tolerance(lhs: WindowBounds, rhs: WindowBounds, tolerance_px: f32) -> bool {
+    if !window_bounds_mode_matches(lhs, rhs) {
+        return false;
+    }
+
+    let lhs = lhs.get_bounds();
+    let rhs = rhs.get_bounds();
+
+    (f32::from(lhs.origin.x) - f32::from(rhs.origin.x)).abs() <= tolerance_px
+        && (f32::from(lhs.origin.y) - f32::from(rhs.origin.y)).abs() <= tolerance_px
+        && (f32::from(lhs.size.width) - f32::from(rhs.size.width)).abs() <= tolerance_px
+        && (f32::from(lhs.size.height) - f32::from(rhs.size.height)).abs() <= tolerance_px
+}
+
+fn startup_window_position_expected_bounds_for_observation(
+    guard: &mut Option<StartupWindowPositionGuard>,
+    observed_bounds: WindowBounds,
+) -> Option<WindowBounds> {
+    let Some(current_guard) = guard.as_mut() else {
+        return None;
+    };
+
+    if window_bounds_within_tolerance(
+        observed_bounds,
+        current_guard.expected_bounds,
+        STARTUP_WINDOW_POSITION_TOLERANCE_PX,
+    ) {
+        *guard = None;
+        return None;
+    }
+
+    if current_guard.correction_attempts_remaining == 0 {
+        *guard = None;
+        return None;
+    }
+
+    current_guard.correction_attempts_remaining -= 1;
+    Some(current_guard.expected_bounds)
+}
+
+fn startup_window_position_expected_bounds_for_close_save(
+    guard: &Option<StartupWindowPositionGuard>,
+    observed_bounds: WindowBounds,
+) -> Option<WindowBounds> {
+    let Some(current_guard) = guard else {
+        return None;
+    };
+
+    if window_bounds_within_tolerance(
+        observed_bounds,
+        current_guard.expected_bounds,
+        STARTUP_WINDOW_POSITION_TOLERANCE_PX,
+    ) {
+        None
+    } else {
+        Some(current_guard.expected_bounds)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &Window) -> Option<HWND> {
+    let handle = <Window as HasWindowHandle>::window_handle(window).ok()?;
+
+    match handle.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as _)),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_window_border_offsets(hwnd: HWND) -> Option<(i32, i32)> {
+    let mut window_rect = RECT::default();
+    let mut client_rect = RECT::default();
+
+    unsafe {
+        if GetWindowRect(hwnd, &mut window_rect).is_err() {
+            return None;
+        }
+        if GetClientRect(hwnd, &mut client_rect).is_err() {
+            return None;
+        }
+    }
+
+    Some((
+        (window_rect.right - window_rect.left) - (client_rect.right - client_rect.left),
+        (window_rect.bottom - window_rect.top) - (client_rect.bottom - client_rect.top),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn apply_windows_native_window_bounds(window: &mut Window, target_bounds: WindowBounds) {
+    let Some(hwnd) = window_hwnd(window) else {
+        trace_debug("window_position startup native apply skipped reason=no_hwnd");
+        return;
+    };
+
+    let Some((width_offset, height_offset)) = current_window_border_offsets(hwnd) else {
+        trace_debug("window_position startup native apply skipped reason=no_border_offsets");
+        return;
+    };
+
+    let restore_bounds = target_bounds.get_bounds();
+    let scale_factor = window.scale_factor();
+    let left = (f32::from(restore_bounds.origin.x) * scale_factor).round() as i32;
+    let top = (f32::from(restore_bounds.origin.y) * scale_factor).round() as i32;
+    let width = (f32::from(restore_bounds.size.width) * scale_factor).round() as i32;
+    let height = (f32::from(restore_bounds.size.height) * scale_factor).round() as i32;
+
+    let left_offset = width_offset / 2;
+    let top_offset = height_offset / 2;
+    let outer_left = left - left_offset;
+    let outer_top = top - top_offset;
+    let outer_width = width + width_offset;
+    let outer_height = height + height_offset;
+
+    let status = unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            outer_left,
+            outer_top,
+            outer_width,
+            outer_height,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+        )
+    };
+
+    if let Err(error) = status {
+        trace_debug(format!(
+            "window_position startup native apply failed target_bounds={target_bounds:?} error={error}"
+        ));
+        return;
+    }
+
+    trace_debug(format!(
+        "window_position startup native apply target_bounds={target_bounds:?} outer_left={outer_left} outer_top={outer_top} outer_width={outer_width} outer_height={outer_height}"
+    ));
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_windows_native_window_bounds(_window: &mut Window, _target_bounds: WindowBounds) {}
+
 pub struct Papyru2App {
     pub(crate) top_bars: Entity<TopBars>,
     pub(crate) singleline: Entity<crate::singleline_input::SingleLineInput>,
@@ -631,9 +834,9 @@ impl Papyru2App {
 
                     let state = this.capture_window_position_state(window, cx);
                     trace_debug(format!(
-                        "window_position splitter resize save path={} splitter_sizes={:?}",
+                        "window_position splitter resize save path={} {}",
                         splitter_resize_save_path.display(),
-                        state.splitter_sizes
+                        window_position_state_trace(&state)
                     ));
                     if let Err(error) = crate::window_position::save_window_position_atomic(
                         splitter_resize_save_path.as_path(),
@@ -678,6 +881,7 @@ impl Papyru2App {
         window: &mut Window,
         app_paths: crate::path_resolver::AppPaths,
         restored_splitter_left_size: Option<f32>,
+        startup_window_position_guard: Rc<RefCell<Option<StartupWindowPositionGuard>>>,
         ui_color_config: UiColorConfig,
         editor_config: EditorConfig,
         cx: &mut Context<Self>,
@@ -756,6 +960,7 @@ impl Papyru2App {
         let debounced_save_path = window_position_path.clone();
         let splitter_resize_save_path = window_position_path.clone();
         let observe_splitter_resize_save_path = window_position_path.clone();
+        let observe_startup_window_position_guard = startup_window_position_guard.clone();
 
         let layout_split_subscription = Self::subscribe_layout_split_state(
             &layout_split_state,
@@ -775,7 +980,7 @@ impl Papyru2App {
             file_workflow.clone(),
             quic_rpc_ui_tx,
         );
-        let quic_window_handle = window.window_handle();
+        let quic_window_handle = Window::window_handle(window);
         cx.spawn(async move |this, cx| {
             while let Ok(command) = quic_rpc_ui_rx.recv().await {
                 let Some(this) = this.upgrade() else {
@@ -929,6 +1134,29 @@ impl Papyru2App {
 
             *debounced_save_clock.borrow_mut() = Some(now);
             let state = this.capture_window_position_state(window, cx);
+            if let Some(observed_bounds) = state.to_window_bounds() {
+                let mut startup_window_position_guard =
+                    observe_startup_window_position_guard.borrow_mut();
+                if let Some(expected_bounds) = startup_window_position_expected_bounds_for_observation(
+                    &mut startup_window_position_guard,
+                    observed_bounds,
+                ) {
+                    trace_debug(format!(
+                        "window_position startup save guard skipped observed_bounds={observed_bounds:?} expected_bounds={expected_bounds:?} attempts_remaining={}",
+                        startup_window_position_guard
+                            .as_ref()
+                            .map(|guard| guard.correction_attempts_remaining)
+                            .unwrap_or(0)
+                    ));
+                    apply_windows_native_window_bounds(window, expected_bounds);
+                    return;
+                }
+            }
+            trace_debug(format!(
+                "window_position debounced save path={} {}",
+                debounced_save_path.display(),
+                window_position_state_trace(&state)
+            ));
             if let Err(error) = crate::window_position::save_window_position_atomic(
                 debounced_save_path.as_path(),
                 &state,
@@ -956,7 +1184,11 @@ impl Papyru2App {
             file_tree,
             layout_split_state,
             split_left_panel_size,
-            last_window_width: current_window_width(window),
+            last_window_width: startup_window_position_guard
+                .borrow()
+                .as_ref()
+                .map(|guard| guard.expected_bounds.get_bounds().size.width)
+                .unwrap_or_else(|| current_window_width(window)),
             layout_split_subscription,
             file_workflow,
             editor_autosave,
@@ -1026,6 +1258,13 @@ mod tests {
         path::PathBuf,
         time::{Duration, Instant},
     };
+
+    use gpui::DisplayId;
+
+    fn display_id_for_test(id: u32) -> DisplayId {
+        // SAFETY: In gpui 0.2.2, DisplayId is defined as `pub struct DisplayId(pub(crate) u32)`.
+        unsafe { std::mem::transmute::<u32, DisplayId>(id) }
+    }
 
     fn autosave_payload(
         path: &str,
@@ -1483,6 +1722,232 @@ mod tests {
         assert_eq!(options.display_id, None);
     }
 
+    #[test]
+    fn win_test22_req_win20_exact_persisted_geometry_keeps_display_id() {
+        let persisted = crate::window_position::WindowPositionState::from_window_bounds(
+            WindowBounds::Windowed(bounds(
+                point(px(350.0), px(-559.0)),
+                size(px(839.0), px(343.0)),
+            )),
+            Some(1),
+            Some("display-1".to_string()),
+            Some(1.0),
+        );
+        let startup_displays: Vec<(DisplayId, crate::window_position::StartupDisplaySnapshot)> = vec![
+            (
+                display_id_for_test(0),
+                crate::window_position::StartupDisplaySnapshot {
+                    monitor_id: 0,
+                    monitor_uuid: Some("display-0".to_string()),
+                    bounds: bounds(point(px(0.0), px(0.0)), size(px(1920.0), px(1080.0))),
+                },
+            ),
+            (
+                display_id_for_test(1),
+                crate::window_position::StartupDisplaySnapshot {
+                    monitor_id: 1,
+                    monitor_uuid: Some("display-1".to_string()),
+                    bounds: bounds(point(px(0.0), px(-1080.0)), size(px(1920.0), px(1080.0))),
+                },
+            ),
+        ];
+        let startup_display_snapshots: Vec<crate::window_position::StartupDisplaySnapshot> =
+            startup_displays
+                .iter()
+                .map(|(_, snapshot)| snapshot.clone())
+                .collect();
+
+        let startup_display_resolution = crate::window_position::resolve_startup_display_resolution(
+            Some(&persisted),
+            startup_display_snapshots.as_slice(),
+            Some(0),
+        );
+        assert_eq!(
+            startup_display_resolution.source,
+            crate::window_position::StartupDisplayResolutionSource::PersistedUuid
+        );
+        assert_eq!(startup_display_resolution.monitor_id, Some(1));
+
+        let resolved_startup_display_id =
+            startup_display_resolution
+                .monitor_id
+                .and_then(|resolved_monitor_id| {
+                    startup_displays
+                        .iter()
+                        .find(|(_, snapshot)| snapshot.monitor_id == resolved_monitor_id)
+                        .map(|(display_id, _)| *display_id)
+                });
+        assert!(resolved_startup_display_id.is_some());
+
+        let fallback_bounds = crate::window_position::first_launch_fallback_bounds(
+            startup_display_resolution.display_bounds,
+            WindowBounds::Windowed(bounds(point(px(0.0), px(0.0)), size(px(1200.0), px(800.0)))),
+        );
+        let startup_bounds = crate::window_position::resolve_startup_window_bounds(
+            Some(&persisted),
+            fallback_bounds,
+            startup_display_resolution.display_bounds,
+            false,
+        );
+        let expected_bounds = WindowBounds::Windowed(bounds(
+            point(px(350.0), px(-559.0)),
+            size(px(839.0), px(343.0)),
+        ));
+        assert_eq!(startup_bounds, expected_bounds);
+
+        let startup_display_id_for_options = super::startup_display_id_for_window_options(
+            Some(&persisted),
+            startup_bounds,
+            resolved_startup_display_id,
+        );
+        assert_eq!(startup_display_id_for_options, resolved_startup_display_id);
+        assert!(startup_display_id_for_options.is_some());
+
+        let options = build_startup_window_options(startup_bounds, startup_display_id_for_options);
+        assert_eq!(options.window_bounds, Some(expected_bounds));
+        assert_eq!(options.display_id, resolved_startup_display_id);
+        assert!(options.display_id.is_some());
+        assert!(options.focus);
+        assert!(options.show);
+    }
+
+    #[test]
+    fn win_test23_req_win20_fallback_path_sets_display_id() {
+        let startup_displays: Vec<(DisplayId, crate::window_position::StartupDisplaySnapshot)> = vec![
+            (
+                display_id_for_test(0),
+                crate::window_position::StartupDisplaySnapshot {
+                    monitor_id: 0,
+                    monitor_uuid: Some("display-0".to_string()),
+                    bounds: bounds(point(px(0.0), px(0.0)), size(px(1920.0), px(1080.0))),
+                },
+            ),
+            (
+                display_id_for_test(1),
+                crate::window_position::StartupDisplaySnapshot {
+                    monitor_id: 1,
+                    monitor_uuid: Some("display-1".to_string()),
+                    bounds: bounds(point(px(0.0), px(-1080.0)), size(px(1920.0), px(1080.0))),
+                },
+            ),
+        ];
+        let startup_display_snapshots: Vec<crate::window_position::StartupDisplaySnapshot> =
+            startup_displays
+                .iter()
+                .map(|(_, snapshot)| snapshot.clone())
+                .collect();
+
+        let startup_display_resolution = crate::window_position::resolve_startup_display_resolution(
+            None,
+            startup_display_snapshots.as_slice(),
+            Some(1),
+        );
+        assert_eq!(
+            startup_display_resolution.source,
+            crate::window_position::StartupDisplayResolutionSource::PrimaryFallback
+        );
+        assert_eq!(startup_display_resolution.monitor_id, Some(1));
+
+        let resolved_startup_display_id =
+            startup_display_resolution
+                .monitor_id
+                .and_then(|resolved_monitor_id| {
+                    startup_displays
+                        .iter()
+                        .find(|(_, snapshot)| snapshot.monitor_id == resolved_monitor_id)
+                        .map(|(display_id, _)| *display_id)
+                });
+        assert!(resolved_startup_display_id.is_some());
+
+        let default_centered_bounds =
+            WindowBounds::Windowed(bounds(point(px(0.0), px(0.0)), size(px(1200.0), px(800.0))));
+        let fallback_bounds = crate::window_position::first_launch_fallback_bounds(
+            startup_display_resolution.display_bounds,
+            default_centered_bounds,
+        );
+        let startup_bounds = crate::window_position::resolve_startup_window_bounds(
+            None,
+            fallback_bounds,
+            startup_display_resolution.display_bounds,
+            false,
+        );
+        assert_eq!(startup_bounds, fallback_bounds);
+
+        let startup_display_id_for_options = super::startup_display_id_for_window_options(
+            None,
+            startup_bounds,
+            resolved_startup_display_id,
+        );
+        assert_eq!(startup_display_id_for_options, resolved_startup_display_id);
+        assert!(startup_display_id_for_options.is_some());
+
+        let options = build_startup_window_options(startup_bounds, startup_display_id_for_options);
+        assert_eq!(options.window_bounds, Some(fallback_bounds));
+        assert_eq!(options.display_id, startup_display_id_for_options);
+        assert!(options.display_id.is_some());
+        assert!(options.focus);
+        assert!(options.show);
+    }
+
+    #[test]
+    fn win_test24_req_win20_startup_guard_skips_mismatched_first_observation() {
+        let expected_bounds = WindowBounds::Windowed(bounds(
+            point(px(997.0), px(-519.0)),
+            size(px(871.0), px(432.0)),
+        ));
+        let observed_bounds = WindowBounds::Windowed(bounds(
+            point(px(299.0), px(-1458.0)),
+            size(px(1280.0), px(845.0)),
+        ));
+        let mut guard = super::startup_window_position_guard(Some(expected_bounds));
+
+        let correction_bounds = super::startup_window_position_expected_bounds_for_observation(
+            &mut guard,
+            observed_bounds,
+        );
+
+        assert_eq!(correction_bounds, Some(expected_bounds));
+        assert_eq!(
+            guard.map(|guard| guard.correction_attempts_remaining),
+            Some(super::STARTUP_WINDOW_POSITION_CORRECTION_ATTEMPTS - 1)
+        );
+    }
+
+    #[test]
+    fn win_test25_req_win20_startup_guard_clears_once_bounds_match() {
+        let expected_bounds = WindowBounds::Windowed(bounds(
+            point(px(997.0), px(-519.0)),
+            size(px(871.0), px(432.0)),
+        ));
+        let mut guard = super::startup_window_position_guard(Some(expected_bounds));
+
+        let correction_bounds = super::startup_window_position_expected_bounds_for_observation(
+            &mut guard,
+            expected_bounds,
+        );
+
+        assert_eq!(correction_bounds, None);
+        assert_eq!(guard, None);
+    }
+
+    #[test]
+    fn win_test26_req_win20_close_save_guard_preserves_expected_bounds_while_startup_is_unstable() {
+        let expected_bounds = WindowBounds::Windowed(bounds(
+            point(px(997.0), px(-519.0)),
+            size(px(871.0), px(432.0)),
+        ));
+        let observed_bounds = WindowBounds::Windowed(bounds(
+            point(px(299.0), px(-1458.0)),
+            size(px(1280.0), px(845.0)),
+        ));
+        let guard = super::startup_window_position_guard(Some(expected_bounds));
+
+        let guarded_bounds =
+            super::startup_window_position_expected_bounds_for_close_save(&guard, observed_bounds);
+
+        assert_eq!(guarded_bounds, Some(expected_bounds));
+    }
+
     fn req_colr_test_temp_root(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         let stamp = std::time::SystemTime::now()
@@ -1887,12 +2352,14 @@ pub fn run() {
             primary_monitor_id,
         );
 
-        let startup_display_id = startup_display_resolution.monitor_id.and_then(|resolved_monitor_id| {
-            startup_displays
-                .iter()
-                .find(|(_, snapshot)| snapshot.monitor_id == resolved_monitor_id)
-                .map(|(display_id, _)| *display_id)
-        });
+        let resolved_startup_display_id = startup_display_resolution
+            .monitor_id
+            .and_then(|resolved_monitor_id| {
+                startup_displays
+                    .iter()
+                    .find(|(_, snapshot)| snapshot.monitor_id == resolved_monitor_id)
+                    .map(|(display_id, _)| *display_id)
+            });
 
         trace_debug(format!(
             "window_position startup monitor resolve saved_monitor_id={:?} saved_monitor_uuid={:?} primary_monitor_id={primary_monitor_id:?} source={:?} resolved_monitor_id={:?} resolved_bounds={:?}",
@@ -1918,14 +2385,24 @@ pub fn run() {
             startup_display_resolution.display_bounds,
             crate::window_position::should_ignore_exact_position_for_wayland(),
         );
+        let startup_display_id_for_options = startup_display_id_for_window_options(
+            persisted_window_position.as_ref(),
+            startup_bounds,
+            resolved_startup_display_id,
+        );
 
-        let window_options = build_startup_window_options(startup_bounds, startup_display_id);
+        let window_options =
+            build_startup_window_options(startup_bounds, startup_display_id_for_options);
         trace_debug(format!(
-            "window_options startup focus={} show={} has_bounds={} startup_monitor_id={:?}",
+            "window_options startup focus={} show={} has_bounds={} startup_monitor_id={:?} resolved_startup_display_id={:?} applied_startup_display_id={:?} startup_bounds={:?} option_bounds={:?}",
             window_options.focus,
             window_options.show,
             window_options.window_bounds.is_some(),
             startup_display_resolution.monitor_id,
+            resolved_startup_display_id,
+            startup_display_id_for_options,
+            startup_bounds,
+            window_options.window_bounds,
         ));
 
         let app_paths = app_paths.clone();
@@ -1935,12 +2412,28 @@ pub fn run() {
         let editor_config = editor_config;
         cx.spawn(async move |cx| {
             cx.open_window(window_options, move |window, cx| {
+                let startup_window_position_guard =
+                    Rc::new(RefCell::new(startup_window_position_guard(
+                        persisted_window_position
+                            .as_ref()
+                            .map(|_| startup_bounds),
+                    )));
+                if startup_window_position_guard.borrow().is_some() {
+                    apply_windows_native_window_bounds(window, startup_bounds);
+                    let deferred_startup_bounds = startup_bounds;
+                    window.defer(cx, move |window, _| {
+                        apply_windows_native_window_bounds(window, deferred_startup_bounds);
+                    });
+                }
+
                 let app_paths = app_paths.clone();
+                let app_startup_window_position_guard = startup_window_position_guard.clone();
                 let view = cx.new(|cx| {
                     Papyru2App::new(
                         window,
                         app_paths,
                         restored_splitter_left_size,
+                        app_startup_window_position_guard,
                         ui_color_config,
                         editor_config,
                         cx,
@@ -1949,6 +2442,7 @@ pub fn run() {
 
                 let close_save_path = window_position_path.clone();
                 let close_view = view.clone();
+                let close_startup_window_position_guard = startup_window_position_guard.clone();
                 window.on_window_should_close(cx, move |window, cx| {
                     let pre_close_saved = cx.update_entity(&close_view, |app, cx| {
                         app.flush_editor_content_before_context_switch("req-aus7-window-close", cx)
@@ -1961,10 +2455,43 @@ pub fn run() {
                     let state = cx.update_entity(&close_view, |app, cx| {
                         app.capture_window_position_state(window, cx)
                     });
+                    let state = if let Some(observed_bounds) = state.to_window_bounds() {
+                        if let Some(expected_bounds) =
+                            startup_window_position_expected_bounds_for_close_save(
+                                &close_startup_window_position_guard.borrow(),
+                                observed_bounds,
+                            )
+                        {
+                            let guarded_state = crate::window_position::WindowPositionState::from_window_bounds(
+                                expected_bounds,
+                                state.monitor_id,
+                                state.monitor_uuid.clone(),
+                                state.dpi_scale,
+                            )
+                            .with_splitter_sizes(
+                                state
+                                    .splitter_sizes
+                                    .as_ref()
+                                    .map(|sizes| {
+                                        sizes.iter().copied().map(px).collect::<Vec<Pixels>>()
+                                    })
+                                    .unwrap_or_default()
+                                    .as_slice(),
+                            );
+                            trace_debug(format!(
+                                "window_position close save guard replaced observed_bounds={observed_bounds:?} expected_bounds={expected_bounds:?}"
+                            ));
+                            guarded_state
+                        } else {
+                            state
+                        }
+                    } else {
+                        state
+                    };
                     trace_debug(format!(
-                        "window_position close save path={} splitter_sizes={:?}",
+                        "window_position close save path={} {}",
                         close_save_path.display(),
-                        state.splitter_sizes
+                        window_position_state_trace(&state)
                     ));
                     if let Err(error) = crate::window_position::save_window_position_atomic(
                         close_save_path.as_path(),
