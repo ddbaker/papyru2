@@ -174,6 +174,15 @@ impl EditorAutoSaveCoordinator {
         payload
     }
 
+    pub fn has_pending_payload_for_path(&self, path: &Path) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending_payload
+            .as_ref()
+            .is_some_and(|payload| payload.current_path == path)
+    }
+
     #[cfg(test)]
     pub fn has_pending_payload(&self) -> bool {
         self.inner
@@ -231,6 +240,22 @@ pub fn spawn_editor_autosave_worker(
             }
         }
     });
+}
+
+fn should_flush_pre_switch_editor_content(
+    trigger: &str,
+    current_path: &Path,
+    editor_autosave: &EditorAutoSaveCoordinator,
+) -> bool {
+    if editor_autosave.has_pending_payload_for_path(current_path) {
+        return true;
+    }
+    crate::log::trace_debug(format!(
+        "autosave pre-switch trigger={} no-op reason=no-pending-user-edit path={}",
+        trigger,
+        current_path.display()
+    ));
+    false
 }
 
 #[derive(Debug, Clone)]
@@ -1405,6 +1430,14 @@ impl crate::app::Papyru2App {
             );
             return false;
         };
+
+        if !should_flush_pre_switch_editor_content(
+            trigger,
+            current_path.as_path(),
+            &self.editor_autosave,
+        ) {
+            return true;
+        }
 
         let editor_snapshot = self.editor.read(cx).snapshot(cx);
         crate::log::trace_debug(format!(
@@ -2611,6 +2644,185 @@ mod tests {
         let content_a = fs::read_to_string(&updated_path).expect("read updated fileA");
         assert_eq!(content_a, "A-new");
         assert_eq!(workflow.current_edit_path(), Some(updated_path));
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test95_req_ftr24_selection_switch_without_pending_edit_does_not_move_previous_file() {
+        let root = new_temp_root("ftr_test95");
+        let old_daily = daily_directory(root.as_path(), fixed_now());
+        fs::create_dir_all(&old_daily).expect("create old daily directory");
+        let path_a = old_daily.join("fileA.txt");
+        let path_b = old_daily.join("fileB.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        fs::write(&path_b, "B-old").expect("seed fileB");
+
+        let today_daily = daily_directory(root.as_path(), Local::now());
+        let moved_candidate = today_daily.join("fileA.txt");
+        assert_ne!(path_a, moved_candidate);
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let autosave = EditorAutoSaveCoordinator::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let should_flush = super::should_flush_pre_switch_editor_content(
+            "req-aus8-open-file",
+            path_a.as_path(),
+            &autosave,
+        );
+        assert!(!should_flush);
+
+        workflow.set_edit_from_open_file(path_b.clone());
+        assert_eq!(workflow.current_edit_path(), Some(path_b));
+        assert!(
+            path_a.is_file(),
+            "fileA should remain in original dated directory"
+        );
+        assert_eq!(
+            fs::read_to_string(&path_a).expect("read fileA after selection switch"),
+            "A-old"
+        );
+        assert!(
+            !moved_candidate.exists(),
+            "fileA should not be moved to today's daily directory on selection-only switch"
+        );
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test96_req_ftr24_dirty_edit_switch_still_flushes_and_relocates() {
+        let root = new_temp_root("ftr_test96");
+        let old_daily = daily_directory(root.as_path(), fixed_now());
+        fs::create_dir_all(&old_daily).expect("create old daily directory");
+        let path_a = old_daily.join("fileA.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let autosave = EditorAutoSaveCoordinator::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        autosave.mark_user_edit(
+            EditorAutoSavePayload {
+                user_document_dir: root.clone(),
+                current_path: path_a.clone(),
+                editor_text: "A-new".to_string(),
+            },
+            Instant::now(),
+        );
+        assert!(autosave.has_pending_payload_for_path(path_a.as_path()));
+
+        let should_flush = super::should_flush_pre_switch_editor_content(
+            "req-aus8-open-file",
+            path_a.as_path(),
+            &autosave,
+        );
+        assert!(should_flush);
+        let flushed = workflow
+            .flush_editor_content_in_edit("A-new", root.as_path())
+            .expect("dirty pre-switch flush should succeed");
+        assert!(flushed);
+
+        let updated_path = workflow
+            .current_edit_path()
+            .expect("current path after dirty pre-switch flush");
+        let today_daily = daily_directory(root.as_path(), Local::now());
+        assert!(
+            updated_path.starts_with(today_daily.as_path()),
+            "dirty pre-switch flush should preserve req-newf35 relocation behavior"
+        );
+        assert_eq!(
+            fs::read_to_string(&updated_path).expect("read relocated fileA"),
+            "A-new"
+        );
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test97_req_ftr24_pre_close_without_pending_edit_is_noop() {
+        let root = new_temp_root("ftr_test97");
+        let old_daily = daily_directory(root.as_path(), fixed_now());
+        fs::create_dir_all(&old_daily).expect("create old daily directory");
+        let path_a = old_daily.join("fileA.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+
+        let today_daily = daily_directory(root.as_path(), Local::now());
+        let moved_candidate = today_daily.join("fileA.txt");
+        assert_ne!(path_a, moved_candidate);
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let autosave = EditorAutoSaveCoordinator::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let should_flush = super::should_flush_pre_switch_editor_content(
+            "req-aus7-window-close",
+            path_a.as_path(),
+            &autosave,
+        );
+        assert!(!should_flush);
+
+        assert_eq!(workflow.current_edit_path(), Some(path_a.clone()));
+        assert_eq!(
+            fs::read_to_string(&path_a).expect("read fileA after pre-close no-op"),
+            "A-old"
+        );
+        assert!(
+            !moved_candidate.exists(),
+            "pre-close without pending user edit should not relocate file"
+        );
+
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test98_req_ftr24_selection_switch_loads_target_without_mutating_previous_file() {
+        let root = new_temp_root("ftr_test98");
+        let old_daily = daily_directory(root.as_path(), fixed_now());
+        fs::create_dir_all(&old_daily).expect("create old daily directory");
+        let path_a = old_daily.join("fileA.txt");
+        let path_b = old_daily.join("fileB.txt");
+        fs::write(&path_a, "A-old").expect("seed fileA");
+        fs::write(&path_b, "B-old").expect("seed fileB");
+
+        let workflow = SinglelineCreateFileWorkflow::new();
+        let autosave = EditorAutoSaveCoordinator::new();
+
+        workflow.set_edit_from_open_file(path_a.clone());
+        assert!(
+            !super::should_flush_pre_switch_editor_content(
+                "req-aus8-open-file",
+                path_a.as_path(),
+                &autosave
+            ),
+            "selection switch A -> B without user edit should not flush A"
+        );
+        workflow.set_edit_from_open_file(path_b.clone());
+
+        assert!(
+            !super::should_flush_pre_switch_editor_content(
+                "req-aus8-open-file",
+                path_b.as_path(),
+                &autosave
+            ),
+            "selection switch B -> A without user edit should not flush B"
+        );
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        assert_eq!(workflow.current_edit_path(), Some(path_a.clone()));
+        assert_eq!(
+            fs::read_to_string(&path_a).expect("read fileA final"),
+            "A-old"
+        );
+        assert_eq!(
+            fs::read_to_string(&path_b).expect("read fileB final"),
+            "B-old"
+        );
+
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
