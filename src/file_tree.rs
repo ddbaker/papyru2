@@ -169,6 +169,8 @@ pub struct FileTreeView {
     selection_anchor_item_id: Option<String>,
     visible_item_ids: Vec<String>,
     font_size_logged_once: bool,
+    req_ftr26_viewport_height_px: Option<f32>,
+    req_ftr26_row_height_px: f32,
     ui_color_config: crate::app::UiColorConfig,
 }
 
@@ -198,6 +200,8 @@ impl FileTreeView {
             selection_anchor_item_id: None,
             visible_item_ids: Vec::new(),
             font_size_logged_once: false,
+            req_ftr26_viewport_height_px: None,
+            req_ftr26_row_height_px: req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size)),
             ui_color_config,
         };
         crate::log::trace_debug(format!(
@@ -262,7 +266,8 @@ impl FileTreeView {
         daily_dir: &Path,
         cx: &mut Context<Self>,
     ) -> Option<(usize, usize)> {
-        let Some((expanded_count, target_index, last_index)) =
+        let removed_padding_rows = req_ftr18_strip_scroll_padding_items(&mut self.root_items);
+        let Some((expanded_count, target_index, real_last_index)) =
             req_ftr18_expand_and_resolve_top_index(
                 &mut self.root_items,
                 self.tree_root_dir.as_path(),
@@ -277,7 +282,35 @@ impl FileTreeView {
             return None;
         };
 
+        let real_visible_count = real_last_index.saturating_add(1);
+        let viewport_height_px = self.req_ftr26_viewport_height_px;
+        let row_height_px = self.req_ftr26_row_height_px;
+        let viewport_rows = req_ftr26_viewport_row_capacity(viewport_height_px, row_height_px);
+        let rows_after_target = real_visible_count.saturating_sub(target_index + 1);
+        let padding_rows = req_ftr26_required_scroll_padding_rows(
+            viewport_height_px,
+            row_height_px,
+            real_visible_count,
+            target_index,
+        );
+        req_ftr18_append_scroll_padding_items(&mut self.root_items, padding_rows);
+        let last_index = real_last_index.saturating_add(padding_rows);
+
         self.set_items_from_model(cx);
+
+        crate::log::trace_debug(format!(
+            "file_tree req-ftr26 padding daily_dir={} viewport_height_px={:?} row_height_px={:.2} viewport_rows={} real_visible_count={} target_index={} rows_after_target={} removed_padding_rows={} padding_rows={} last_index={}",
+            daily_dir.display(),
+            viewport_height_px,
+            row_height_px,
+            viewport_rows,
+            real_visible_count,
+            target_index,
+            rows_after_target,
+            removed_padding_rows,
+            padding_rows,
+            last_index
+        ));
 
         crate::log::trace_debug(format!(
             "file_tree req-ftr18 startup positioning prepared daily_dir={} expanded_count={} target_index={} last_index={}",
@@ -432,7 +465,6 @@ impl FileTreeView {
             &req_ftr19_daily_dirs,
         );
         let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
-        req_ftr18_append_scroll_padding_items(&mut refreshed_items);
         self.root_items = refreshed_items;
         self.directory_item_ids = directory_item_ids;
 
@@ -740,6 +772,8 @@ impl Render for FileTreeView {
         let req_ftr25_policy = req_ftr25_render_policy();
         let req_ftr25_content_width_px = req_ftr25_visible_content_width_px(&self.root_items);
         let horizontal_offset_x = self.horizontal_scroll_handle.offset().x;
+        self.req_ftr26_row_height_px =
+            req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size));
 
         if !self.font_size_logged_once {
             crate::log::trace_debug(format!(
@@ -766,12 +800,13 @@ impl Render for FileTreeView {
         }
 
         self.rebuild_visible_item_ids();
-        let view = cx.entity();
+        let file_tree_entity = cx.entity();
+        let row_entity = file_tree_entity.clone();
 
-        let tree_view = crate::app::apply_req_editor_shared_text_size(tree(
+        let tree_content = crate::app::apply_req_editor_shared_text_size(tree(
             &self.tree_state,
             move |ix, entry, tree_selected, _window, cx| {
-                view.update(cx, |this, cx| {
+                row_entity.update(cx, |this, cx| {
                     let item = entry.item();
                     let item_id = item.id.to_string();
 
@@ -853,6 +888,29 @@ impl Render for FileTreeView {
         .h_full()
         .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
         .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex));
+
+        let viewport_entity = file_tree_entity.clone();
+        let tree_view = div()
+            .size_full()
+            .on_children_prepainted(move |children_bounds, _window, cx| {
+                let viewport_height_px = children_bounds
+                    .first()
+                    .map(|bounds| f32::from(bounds.size.height))
+                    .filter(|height| height.is_finite() && *height > 0.0);
+
+                if let Some(height) = viewport_height_px {
+                    viewport_entity.update(cx, |this, _cx| {
+                        let should_update =
+                            this.req_ftr26_viewport_height_px.map_or(true, |current| {
+                                (current - height).abs() > REQ_FTR26_VIEWPORT_EPSILON_PX
+                            });
+                        if should_update {
+                            this.req_ftr26_viewport_height_px = Some(height);
+                        }
+                    });
+                }
+            })
+            .child(tree_content);
 
         div()
             .size_full()
@@ -1293,22 +1351,59 @@ fn replace_single_selection(selected_item_ids: &mut HashSet<String>, item_id: &s
     selected_item_ids.insert(item_id.to_string());
 }
 
-const REQ_FTR18_SCROLL_PADDING_ROW_COUNT: usize = 128;
+const REQ_FTR26_FALLBACK_VIEWPORT_ROWS: usize = 128;
 const REQ_FTR18_SCROLL_PADDING_ID_PREFIX: &str = "__req_ftr18_scroll_padding__";
+const REQ_FTR26_ROW_HEIGHT_PADDING_PX: f32 = 8.0;
+const REQ_FTR26_MIN_ROW_HEIGHT_PX: f32 = 1.0;
+const REQ_FTR26_VIEWPORT_EPSILON_PX: f32 = 0.5;
 
 fn is_req_ftr18_scroll_padding_item_id(item_id: &str) -> bool {
     item_id.starts_with(REQ_FTR18_SCROLL_PADDING_ID_PREFIX)
 }
 
-fn req_ftr18_append_scroll_padding_items(items: &mut Vec<TreeItem>) {
-    if items
-        .iter()
-        .any(|item| is_req_ftr18_scroll_padding_item_id(item.id.as_ref()))
-    {
-        return;
+fn req_ftr18_strip_scroll_padding_items(items: &mut Vec<TreeItem>) -> usize {
+    let before = items.len();
+    items.retain(|item| !is_req_ftr18_scroll_padding_item_id(item.id.as_ref()));
+    before.saturating_sub(items.len())
+}
+
+fn req_ftr26_tree_row_height_px(theme_font_size_px: f32) -> f32 {
+    let font_size_px = if theme_font_size_px.is_finite() && theme_font_size_px > 0.0 {
+        theme_font_size_px
+    } else {
+        12.0
+    };
+    (font_size_px + REQ_FTR26_ROW_HEIGHT_PADDING_PX).max(REQ_FTR26_MIN_ROW_HEIGHT_PX)
+}
+
+fn req_ftr26_viewport_row_capacity(viewport_height_px: Option<f32>, row_height_px: f32) -> usize {
+    let row_height_px = row_height_px.max(REQ_FTR26_MIN_ROW_HEIGHT_PX);
+    let measured_height_px = viewport_height_px
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .unwrap_or(row_height_px * REQ_FTR26_FALLBACK_VIEWPORT_ROWS as f32);
+
+    ((measured_height_px / row_height_px).ceil() as usize).max(1)
+}
+
+fn req_ftr26_required_scroll_padding_rows(
+    viewport_height_px: Option<f32>,
+    row_height_px: f32,
+    real_visible_count: usize,
+    target_index: usize,
+) -> usize {
+    if real_visible_count == 0 || target_index >= real_visible_count {
+        return 0;
     }
 
-    for ix in 0..REQ_FTR18_SCROLL_PADDING_ROW_COUNT {
+    let viewport_rows = req_ftr26_viewport_row_capacity(viewport_height_px, row_height_px);
+    let rows_after_target = real_visible_count.saturating_sub(target_index + 1);
+    let required_rows_after_target = viewport_rows.saturating_sub(1);
+
+    required_rows_after_target.saturating_sub(rows_after_target)
+}
+
+fn req_ftr18_append_scroll_padding_items(items: &mut Vec<TreeItem>, row_count: usize) {
+    for ix in 0..row_count {
         items.push(
             TreeItem::new(format!("{REQ_FTR18_SCROLL_PADDING_ID_PREFIX}:{ix}"), "").disabled(true),
         );
@@ -3724,5 +3819,158 @@ mod tests {
             Some(Path::new("C:/tmp/example.txt"))
         ));
         assert!(!should_restore_selection_after_watcher_refresh(0, None));
+    }
+
+    #[test]
+    fn ftr_test103_req_ftr26_dynamic_padding_is_zero_when_rows_after_target_are_sufficient() {
+        let padding = super::req_ftr26_required_scroll_padding_rows(Some(240.0), 20.0, 20, 3);
+        assert_eq!(padding, 0);
+    }
+
+    #[test]
+    fn ftr_test104_req_ftr26_dynamic_padding_equals_shortfall_when_target_is_near_bottom() {
+        let padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        assert_eq!(padding, 8);
+    }
+
+    #[test]
+    fn ftr_test105_req_ftr26_dynamic_padding_is_bounded_by_viewport_shortfall() {
+        let padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 3, 2);
+        assert!(padding <= 9);
+        assert!(padding < 128);
+    }
+
+    #[test]
+    fn ftr_test106_req_ftr26_strip_padding_is_idempotent() {
+        let mut items = vec![
+            TreeItem::new("C:/tmp/a.txt", "a.txt"),
+            TreeItem::new(
+                format!("{}:0", super::REQ_FTR18_SCROLL_PADDING_ID_PREFIX),
+                "",
+            )
+            .disabled(true),
+            TreeItem::new("C:/tmp/recyclebin", "recyclebin"),
+            TreeItem::new(
+                format!("{}:1", super::REQ_FTR18_SCROLL_PADDING_ID_PREFIX),
+                "",
+            )
+            .disabled(true),
+        ];
+
+        let removed_first = super::req_ftr18_strip_scroll_padding_items(&mut items);
+        let removed_second = super::req_ftr18_strip_scroll_padding_items(&mut items);
+
+        assert_eq!(removed_first, 2);
+        assert_eq!(removed_second, 0);
+        assert_eq!(items.len(), 2);
+        assert!(
+            !items
+                .iter()
+                .any(|item| { super::is_req_ftr18_scroll_padding_item_id(item.id.as_ref()) })
+        );
+    }
+
+    #[test]
+    fn ftr_test107_req_ftr26_visible_order_helpers_exclude_padding_ids() {
+        let mut items = vec![
+            TreeItem::new("/root/2026", "2026")
+                .expanded(true)
+                .children([TreeItem::new("/root/2026/04", "04")
+                    .expanded(true)
+                    .children([TreeItem::new("/root/2026/04/19", "19")])]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ];
+
+        super::req_ftr18_append_scroll_padding_items(&mut items, 3);
+
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+
+        assert_eq!(
+            find_visible_index(&visible_ids, "/root/2026/04/19"),
+            Some(2)
+        );
+        assert!(
+            !visible_ids
+                .iter()
+                .any(|id| { super::is_req_ftr18_scroll_padding_item_id(id.as_str()) })
+        );
+    }
+
+    #[test]
+    fn ftr_test108_req_ftr26_startup_target_index_remains_resolvable_after_dynamic_padding() {
+        let root = new_temp_root("ftr_test108");
+        let year = root.join("2026");
+        let month = year.join("03");
+        let day = month.join("13");
+        let file = day.join("fileA.txt");
+        let recyclebin = root.join("recyclebin");
+
+        let mut items =
+            vec![
+                TreeItem::new(year.to_string_lossy().to_string(), "2026").children([
+                    TreeItem::new(month.to_string_lossy().to_string(), "03").children([
+                        TreeItem::new(day.to_string_lossy().to_string(), "13").child(
+                            TreeItem::new(file.to_string_lossy().to_string(), "fileA.txt"),
+                        ),
+                    ]),
+                ]),
+                TreeItem::new(recyclebin.to_string_lossy().to_string(), "recyclebin"),
+            ];
+
+        let (_, target_index, real_last_index) = super::req_ftr18_expand_and_resolve_top_index(
+            &mut items,
+            root.as_path(),
+            day.as_path(),
+        )
+        .expect("resolve req-ftr18 startup target");
+
+        let real_visible_count = real_last_index + 1;
+        let padding_rows = super::req_ftr26_required_scroll_padding_rows(
+            Some(220.0),
+            20.0,
+            real_visible_count,
+            target_index,
+        );
+        super::req_ftr18_append_scroll_padding_items(&mut items, padding_rows);
+
+        let mut visible_ids_with_padding = Vec::new();
+        super::collect_visible_item_ids_including_padding(&items, &mut visible_ids_with_padding);
+
+        assert_eq!(
+            visible_ids_with_padding.get(target_index),
+            Some(&day.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            visible_ids_with_padding.len(),
+            real_visible_count + padding_rows
+        );
+        assert!(padding_rows > 0);
+
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test109_req_ftr25_render_policy_contract_is_unchanged_after_req_ftr26() {
+        let policy = req_ftr25_render_policy();
+        assert!(policy.horizontal_scroll_enabled);
+        assert!(policy.preserve_tree_state_render);
+        assert!(policy.horizontal_scrollbar_overlay);
+        assert!(policy.content_width_estimate_enabled);
+        assert!(policy.row_width_full);
+        assert!(policy.row_flex_nowrap);
+        assert!(policy.filename_nowrap);
+        assert!(!policy.filename_truncate);
+    }
+
+    #[test]
+    fn ftr_test110_req_ftr26_unmeasured_startup_fallback_keeps_target_out_of_view_for_top_scroll() {
+        let measured_padding =
+            super::req_ftr26_required_scroll_padding_rows(Some(604.0), 24.0, 78, 73);
+        let fallback_padding = super::req_ftr26_required_scroll_padding_rows(None, 24.0, 78, 73);
+
+        assert_eq!(measured_padding, 21);
+        assert!(fallback_padding > measured_padding);
+        assert_eq!(fallback_padding, 123);
     }
 }
