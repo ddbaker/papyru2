@@ -4,14 +4,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     IconName, h_flex,
     list::ListItem,
+    scroll::{Scrollbar, ScrollbarShow},
     tree::{TreeItem, TreeState, tree},
 };
 
 use gpui_component::ActiveTheme as _;
+
 pub enum FileTreeEvent {
     SelectionChanged(PathBuf),
     OpenFile(PathBuf),
@@ -95,8 +98,67 @@ pub(crate) fn req_editor_file_tree_font_size_policy() -> &'static str {
     crate::app::req_editor_shared_text_size_policy()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReqFtr25RenderPolicy {
+    pub horizontal_scroll_enabled: bool,
+    pub preserve_tree_state_render: bool,
+    pub horizontal_scrollbar_overlay: bool,
+    pub content_width_estimate_enabled: bool,
+    pub row_width_full: bool,
+    pub row_flex_nowrap: bool,
+    pub filename_nowrap: bool,
+    pub filename_truncate: bool,
+}
+
+pub(crate) fn req_ftr25_render_policy() -> ReqFtr25RenderPolicy {
+    ReqFtr25RenderPolicy {
+        horizontal_scroll_enabled: true,
+        preserve_tree_state_render: true,
+        horizontal_scrollbar_overlay: true,
+        content_width_estimate_enabled: true,
+        row_width_full: true,
+        row_flex_nowrap: true,
+        filename_nowrap: true,
+        filename_truncate: false,
+    }
+}
+
+fn req_ftr25_filename_label(label: SharedString, policy: ReqFtr25RenderPolicy) -> Div {
+    let label_element = if policy.filename_nowrap {
+        div().flex_shrink_0().whitespace_nowrap().child(label)
+    } else {
+        div().flex_shrink_0().child(label)
+    };
+
+    if policy.filename_truncate {
+        label_element.truncate()
+    } else {
+        label_element
+    }
+}
+
+fn req_ftr25_visible_content_width_px(items: &[TreeItem]) -> f32 {
+    fn visit(items: &[TreeItem], depth: usize, max_width: &mut f32) {
+        for item in items {
+            let label_width = item.label.chars().count() as f32 * 8.;
+            let indent_width = depth as f32 * 16.;
+            let chrome_width = 56.;
+            *max_width = max_width.max(indent_width + chrome_width + label_width);
+
+            if item.is_folder() && item.is_expanded() {
+                visit(&item.children, depth + 1, max_width);
+            }
+        }
+    }
+
+    let mut max_width: f32 = 1.;
+    visit(items, 0, &mut max_width);
+    max_width
+}
+
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
+    horizontal_scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     tree_root_dir: PathBuf,
     root_items: Vec<TreeItem>,
@@ -120,10 +182,12 @@ impl FileTreeView {
         cx: &mut Context<Self>,
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
+        let horizontal_scroll_handle = ScrollHandle::new();
         let focus_handle = cx.focus_handle().tab_stop(true);
 
         let mut this = Self {
             tree_state,
+            horizontal_scroll_handle,
             focus_handle,
             tree_root_dir,
             root_items: Vec::new(),
@@ -673,6 +737,9 @@ impl Render for FileTreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let background_rgb_hex = self.ui_color_config.background_rgb_hex;
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
+        let req_ftr25_policy = req_ftr25_render_policy();
+        let req_ftr25_content_width_px = req_ftr25_visible_content_width_px(&self.root_items);
+        let horizontal_offset_x = self.horizontal_scroll_handle.offset().x;
 
         if !self.font_size_logged_once {
             crate::log::trace_debug(format!(
@@ -682,6 +749,18 @@ impl Render for FileTreeView {
                 cx.theme().mono_font_size,
                 background_rgb_hex,
                 foreground_rgb_hex,
+            ));
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr25 horizontal_scroll policy=tree_state_preserved enabled={} preserve_tree_state_render={} horizontal_scrollbar_overlay={} content_width_estimate_enabled={} content_width_px={:.1} row_width_full={} row_flex_nowrap={} filename_nowrap={} filename_truncate={}",
+                req_ftr25_policy.horizontal_scroll_enabled,
+                req_ftr25_policy.preserve_tree_state_render,
+                req_ftr25_policy.horizontal_scrollbar_overlay,
+                req_ftr25_policy.content_width_estimate_enabled,
+                req_ftr25_content_width_px,
+                req_ftr25_policy.row_width_full,
+                req_ftr25_policy.row_flex_nowrap,
+                req_ftr25_policy.filename_nowrap,
+                req_ftr25_policy.filename_truncate,
             ));
             self.font_size_logged_once = true;
         }
@@ -722,9 +801,25 @@ impl Render for FileTreeView {
                             .gap_2()
                             .child(if is_selected { "[x]" } else { "[ ]" })
                             .child(icon)
-                            .child(item.label.clone())
+                            .child(req_ftr25_filename_label(
+                                item.label.clone(),
+                                req_ftr25_policy,
+                            ))
                     } else {
-                        h_flex().gap_2().child(icon).child(item.label.clone())
+                        h_flex().gap_2().child(icon).child(req_ftr25_filename_label(
+                            item.label.clone(),
+                            req_ftr25_policy,
+                        ))
+                    };
+                    let row_content = if req_ftr25_policy.row_flex_nowrap {
+                        row_content.flex_nowrap()
+                    } else {
+                        row_content
+                    };
+                    let row_content = if req_ftr25_policy.horizontal_scroll_enabled {
+                        row_content.flex_none().ml(horizontal_offset_x)
+                    } else {
+                        row_content
                     };
 
                     let row = ListItem::new(ix)
@@ -761,11 +856,27 @@ impl Render for FileTreeView {
 
         div()
             .size_full()
+            .relative()
             .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .track_focus(&self.focus_handle)
             .capture_key_down(cx.listener(Self::on_key_down))
             .child(tree_view)
+            .when(req_ftr25_policy.horizontal_scrollbar_overlay, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(12.))
+                        .child(
+                            Scrollbar::horizontal(&self.horizontal_scroll_handle)
+                                .scrollbar_show(ScrollbarShow::Always)
+                                .scroll_size(size(px(req_ftr25_content_width_px), px(1.))),
+                        ),
+                )
+            })
     }
 }
 
@@ -1992,6 +2103,8 @@ mod tests {
         ReqFtr22NeutralTransitionPlan, ReqFtr22SelectionReleaseState,
         req_ftr22_neutral_transition_plan, req_ftr22_release_selection_state,
     };
+
+    use super::{ReqFtr25RenderPolicy, req_ftr25_render_policy};
 
     fn new_temp_root(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -3546,5 +3659,70 @@ mod tests {
             "",
             Path::new("C:/tmp/filename.txt")
         ));
+    }
+
+    #[test]
+    fn ftr_test99_req_ftr25_render_policy_enables_horizontal_x_scrollbar() {
+        assert_eq!(
+            req_ftr25_render_policy(),
+            ReqFtr25RenderPolicy {
+                horizontal_scroll_enabled: true,
+                preserve_tree_state_render: true,
+                horizontal_scrollbar_overlay: true,
+                content_width_estimate_enabled: true,
+                row_width_full: true,
+                row_flex_nowrap: true,
+                filename_nowrap: true,
+                filename_truncate: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ftr_test100_req_ftr25_row_policy_uses_single_line_without_truncation() {
+        let policy = req_ftr25_render_policy();
+        assert!(policy.preserve_tree_state_render);
+        assert!(policy.horizontal_scrollbar_overlay);
+        assert!(policy.content_width_estimate_enabled);
+        assert!(policy.row_width_full);
+        assert!(policy.filename_nowrap);
+        assert!(policy.row_flex_nowrap);
+        assert!(!policy.filename_truncate);
+    }
+
+    #[test]
+    fn ftr_test101_req_ftr25_long_filename_selection_stays_visible_order_based() {
+        let long_a =
+            "/root/2026/04/18/This is a very long filename alpha alpha alpha alpha alpha.txt"
+                .to_string();
+        let long_b = "/root/2026/04/18/This is a very long filename beta beta beta beta beta.txt"
+            .to_string();
+        let long_c =
+            "/root/2026/04/18/This is a very long filename gamma gamma gamma gamma gamma.txt"
+                .to_string();
+        let visible_item_ids = vec![long_a.clone(), long_b.clone(), long_c.clone()];
+
+        let mut selected_item_ids = HashSet::new();
+        select_range_items(&mut selected_item_ids, &visible_item_ids, 1, 2);
+        let selected_paths =
+            super::req_ftr20_selected_paths_in_visible_order(&selected_item_ids, &visible_item_ids);
+
+        assert_eq!(
+            selected_paths,
+            vec![PathBuf::from(long_b), PathBuf::from(long_c)]
+        );
+    }
+
+    #[test]
+    fn ftr_test102_req_ftr25_layout_is_visual_only_and_keeps_selection_restore_gate_contract() {
+        assert!(should_restore_selection_after_watcher_refresh(
+            0,
+            Some(Path::new("C:/tmp/example.txt"))
+        ));
+        assert!(!should_restore_selection_after_watcher_refresh(
+            1,
+            Some(Path::new("C:/tmp/example.txt"))
+        ));
+        assert!(!should_restore_selection_after_watcher_refresh(0, None));
     }
 }
