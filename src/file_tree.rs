@@ -261,23 +261,26 @@ impl FileTreeView {
         self.load_files(cx);
     }
 
-    pub fn apply_req_ftr18_startup_daily_folder_position(
+    fn apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
         &mut self,
         daily_dir: &Path,
+        reason: &str,
         cx: &mut Context<Self>,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<(usize, usize, usize)> {
+        let old_padding_rows = req_ftr18_count_scroll_padding_items(&self.root_items);
         let removed_padding_rows = req_ftr18_strip_scroll_padding_items(&mut self.root_items);
-        let Some((expanded_count, target_index, real_last_index)) =
-            req_ftr18_expand_and_resolve_top_index(
-                &mut self.root_items,
-                self.tree_root_dir.as_path(),
-                daily_dir,
-            )
-        else {
+        let Some((expanded_count, target_index, real_last_index)) = req_ftr18_expand_and_resolve_top_index(
+            &mut self.root_items,
+            self.tree_root_dir.as_path(),
+            daily_dir,
+        ) else {
             crate::log::trace_debug(format!(
-                "file_tree req-ftr18 startup positioning skipped daily_dir={} root_dir={}",
+                "file_tree req-frt27 padding skipped reason={} daily_dir={} root_dir={} old_padding_rows={} removed_padding_rows={}",
+                reason,
                 daily_dir.display(),
-                self.tree_root_dir.display()
+                self.tree_root_dir.display(),
+                old_padding_rows,
+                removed_padding_rows
             ));
             return None;
         };
@@ -287,6 +290,8 @@ impl FileTreeView {
         let row_height_px = self.req_ftr26_row_height_px;
         let viewport_rows = req_ftr26_viewport_row_capacity(viewport_height_px, row_height_px);
         let rows_after_target = real_visible_count.saturating_sub(target_index + 1);
+        let required_rows_after_target = viewport_rows.saturating_sub(1);
+        let rows_after_target_before = required_rows_after_target.saturating_sub(old_padding_rows);
         let padding_rows = req_ftr26_required_scroll_padding_rows(
             viewport_height_px,
             row_height_px,
@@ -299,25 +304,52 @@ impl FileTreeView {
         self.set_items_from_model(cx);
 
         crate::log::trace_debug(format!(
-            "file_tree req-ftr26 padding daily_dir={} viewport_height_px={:?} row_height_px={:.2} viewport_rows={} real_visible_count={} target_index={} rows_after_target={} removed_padding_rows={} padding_rows={} last_index={}",
+            "file_tree req-frt27 padding reason={} daily_dir={} viewport_height_px={:?} row_height_px={:.2} viewport_rows={} real_visible_count={} target_index={} real_rows_after_before={} real_rows_after_after={} old_padding_rows={} removed_padding_rows={} computed_padding_rows={} expanded_count={} last_index={}",
+            reason,
             daily_dir.display(),
             viewport_height_px,
             row_height_px,
             viewport_rows,
             real_visible_count,
             target_index,
+            rows_after_target_before,
             rows_after_target,
+            old_padding_rows,
             removed_padding_rows,
             padding_rows,
+            expanded_count,
             last_index
         ));
 
+        Some((target_index, last_index, padding_rows))
+    }
+
+    pub fn apply_req_ftr18_startup_daily_folder_position(
+        &mut self,
+        daily_dir: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, usize)> {
+        let Some((target_index, last_index, padding_rows)) = self
+            .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                daily_dir,
+                "req-ftr18-startup",
+                cx,
+            )
+        else {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr18 startup positioning skipped daily_dir={} root_dir={}",
+                daily_dir.display(),
+                self.tree_root_dir.display()
+            ));
+            return None;
+        };
+
         crate::log::trace_debug(format!(
-            "file_tree req-ftr18 startup positioning prepared daily_dir={} expanded_count={} target_index={} last_index={}",
+            "file_tree req-ftr18 startup positioning prepared daily_dir={} target_index={} last_index={} padding_rows={}",
             daily_dir.display(),
-            expanded_count,
             target_index,
-            last_index
+            last_index,
+            padding_rows
         ));
 
         Some((target_index, last_index))
@@ -1367,6 +1399,13 @@ fn req_ftr18_strip_scroll_padding_items(items: &mut Vec<TreeItem>) -> usize {
     before.saturating_sub(items.len())
 }
 
+fn req_ftr18_count_scroll_padding_items(items: &[TreeItem]) -> usize {
+    items
+        .iter()
+        .filter(|item| is_req_ftr18_scroll_padding_item_id(item.id.as_ref()))
+        .count()
+}
+
 fn req_ftr26_tree_row_height_px(theme_font_size_px: f32) -> f32 {
     let font_size_px = if theme_font_size_px.is_finite() && theme_font_size_px > 0.0 {
         theme_font_size_px
@@ -1880,9 +1919,24 @@ impl crate::app::Papyru2App {
 
     pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
         let current_edit_path = self.file_workflow.current_edit_path();
+        let current_edit_daily_dir = current_edit_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(PathBuf::from);
         let mut restored_selection = false;
+        let mut req_frt27_padding_rows = None;
         self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
+            if let Some(daily_dir) = current_edit_daily_dir.as_deref()
+                && let Some((_, _, padding_rows)) =
+                    file_tree.apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                        daily_dir,
+                        "watcher-refresh",
+                        cx,
+                    )
+            {
+                req_frt27_padding_rows = Some(padding_rows);
+            }
 
             if should_restore_selection_after_watcher_refresh(
                 file_tree.selection_count(),
@@ -1893,9 +1947,11 @@ impl crate::app::Papyru2App {
             }
         });
         crate::log::trace_debug(format!(
-            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={}",
+            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?}",
             current_edit_path.is_some(),
-            restored_selection
+            restored_selection,
+            current_edit_daily_dir.is_some(),
+            req_frt27_padding_rows
         ));
     }
 
@@ -1904,14 +1960,27 @@ impl crate::app::Papyru2App {
         created_path: &Path,
         cx: &mut Context<Self>,
     ) -> bool {
+        let created_daily_dir = created_path.parent().map(PathBuf::from);
+        let mut req_frt27_padding_rows = None;
         let restored_selection = self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
+            if let Some(daily_dir) = created_daily_dir.as_deref()
+                && let Some((_, _, padding_rows)) =
+                    file_tree.apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                        daily_dir,
+                        "new-file-create",
+                        cx,
+                    )
+            {
+                req_frt27_padding_rows = Some(padding_rows);
+            }
             file_tree.restore_selection_for_path(created_path, cx)
         });
         crate::log::trace_debug(format!(
-            "file_tree req-newf38 create_select target={} restored_selection={}",
+            "file_tree req-newf38 create_select target={} restored_selection={} req-frt27_padding_rows={:?}",
             created_path.display(),
-            restored_selection
+            restored_selection,
+            req_frt27_padding_rows
         ));
         restored_selection
     }
@@ -3972,5 +4041,104 @@ mod tests {
         assert_eq!(measured_padding, 21);
         assert!(fallback_padding > measured_padding);
         assert_eq!(fallback_padding, 123);
+    }
+
+    #[test]
+    fn ftr_test111_req_frt28_create_one_row_reduces_padding_by_one() {
+        let before_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        let after_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        assert_eq!(before_padding, 8);
+        assert_eq!(after_padding, 7);
+        assert_eq!(before_padding.saturating_sub(after_padding), 1);
+    }
+
+    #[test]
+    fn ftr_test112_req_frt28_create_two_rows_reduces_padding_by_two() {
+        let before_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        let after_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 10, 6);
+        assert_eq!(before_padding, 8);
+        assert_eq!(after_padding, 6);
+        assert_eq!(before_padding.saturating_sub(after_padding), 2);
+    }
+
+    #[test]
+    fn ftr_test113_req_frt29_delete_one_row_increases_padding_by_one() {
+        let before_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        let after_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        assert_eq!(before_padding, 7);
+        assert_eq!(after_padding, 8);
+        assert_eq!(after_padding.saturating_sub(before_padding), 1);
+    }
+
+    #[test]
+    fn ftr_test114_req_frt29_delete_two_rows_increases_padding_by_two() {
+        let before_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 10, 6);
+        let after_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        assert_eq!(before_padding, 6);
+        assert_eq!(after_padding, 8);
+        assert_eq!(after_padding.saturating_sub(before_padding), 2);
+    }
+
+    #[test]
+    fn ftr_test115_req_frt30_padding_is_clamped_to_zero_and_never_underflows() {
+        let padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 40, 3);
+        assert_eq!(padding, 0);
+
+        let mut items = vec![TreeItem::new("/root/recyclebin", "recyclebin")];
+        super::req_ftr18_append_scroll_padding_items(&mut items, padding);
+        assert_eq!(super::req_ftr18_count_scroll_padding_items(&items), 0);
+    }
+
+    #[test]
+    fn ftr_test116_req_frt27_refresh_recomputes_padding_after_create_without_dropping_to_zero() {
+        let old_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        let recomputed_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        let mut items = vec![TreeItem::new("/root/recyclebin", "recyclebin")];
+
+        super::req_ftr18_append_scroll_padding_items(&mut items, old_padding);
+        let removed = super::req_ftr18_strip_scroll_padding_items(&mut items);
+        super::req_ftr18_append_scroll_padding_items(&mut items, recomputed_padding);
+
+        assert_eq!(old_padding, 8);
+        assert_eq!(removed, old_padding);
+        assert!(recomputed_padding > 0);
+        assert_eq!(recomputed_padding, 7);
+        assert_eq!(
+            super::req_ftr18_count_scroll_padding_items(&items),
+            recomputed_padding
+        );
+    }
+
+    #[test]
+    fn ftr_test117_req_frt27_padding_rows_remain_excluded_after_create_delete_recompute() {
+        let mut items = vec![
+            TreeItem::new("/root/2026", "2026")
+                .expanded(true)
+                .children([TreeItem::new("/root/2026/04", "04")
+                    .expanded(true)
+                    .children([TreeItem::new("/root/2026/04/20", "20")])]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ];
+
+        let create_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        super::req_ftr18_append_scroll_padding_items(&mut items, create_padding);
+        let removed_after_create = super::req_ftr18_strip_scroll_padding_items(&mut items);
+        let delete_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
+        super::req_ftr18_append_scroll_padding_items(&mut items, delete_padding);
+
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+
+        assert_eq!(removed_after_create, create_padding);
+        assert!(delete_padding > create_padding);
+        assert!(
+            !visible_ids
+                .iter()
+                .any(|id| super::is_req_ftr18_scroll_padding_item_id(id.as_str()))
+        );
+        assert_eq!(
+            super::req_ftr18_count_scroll_padding_items(&items),
+            delete_padding
+        );
     }
 }
