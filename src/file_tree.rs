@@ -74,6 +74,34 @@ pub(crate) fn req_ftr22_neutral_transition_plan(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReqFrt27PlusPaddingReapplyPlan {
+    pub reapply_padding: bool,
+    pub restore_selection: bool,
+    pub daily_dir: Option<PathBuf>,
+}
+
+pub(crate) fn req_frt27_plus_padding_reapply_plan(
+    transitioned_to_neutral: bool,
+    previous_edit_path: Option<&Path>,
+) -> ReqFrt27PlusPaddingReapplyPlan {
+    let daily_dir = previous_edit_path.and_then(Path::parent).map(PathBuf::from);
+    ReqFrt27PlusPaddingReapplyPlan {
+        reapply_padding: transitioned_to_neutral && daily_dir.is_some(),
+        restore_selection: false,
+        daily_dir,
+    }
+}
+
+pub(crate) fn req_frt27_watcher_padding_daily_dir(
+    current_edit_daily_dir: Option<&Path>,
+    retained_padding_daily_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    current_edit_daily_dir
+        .or(retained_padding_daily_dir)
+        .map(PathBuf::from)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ReqFtr22SelectionReleaseState {
     pub selected_count_after: usize,
     pub selection_anchor_after: Option<String>,
@@ -171,6 +199,7 @@ pub struct FileTreeView {
     font_size_logged_once: bool,
     req_ftr26_viewport_height_px: Option<f32>,
     req_ftr26_row_height_px: f32,
+    req_frt27_padding_daily_dir: Option<PathBuf>,
     ui_color_config: crate::app::UiColorConfig,
 }
 
@@ -202,6 +231,7 @@ impl FileTreeView {
             font_size_logged_once: false,
             req_ftr26_viewport_height_px: None,
             req_ftr26_row_height_px: req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size)),
+            req_frt27_padding_daily_dir: None,
             ui_color_config,
         };
         crate::log::trace_debug(format!(
@@ -302,6 +332,7 @@ impl FileTreeView {
         );
         req_ftr18_append_scroll_padding_items(&mut self.root_items, padding_rows);
         let last_index = real_last_index.saturating_add(padding_rows);
+        self.req_frt27_padding_daily_dir = Some(daily_dir.to_path_buf());
 
         self.set_items_from_model(cx);
 
@@ -1933,15 +1964,25 @@ impl crate::app::Papyru2App {
             .as_deref()
             .and_then(Path::parent)
             .map(PathBuf::from);
+        let retained_req_frt27_daily_dir =
+            self.file_tree.read(cx).req_frt27_padding_daily_dir.clone();
+        let req_frt27_daily_dir = req_frt27_watcher_padding_daily_dir(
+            current_edit_daily_dir.as_deref(),
+            retained_req_frt27_daily_dir.as_deref(),
+        );
         let mut restored_selection = false;
         let mut req_frt27_padding_rows = None;
         self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
-            if let Some(daily_dir) = current_edit_daily_dir.as_deref()
+            if let Some(daily_dir) = req_frt27_daily_dir.as_deref()
                 && let Some((_, _, padding_rows)) = file_tree
                     .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
                         daily_dir,
-                        "watcher-refresh",
+                        if current_edit_daily_dir.is_some() {
+                            "watcher-refresh"
+                        } else {
+                            "watcher-refresh-retained"
+                        },
                         cx,
                     )
             {
@@ -1957,12 +1998,35 @@ impl crate::app::Papyru2App {
             }
         });
         crate::log::trace_debug(format!(
-            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?}",
+            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?}",
             current_edit_path.is_some(),
             restored_selection,
             current_edit_daily_dir.is_some(),
+            retained_req_frt27_daily_dir.is_some(),
+            req_frt27_daily_dir.is_some(),
             req_frt27_padding_rows
         ));
+    }
+
+    pub(crate) fn apply_req_frt27_plus_padding_reapply(
+        &mut self,
+        daily_dir: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let mut req_frt27_padding_rows = None;
+        self.file_tree.update(cx, |file_tree, cx| {
+            file_tree.refresh_from_filesystem(cx);
+            if let Some((_, _, padding_rows)) = file_tree
+                .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                    daily_dir,
+                    "plus-button",
+                    cx,
+                )
+            {
+                req_frt27_padding_rows = Some(padding_rows);
+            }
+        });
+        req_frt27_padding_rows
     }
 
     pub(crate) fn select_created_file_in_tree_after_new_file(
@@ -4195,5 +4259,162 @@ mod tests {
         assert!(!super::req_frt31_preserve_selected_color_on_hover(
             false, false
         ));
+    }
+
+    #[test]
+    fn ftr_test122_req_frt27_plus_plan_captures_previous_edit_daily_dir_before_clear() {
+        let root = new_temp_root("ftr_test122");
+        let dispatcher = crate::file_update_handler::FileWorkflowEventDispatcher::new();
+        let workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::with_dispatcher(
+            dispatcher.clone(),
+        );
+        let created_path = workflow
+            .try_create_from_neutral(
+                "fileF",
+                root.as_path(),
+                std::time::Instant::now(),
+                chrono::Local::now(),
+            )
+            .expect("create from neutral")
+            .expect("created path");
+        let previous_path_before_clear = workflow.current_edit_path();
+
+        assert!(workflow.transition_edit_to_neutral());
+        let previous_path_after_clear = workflow.current_edit_path();
+
+        let before_clear_plan =
+            super::req_frt27_plus_padding_reapply_plan(true, previous_path_before_clear.as_deref());
+        let after_clear_plan =
+            super::req_frt27_plus_padding_reapply_plan(true, previous_path_after_clear.as_deref());
+
+        assert_eq!(
+            previous_path_before_clear.as_deref(),
+            Some(created_path.as_path())
+        );
+        assert_eq!(
+            before_clear_plan.daily_dir,
+            created_path.parent().map(PathBuf::from)
+        );
+        assert!(before_clear_plan.reapply_padding);
+        assert!(!before_clear_plan.restore_selection);
+
+        assert_eq!(previous_path_after_clear, None);
+        assert_eq!(after_clear_plan.daily_dir, None);
+        assert!(!after_clear_plan.reapply_padding);
+        assert!(!after_clear_plan.restore_selection);
+
+        dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn ftr_test123_req_frt27_plus_reapply_keeps_padding_after_create_without_dropping_to_zero() {
+        let plan = super::req_frt27_plus_padding_reapply_plan(
+            true,
+            Some(Path::new("/root/2026/04/21/fileF.txt")),
+        );
+        let padding_after_create =
+            super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        let mut items = vec![TreeItem::new("/root/recyclebin", "recyclebin")];
+
+        super::req_ftr18_append_scroll_padding_items(&mut items, padding_after_create);
+        let removed_before_plus = super::req_ftr18_strip_scroll_padding_items(&mut items);
+        if plan.reapply_padding {
+            let recomputed_padding =
+                super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+            super::req_ftr18_append_scroll_padding_items(&mut items, recomputed_padding);
+        }
+
+        let reapply_padding_rows = super::req_ftr18_count_scroll_padding_items(&items);
+        assert_eq!(padding_after_create, 7);
+        assert_eq!(removed_before_plus, padding_after_create);
+        assert_eq!(reapply_padding_rows, padding_after_create);
+        assert!(reapply_padding_rows > 0);
+    }
+
+    #[test]
+    fn ftr_test124_req_frt27_plus_reapply_keeps_req_ftr22_selection_release() {
+        let selected_file = "/root/2026/04/21/fileF.txt".to_string();
+        let mut selected_item_ids: HashSet<String> = HashSet::from([selected_file.clone()]);
+        let mut selection_anchor_item_id = Some(selected_file);
+        let release_state = super::req_ftr22_release_selection_state(
+            &mut selected_item_ids,
+            &mut selection_anchor_item_id,
+        );
+        let plan = super::req_frt27_plus_padding_reapply_plan(
+            true,
+            Some(Path::new("/root/2026/04/21/fileF.txt")),
+        );
+
+        assert_eq!(release_state.selected_count_after, 0);
+        assert_eq!(release_state.tree_selected_index_after, None);
+        assert!(!plan.restore_selection);
+        assert!(plan.reapply_padding);
+    }
+
+    #[test]
+    fn ftr_test125_req_frt27_plus_padding_rows_stay_excluded_and_non_negative() {
+        let mut items = vec![
+            TreeItem::new("/root/2026", "2026")
+                .expanded(true)
+                .children([TreeItem::new("/root/2026/04", "04")
+                    .expanded(true)
+                    .children([TreeItem::new("/root/2026/04/21", "21")])]),
+            TreeItem::new("/root/recyclebin", "recyclebin"),
+        ];
+        let reapply_padding =
+            super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        let clamped_padding =
+            super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 40, 3);
+        super::req_ftr18_append_scroll_padding_items(&mut items, reapply_padding);
+
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+
+        assert!(reapply_padding > 0);
+        assert_eq!(clamped_padding, 0);
+        assert!(
+            !visible_ids
+                .iter()
+                .any(|id| super::is_req_ftr18_scroll_padding_item_id(id.as_str()))
+        );
+    }
+
+    #[test]
+    fn ftr_test126_req_frt27_plus_plan_is_noop_without_previous_edit_daily_dir() {
+        let no_path_plan = super::req_frt27_plus_padding_reapply_plan(true, None);
+        assert_eq!(no_path_plan.daily_dir, None);
+        assert!(!no_path_plan.reapply_padding);
+        assert!(!no_path_plan.restore_selection);
+
+        let not_transitioned_plan = super::req_frt27_plus_padding_reapply_plan(
+            false,
+            Some(Path::new("/root/2026/04/21/fileF.txt")),
+        );
+        assert_eq!(
+            not_transitioned_plan.daily_dir,
+            Some(PathBuf::from("/root/2026/04/21"))
+        );
+        assert!(!not_transitioned_plan.reapply_padding);
+        assert!(!not_transitioned_plan.restore_selection);
+    }
+
+    #[test]
+    fn ftr_test127_req_frt27_watcher_refresh_reuses_retained_padding_target_after_plus() {
+        let current_edit_daily_dir = Path::new("/root/2026/04/22");
+        let retained_daily_dir = Path::new("/root/2026/04/21");
+
+        assert_eq!(
+            super::req_frt27_watcher_padding_daily_dir(None, Some(retained_daily_dir)),
+            Some(retained_daily_dir.to_path_buf())
+        );
+        assert_eq!(
+            super::req_frt27_watcher_padding_daily_dir(
+                Some(current_edit_daily_dir),
+                Some(retained_daily_dir),
+            ),
+            Some(current_edit_daily_dir.to_path_buf())
+        );
+        assert_eq!(super::req_frt27_watcher_padding_daily_dir(None, None), None);
     }
 }

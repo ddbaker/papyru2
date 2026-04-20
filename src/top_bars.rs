@@ -196,13 +196,17 @@ impl crate::app::Papyru2App {
             editor_was_focused, singleline_was_focused
         ));
 
+        let previous_path = self.file_workflow.current_edit_path();
         let transitioned_to_neutral = self.file_workflow.transition_edit_to_neutral();
         if !transitioned_to_neutral {
             crate::log::trace_debug("plus_button no-op (state is not EDIT)");
             return;
         }
 
-        let previous_path = self.file_workflow.current_edit_path();
+        let req_frt27_plus_plan = crate::file_tree::req_frt27_plus_padding_reapply_plan(
+            transitioned_to_neutral,
+            previous_path.as_deref(),
+        );
         crate::log::trace_debug(format!(
             "plus_button transition EDIT -> NEUTRAL previous_path={}",
             previous_path
@@ -220,6 +224,28 @@ impl crate::app::Papyru2App {
         ));
         if neutral_plan.release_file_tree_selection {
             self.apply_req_ftr22_neutral_selection_release("plus_button", cx);
+        }
+
+        crate::log::trace_debug(format!(
+            "file_tree req-frt27 plus_padding_reapply plan reapply_padding={} restore_selection={} daily_dir_present={}",
+            req_frt27_plus_plan.reapply_padding,
+            req_frt27_plus_plan.restore_selection,
+            req_frt27_plus_plan.daily_dir.is_some()
+        ));
+        debug_assert!(!req_frt27_plus_plan.restore_selection);
+        if req_frt27_plus_plan.reapply_padding {
+            if let Some(daily_dir) = req_frt27_plus_plan.daily_dir.as_deref() {
+                let padding_rows = self.apply_req_frt27_plus_padding_reapply(daily_dir, cx);
+                crate::log::trace_debug(format!(
+                    "file_tree req-frt27 plus_padding_reapply applied daily_dir={} padding_rows={:?}",
+                    daily_dir.display(),
+                    padding_rows
+                ));
+            }
+        } else {
+            crate::log::trace_debug(
+                "file_tree req-frt27 plus_padding_reapply skipped (daily_dir unavailable)",
+            );
         }
 
         // req-newf34: enforce deterministic reset order so final focus/cursor lands on singleline.
