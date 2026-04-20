@@ -269,11 +269,13 @@ impl FileTreeView {
     ) -> Option<(usize, usize, usize)> {
         let old_padding_rows = req_ftr18_count_scroll_padding_items(&self.root_items);
         let removed_padding_rows = req_ftr18_strip_scroll_padding_items(&mut self.root_items);
-        let Some((expanded_count, target_index, real_last_index)) = req_ftr18_expand_and_resolve_top_index(
-            &mut self.root_items,
-            self.tree_root_dir.as_path(),
-            daily_dir,
-        ) else {
+        let Some((expanded_count, target_index, real_last_index)) =
+            req_ftr18_expand_and_resolve_top_index(
+                &mut self.root_items,
+                self.tree_root_dir.as_path(),
+                daily_dir,
+            )
+        else {
             crate::log::trace_debug(format!(
                 "file_tree req-frt27 padding skipped reason={} daily_dir={} root_dir={} old_padding_rows={} removed_padding_rows={}",
                 reason,
@@ -1936,8 +1938,8 @@ impl crate::app::Papyru2App {
         self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
             if let Some(daily_dir) = current_edit_daily_dir.as_deref()
-                && let Some((_, _, padding_rows)) =
-                    file_tree.apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                && let Some((_, _, padding_rows)) = file_tree
+                    .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
                         daily_dir,
                         "watcher-refresh",
                         cx,
@@ -1973,8 +1975,8 @@ impl crate::app::Papyru2App {
         let restored_selection = self.file_tree.update(cx, |file_tree, cx| {
             file_tree.refresh_from_filesystem(cx);
             if let Some(daily_dir) = created_daily_dir.as_deref()
-                && let Some((_, _, padding_rows)) =
-                    file_tree.apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
+                && let Some((_, _, padding_rows)) = file_tree
+                    .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
                         daily_dir,
                         "new-file-create",
                         cx,
@@ -4080,7 +4082,8 @@ mod tests {
 
     #[test]
     fn ftr_test114_req_frt29_delete_two_rows_increases_padding_by_two() {
-        let before_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 10, 6);
+        let before_padding =
+            super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 10, 6);
         let after_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
         assert_eq!(before_padding, 6);
         assert_eq!(after_padding, 8);
@@ -4100,7 +4103,8 @@ mod tests {
     #[test]
     fn ftr_test116_req_frt27_refresh_recomputes_padding_after_create_without_dropping_to_zero() {
         let old_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 8, 6);
-        let recomputed_padding = super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
+        let recomputed_padding =
+            super::req_ftr26_required_scroll_padding_rows(Some(200.0), 20.0, 9, 6);
         let mut items = vec![TreeItem::new("/root/recyclebin", "recyclebin")];
 
         super::req_ftr18_append_scroll_padding_items(&mut items, old_padding);
@@ -4152,14 +4156,22 @@ mod tests {
 
     #[test]
     fn ftr_test118_req_frt31_selected_rows_preserve_selected_color_on_hover() {
-        assert!(super::req_frt31_preserve_selected_color_on_hover(false, true));
-        assert!(super::req_frt31_preserve_selected_color_on_hover(true, true));
+        assert!(super::req_frt31_preserve_selected_color_on_hover(
+            false, true
+        ));
+        assert!(super::req_frt31_preserve_selected_color_on_hover(
+            true, true
+        ));
     }
 
     #[test]
     fn ftr_test119_req_frt31_unselected_rows_keep_normal_hover_behavior() {
-        assert!(!super::req_frt31_preserve_selected_color_on_hover(false, false));
-        assert!(!super::req_frt31_preserve_selected_color_on_hover(true, false));
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(
+            false, false
+        ));
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(
+            true, false
+        ));
     }
 
     #[test]
@@ -4168,14 +4180,20 @@ mod tests {
             super::selected_row_highlight_color(false, true),
             Some(hsla(0.58, 0.65, 0.88, 1.0))
         );
-        assert!(super::req_frt31_preserve_selected_color_on_hover(false, true));
+        assert!(super::req_frt31_preserve_selected_color_on_hover(
+            false, true
+        ));
         assert!(!super::use_native_tree_selection_highlight(false, true));
     }
 
     #[test]
     fn ftr_test121_req_frt31_padding_rows_remain_unaffected_by_selected_hover_policy() {
         let padding_id = format!("{}:0", super::REQ_FTR18_SCROLL_PADDING_ID_PREFIX);
-        assert!(super::is_req_ftr18_scroll_padding_item_id(padding_id.as_str()));
-        assert!(!super::req_frt31_preserve_selected_color_on_hover(false, false));
+        assert!(super::is_req_ftr18_scroll_padding_item_id(
+            padding_id.as_str()
+        ));
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(
+            false, false
+        ));
     }
 }

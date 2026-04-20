@@ -1175,11 +1175,14 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let autosave_path = path.clone();
+        let editor_input_guard_active =
+            crate::app::req_assoc18_editor_input_guard_active(self.file_workflow.state());
         self.singleline.update(cx, |singleline, _| {
             singleline.set_current_editing_file_path(path.clone());
         });
-        self.editor.update(cx, |editor, _| {
+        self.editor.update(cx, |editor, cx| {
             editor.set_current_editing_file_path(path);
+            editor.set_req_assoc18_editor_input_guard_active(editor_input_guard_active, cx);
         });
         self.editor_autosave.on_edit_path_changed(autosave_path);
 

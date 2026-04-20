@@ -32,6 +32,7 @@ pub struct Papyru2Editor {
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
     ui_color_config: crate::app::UiColorConfig,
+    req_assoc18_editor_input_guard_active: bool,
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
@@ -230,6 +231,7 @@ impl Papyru2Editor {
             _subscriptions,
             font_size_logged_once: false,
             ui_color_config,
+            req_assoc18_editor_input_guard_active: true,
         }
     }
 
@@ -488,6 +490,22 @@ impl Papyru2Editor {
         self.current_editing_file_path = path;
     }
 
+    pub fn set_req_assoc18_editor_input_guard_active(
+        &mut self,
+        active: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.req_assoc18_editor_input_guard_active == active {
+            return;
+        }
+
+        self.req_assoc18_editor_input_guard_active = active;
+        crate::log::trace_debug(format!(
+            "assoc req-assoc18 editor_input_guard active={active}"
+        ));
+        cx.notify();
+    }
+
     pub fn current_editing_file_path(&self) -> Option<PathBuf> {
         self.current_editing_file_path.clone()
     }
@@ -498,6 +516,7 @@ impl Render for Papyru2Editor {
         let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
         let background_rgb_hex = self.ui_color_config.background_rgb_hex;
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
+        let req_assoc18_editor_input_guard_active = self.req_assoc18_editor_input_guard_active;
 
         if !self.font_size_logged_once {
             crate::log::trace_debug(format!(
@@ -519,9 +538,15 @@ impl Render for Papyru2Editor {
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::on_move_up_action))
+            .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                if req_assoc18_editor_input_guard_active {
+                    crate::log::trace_debug("assoc req-assoc18 editor_click_ignored state=NEUTRAL");
+                }
+            })
             .child(
                 crate::app::apply_req_editor_shared_text_size(
                     Input::new(&self.input_state)
+                        .disabled(self.req_assoc18_editor_input_guard_active)
                         .appearance(false)
                         .size_full()
                         .font_family(cx.theme().mono_font_family.clone())

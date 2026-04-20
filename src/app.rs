@@ -393,6 +393,41 @@ pub(crate) fn transition_editor_focus_gained(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReqAssoc18EditorFocusDecision {
+    IgnoreAndRestoreSinglelineFocus,
+    PreserveExistingFocusFlow,
+}
+
+impl ReqAssoc18EditorFocusDecision {
+    pub(crate) fn should_restore_singleline_focus(self) -> bool {
+        matches!(self, Self::IgnoreAndRestoreSinglelineFocus)
+    }
+
+    pub(crate) fn should_continue_editor_focus_flow(self) -> bool {
+        matches!(self, Self::PreserveExistingFocusFlow)
+    }
+}
+
+pub(crate) fn req_assoc18_editor_input_guard_active(
+    file_state: crate::file_update_handler::SinglelineFileState,
+) -> bool {
+    matches!(
+        file_state,
+        crate::file_update_handler::SinglelineFileState::Neutral
+    )
+}
+
+pub(crate) fn req_assoc18_editor_focus_decision(
+    file_state: crate::file_update_handler::SinglelineFileState,
+) -> ReqAssoc18EditorFocusDecision {
+    if req_assoc18_editor_input_guard_active(file_state) {
+        ReqAssoc18EditorFocusDecision::IgnoreAndRestoreSinglelineFocus
+    } else {
+        ReqAssoc18EditorFocusDecision::PreserveExistingFocusFlow
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FocusReassertTickTransition {
     pub run_focus_reassert: bool,
     pub next_focus_reassert_pending: bool,
@@ -1093,6 +1128,17 @@ impl Papyru2App {
                         if !transition.process_editor_focus {
                             return;
                         }
+                        let req_assoc18_decision =
+                            req_assoc18_editor_focus_decision(this.file_workflow.state());
+                        if !req_assoc18_decision.should_continue_editor_focus_flow() {
+                            debug_assert!(req_assoc18_decision.should_restore_singleline_focus());
+                            trace_debug(
+                                "assoc req-assoc18 editor_click_ignored state=NEUTRAL",
+                            );
+                            this.singleline
+                                .update(cx, |singleline, cx| singleline.focus(window, cx));
+                            return;
+                        }
                         this.ensure_new_file_flow("editor_focus", window, cx);
                     }
                     crate::editor::EditorEvent::UserInteraction => {
@@ -1175,6 +1221,12 @@ impl Papyru2App {
         });
         editor.update(cx, |editor, _| {
             editor.set_current_editing_file_path(None);
+        });
+        editor.update(cx, |editor, cx| {
+            editor.set_req_assoc18_editor_input_guard_active(
+                req_assoc18_editor_input_guard_active(file_workflow.state()),
+                cx,
+            );
         });
 
         let mut this = Self {
@@ -1298,6 +1350,103 @@ mod tests {
                 PlusButtonResetStep::FocusSingleline,
             ]
         );
+    }
+
+    #[test]
+    fn assoc_test44_req_assoc18_editor_focus_ignored_in_neutral() {
+        let decision = super::req_assoc18_editor_focus_decision(
+            crate::file_update_handler::SinglelineFileState::Neutral,
+        );
+
+        assert_eq!(
+            decision,
+            super::ReqAssoc18EditorFocusDecision::IgnoreAndRestoreSinglelineFocus
+        );
+        assert!(super::req_assoc18_editor_input_guard_active(
+            crate::file_update_handler::SinglelineFileState::Neutral
+        ));
+        assert!(decision.should_restore_singleline_focus());
+        assert!(!decision.should_continue_editor_focus_flow());
+    }
+
+    #[test]
+    fn assoc_test45_req_assoc18_ignored_editor_focus_keeps_workflow_neutral() {
+        let dispatcher = crate::file_update_handler::FileWorkflowEventDispatcher::new();
+        let workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::with_dispatcher(
+            dispatcher.clone(),
+        );
+        let decision = super::req_assoc18_editor_focus_decision(workflow.state());
+
+        assert_eq!(
+            decision,
+            super::ReqAssoc18EditorFocusDecision::IgnoreAndRestoreSinglelineFocus
+        );
+        assert!(!decision.should_continue_editor_focus_flow());
+        assert_eq!(
+            workflow.state(),
+            crate::file_update_handler::SinglelineFileState::Neutral
+        );
+        assert_eq!(workflow.current_edit_path(), None);
+
+        dispatcher.shutdown();
+    }
+
+    #[test]
+    fn assoc_test46_req_assoc18_neutral_editor_focus_restores_singleline_focus() {
+        let decision = super::req_assoc18_editor_focus_decision(
+            crate::file_update_handler::SinglelineFileState::Neutral,
+        );
+
+        assert!(
+            decision.should_restore_singleline_focus(),
+            "neutral editor focus must restore singleline focus instead of preserving editor focus"
+        );
+    }
+
+    #[test]
+    fn assoc_test47_req_assoc18_singleline_key_path_still_creates_from_neutral() {
+        let root = req_colr_test_temp_root("assoc_test47");
+        let dispatcher = crate::file_update_handler::FileWorkflowEventDispatcher::new();
+        let workflow = crate::file_update_handler::SinglelineCreateFileWorkflow::with_dispatcher(
+            dispatcher.clone(),
+        );
+
+        let created = workflow
+            .try_create_from_neutral(
+                "typed-title",
+                root.as_path(),
+                Instant::now(),
+                chrono::Local::now(),
+            )
+            .expect("singleline create path should succeed");
+
+        assert!(created.is_some());
+        assert_eq!(
+            workflow.state(),
+            crate::file_update_handler::SinglelineFileState::Edit
+        );
+        assert!(workflow.current_edit_path().is_some());
+
+        dispatcher.shutdown();
+        req_colr_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn assoc_test48_req_assoc18_non_neutral_editor_focus_flow_is_preserved() {
+        for state in [
+            crate::file_update_handler::SinglelineFileState::New,
+            crate::file_update_handler::SinglelineFileState::Edit,
+        ] {
+            let decision = super::req_assoc18_editor_focus_decision(state);
+
+            assert_eq!(
+                decision,
+                super::ReqAssoc18EditorFocusDecision::PreserveExistingFocusFlow
+            );
+            assert!(!super::req_assoc18_editor_input_guard_active(state));
+            assert!(decision.should_continue_editor_focus_flow());
+            assert!(!decision.should_restore_singleline_focus());
+        }
     }
 
     #[test]
