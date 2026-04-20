@@ -894,6 +894,10 @@ impl Render for FileTreeView {
                             tree_selected,
                             is_selected,
                         ))
+                        .confirmed(req_frt31_preserve_selected_color_on_hover(
+                            tree_selected,
+                            is_selected,
+                        ))
                         .w_full()
                         .py_0p5()
                         .px_2()
@@ -1460,6 +1464,10 @@ fn collect_visible_item_ids_including_padding(items: &[TreeItem], ids: &mut Vec<
 
 fn use_native_tree_selection_highlight(_tree_selected: bool, _is_selected: bool) -> bool {
     false
+}
+
+fn req_frt31_preserve_selected_color_on_hover(_tree_selected: bool, is_selected: bool) -> bool {
+    is_selected
 }
 
 fn selected_row_highlight_color(tree_selected: bool, is_selected: bool) -> Option<Hsla> {
@@ -4140,5 +4148,34 @@ mod tests {
             super::req_ftr18_count_scroll_padding_items(&items),
             delete_padding
         );
+    }
+
+    #[test]
+    fn ftr_test118_req_frt31_selected_rows_preserve_selected_color_on_hover() {
+        assert!(super::req_frt31_preserve_selected_color_on_hover(false, true));
+        assert!(super::req_frt31_preserve_selected_color_on_hover(true, true));
+    }
+
+    #[test]
+    fn ftr_test119_req_frt31_unselected_rows_keep_normal_hover_behavior() {
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(false, false));
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(true, false));
+    }
+
+    #[test]
+    fn ftr_test120_req_frt31_multi_selected_rows_keep_existing_selected_highlight_policy() {
+        assert_eq!(
+            super::selected_row_highlight_color(false, true),
+            Some(hsla(0.58, 0.65, 0.88, 1.0))
+        );
+        assert!(super::req_frt31_preserve_selected_color_on_hover(false, true));
+        assert!(!super::use_native_tree_selection_highlight(false, true));
+    }
+
+    #[test]
+    fn ftr_test121_req_frt31_padding_rows_remain_unaffected_by_selected_hover_policy() {
+        let padding_id = format!("{}:0", super::REQ_FTR18_SCROLL_PADDING_ID_PREFIX);
+        assert!(super::is_req_ftr18_scroll_padding_item_id(padding_id.as_str()));
+        assert!(!super::req_frt31_preserve_selected_color_on_hover(false, false));
     }
 }
