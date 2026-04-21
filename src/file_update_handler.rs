@@ -311,6 +311,20 @@ impl FileWorkflowEventDispatcher {
         Self { shared }
     }
 
+    #[cfg(test)]
+    fn with_processor(
+        mut process_event: impl FnMut(FileWorkflowEvent) -> io::Result<FileWorkflowEventResult>
+        + Send
+        + 'static,
+    ) -> Self {
+        let shared = Arc::new((Mutex::new(QueueState::default()), Condvar::new()));
+        let worker_shared = shared.clone();
+
+        thread::spawn(move || worker_loop_with_processor(worker_shared, &mut process_event));
+
+        Self { shared }
+    }
+
     pub fn dispatch_blocking(
         &self,
         event: FileWorkflowEvent,
@@ -344,6 +358,13 @@ impl FileWorkflowEventDispatcher {
 }
 
 fn worker_loop(shared: Arc<(Mutex<QueueState>, Condvar)>) {
+    worker_loop_with_processor(shared, process_event);
+}
+
+fn worker_loop_with_processor<P>(shared: Arc<(Mutex<QueueState>, Condvar)>, mut process_event: P)
+where
+    P: FnMut(FileWorkflowEvent) -> io::Result<FileWorkflowEventResult>,
+{
     loop {
         let envelope = {
             let (lock, wakeup) = &*shared;
@@ -639,28 +660,51 @@ impl SinglelineCreateFileWorkflow {
     }
 
     pub fn try_autosave_in_edit(&self, payload: EditorAutoSavePayload) -> io::Result<bool> {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.state != SinglelineFileState::Edit {
-            return Ok(false);
-        }
-        let Some(current_path) = state.current_edit_path.as_ref() else {
-            return Ok(false);
+        let expected_path = {
+            let state = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.state != SinglelineFileState::Edit {
+                return Ok(false);
+            }
+            let Some(current_path) = state.current_edit_path.clone() else {
+                return Ok(false);
+            };
+            if current_path != payload.current_path {
+                return Ok(false);
+            }
+            current_path
         };
-        if *current_path != payload.current_path {
-            return Ok(false);
-        }
 
         let result = self
             .dispatcher
-            .dispatch_blocking(FileWorkflowEvent::AutoSave(AutoSaveFileRequest {
-                payload: payload.clone(),
-            }))?;
+            .dispatch_blocking(FileWorkflowEvent::AutoSave(AutoSaveFileRequest { payload }))?;
 
         match result {
             FileWorkflowEventResult::AutoSaved { path } => {
+                let mut state = self
+                    .inner
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if state.state != SinglelineFileState::Edit
+                    || state.current_edit_path.as_ref() != Some(&expected_path)
+                {
+                    let current = state
+                        .current_edit_path
+                        .as_ref()
+                        .map(|current| current.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string());
+                    crate::log::trace_debug(format!(
+                        "autosave stale result ignored expected={} current_state={:?} current_path={} saved_path={}",
+                        expected_path.display(),
+                        state.state,
+                        current,
+                        path.display()
+                    ));
+                    return Ok(true);
+                }
+
                 if state.current_edit_path.as_ref() != Some(&path) {
                     let previous = state
                         .current_edit_path
@@ -2560,6 +2604,142 @@ mod tests {
             assert_eq!(content_a, "A-old");
         }
 
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_lag2_test1_autosave_does_not_block_workflow_snapshot_while_worker_pending() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = new_temp_root("aus_lag2_test1");
+        let path_a = root.join("fileA.txt");
+        let (worker_started_tx, worker_started_rx) = mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = mpsc::channel();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| {
+            let _ = worker_started_tx.send(());
+            release_worker_rx
+                .recv()
+                .expect("release delayed autosave worker");
+            match event {
+                FileWorkflowEvent::AutoSave(request) => Ok(FileWorkflowEventResult::AutoSaved {
+                    path: request.payload.current_path,
+                }),
+                _ => panic!("expected autosave event"),
+            }
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher);
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let payload = EditorAutoSavePayload {
+            user_document_dir: root.clone(),
+            current_path: path_a.clone(),
+            editor_text: "A-new".to_string(),
+        };
+        let workflow_for_autosave = workflow.clone();
+        let autosave_thread = thread::spawn(move || {
+            workflow_for_autosave
+                .try_autosave_in_edit(payload)
+                .expect("autosave call")
+        });
+        worker_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("autosave worker started");
+
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let workflow_for_snapshot = workflow.clone();
+        let snapshot_thread = thread::spawn(move || {
+            let snapshot = workflow_for_snapshot.snapshot();
+            snapshot_tx.send(snapshot).expect("send snapshot");
+        });
+
+        let snapshot = match snapshot_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = release_worker_tx.send(());
+                let _ = autosave_thread.join();
+                let _ = snapshot_thread.join();
+                workflow.dispatcher.shutdown();
+                remove_temp_root(root.as_path());
+                panic!("workflow snapshot blocked behind pending autosave: {error}");
+            }
+        };
+        assert_eq!(snapshot.state, SinglelineFileState::Edit);
+        assert_eq!(snapshot.current_edit_path, Some(path_a));
+
+        release_worker_tx
+            .send(())
+            .expect("release delayed autosave worker");
+        assert!(autosave_thread.join().expect("join autosave thread"));
+        snapshot_thread.join().expect("join snapshot thread");
+        workflow.dispatcher.shutdown();
+        remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn aus_lag2_test2_stale_autosave_result_does_not_overwrite_current_path() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = new_temp_root("aus_lag2_test2");
+        let path_a = root.join("fileA.txt");
+        let path_b = root.join("fileB.txt");
+        let (worker_started_tx, worker_started_rx) = mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = mpsc::channel();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| {
+            let _ = worker_started_tx.send(());
+            release_worker_rx
+                .recv()
+                .expect("release delayed autosave worker");
+            match event {
+                FileWorkflowEvent::AutoSave(request) => Ok(FileWorkflowEventResult::AutoSaved {
+                    path: request.payload.current_path,
+                }),
+                _ => panic!("expected autosave event"),
+            }
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher);
+        workflow.set_edit_from_open_file(path_a.clone());
+
+        let payload = EditorAutoSavePayload {
+            user_document_dir: root.clone(),
+            current_path: path_a,
+            editor_text: "A-new".to_string(),
+        };
+        let workflow_for_autosave = workflow.clone();
+        let autosave_thread = thread::spawn(move || {
+            workflow_for_autosave
+                .try_autosave_in_edit(payload)
+                .expect("autosave call")
+        });
+        worker_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("autosave worker started");
+
+        let (switch_tx, switch_rx) = mpsc::channel();
+        let workflow_for_switch = workflow.clone();
+        let path_b_for_switch = path_b.clone();
+        let switch_thread = thread::spawn(move || {
+            workflow_for_switch.set_edit_from_open_file(path_b_for_switch);
+            switch_tx.send(()).expect("send switch complete");
+        });
+        if let Err(error) = switch_rx.recv_timeout(Duration::from_millis(200)) {
+            let _ = release_worker_tx.send(());
+            let _ = autosave_thread.join();
+            let _ = switch_thread.join();
+            workflow.dispatcher.shutdown();
+            remove_temp_root(root.as_path());
+            panic!("workflow path switch blocked behind pending autosave: {error}");
+        }
+
+        assert_eq!(workflow.current_edit_path(), Some(path_b.clone()));
+        release_worker_tx
+            .send(())
+            .expect("release delayed autosave worker");
+        assert!(autosave_thread.join().expect("join autosave thread"));
+        switch_thread.join().expect("join switch thread");
+        assert_eq!(workflow.current_edit_path(), Some(path_b));
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
     }
