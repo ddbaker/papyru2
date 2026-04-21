@@ -1959,6 +1959,7 @@ impl crate::app::Papyru2App {
     }
 
     pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
+        let refresh_total_started_at = std::time::Instant::now();
         let current_edit_path = self.file_workflow.current_edit_path();
         let current_edit_daily_dir = current_edit_path
             .as_deref()
@@ -1972,8 +1973,12 @@ impl crate::app::Papyru2App {
         );
         let mut restored_selection = false;
         let mut req_frt27_padding_rows = None;
+        let mut filesystem_refresh_elapsed_ms = None;
         self.file_tree.update(cx, |file_tree, cx| {
+            let filesystem_refresh_started_at = std::time::Instant::now();
             file_tree.refresh_from_filesystem(cx);
+            filesystem_refresh_elapsed_ms =
+                Some(filesystem_refresh_started_at.elapsed().as_millis());
             if let Some(daily_dir) = req_frt27_daily_dir.as_deref()
                 && let Some((_, _, padding_rows)) = file_tree
                     .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
@@ -1998,13 +2003,15 @@ impl crate::app::Papyru2App {
             }
         });
         crate::log::trace_debug(format!(
-            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?}",
+            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} filesystem_refresh_elapsed_ms={:?} total_elapsed_ms={}",
             current_edit_path.is_some(),
             restored_selection,
             current_edit_daily_dir.is_some(),
             retained_req_frt27_daily_dir.is_some(),
             req_frt27_daily_dir.is_some(),
-            req_frt27_padding_rows
+            req_frt27_padding_rows,
+            filesystem_refresh_elapsed_ms,
+            refresh_total_started_at.elapsed().as_millis()
         ));
     }
 

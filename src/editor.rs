@@ -119,12 +119,14 @@ impl Papyru2Editor {
                     let state = state.read(cx);
                     let cursor = state.cursor_position();
                     let value = state.value().to_string();
-                    crate::log::trace_debug(format!(
-                        "editor InputEvent::Change cursor=({}, {}) value='{}'",
-                        cursor.line,
-                        cursor.character,
-                        crate::app::compact_text(&value)
-                    ));
+                    crate::log::trace_debug_lazy(|| {
+                        format!(
+                            "editor InputEvent::Change cursor=({}, {}) value_len={}",
+                            cursor.line,
+                            cursor.character,
+                            value.len()
+                        )
+                    });
 
                     if this.pending_programmatic_change_events > 0 {
                         this.pending_programmatic_change_events -= 1;
@@ -250,12 +252,13 @@ impl Papyru2Editor {
         ));
 
         if key == "backspace" || key == "delete" {
-            let snapshot = self.snapshot(cx);
+            let state = self.input_state.read(cx);
+            let cursor = state.cursor_position();
             crate::log::trace_debug(format!(
-                "editor backspace candidate cursor=({}, {}) value='{}'",
-                snapshot.cursor_line,
-                snapshot.cursor_char,
-                crate::app::compact_text(&snapshot.value)
+                "editor backspace candidate cursor=({}, {}) value_len={}",
+                cursor.line,
+                cursor.character,
+                state.value().len()
             ));
         }
 
@@ -268,15 +271,16 @@ impl Papyru2Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.snapshot(cx);
+        let state = self.input_state.read(cx);
+        let cursor = state.cursor_position();
         crate::log::trace_debug(format!(
-            "editor action MoveUp captured cursor=({}, {}) value='{}'",
-            snapshot.cursor_line,
-            snapshot.cursor_char,
-            crate::app::compact_text(&snapshot.value)
+            "editor action MoveUp captured cursor=({}, {}) value_len={}",
+            cursor.line,
+            cursor.character,
+            state.value().len()
         ));
 
-        if snapshot.cursor_line == 0 {
+        if cursor.line == 0 {
             crate::log::trace_debug("editor action MoveUp emit PressUpAtFirstLine");
             cx.emit(EditorEvent::PressUpAtFirstLine);
             cx.stop_propagation();

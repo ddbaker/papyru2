@@ -126,10 +126,32 @@ pub(crate) fn should_schedule_refresh(root_dir: &Path, event: &Event) -> bool {
         return false;
     }
 
-    event
-        .paths
-        .iter()
-        .any(|path| path_is_under_root(root_dir, path.as_path()))
+    let mut has_under_root_path = false;
+    for path in &event.paths {
+        if !path_is_under_root(root_dir, path.as_path()) {
+            continue;
+        }
+
+        has_under_root_path = true;
+        if !is_autosave_temp_artifact_path(path.as_path()) {
+            return true;
+        }
+    }
+
+    if has_under_root_path {
+        crate::log::trace_debug(format!(
+            "file_tree watcher ignored autosave temp-only event kind={:?} path_count={}",
+            event.kind,
+            event.paths.len()
+        ));
+    }
+    false
+}
+
+fn is_autosave_temp_artifact_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".tmp"))
 }
 
 fn event_kind_requires_refresh(kind: &EventKind) -> bool {
@@ -240,6 +262,40 @@ mod tests {
 
     #[test]
     fn ftr_test34_req_qsrv4_follow_watcher_filter_accepts_metadata_write_time_modify_event() {
+        let root = PathBuf::from("C:/tmp/user_document");
+        let child = root.join("2026/04/03/fileA.txt");
+        let metadata_modify = event(
+            EventKind::Modify(ModifyKind::Metadata(notify::event::MetadataKind::WriteTime)),
+            vec![child],
+        );
+
+        assert!(should_schedule_refresh(root.as_path(), &metadata_modify));
+    }
+
+    #[test]
+    fn aus_lag_test2_autosave_temp_only_event_does_not_schedule_refresh() {
+        let root = PathBuf::from("C:/tmp/user_document");
+        let temp_file = root.join("2026/04/21/fileA.txt.tmp");
+        let temp_create = event(EventKind::Create(CreateKind::File), vec![temp_file]);
+
+        assert!(!should_schedule_refresh(root.as_path(), &temp_create));
+    }
+
+    #[test]
+    fn aus_lag_test3_mixed_temp_and_real_event_schedules_refresh() {
+        let root = PathBuf::from("C:/tmp/user_document");
+        let temp_file = root.join("2026/04/21/fileA.txt.tmp");
+        let real_file = root.join("2026/04/21/fileA.txt");
+        let mixed_modify = event(
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            vec![temp_file, real_file],
+        );
+
+        assert!(should_schedule_refresh(root.as_path(), &mixed_modify));
+    }
+
+    #[test]
+    fn aus_lag_test4_metadata_write_time_modify_still_schedules_refresh() {
         let root = PathBuf::from("C:/tmp/user_document");
         let child = root.join("2026/04/03/fileA.txt");
         let metadata_modify = event(

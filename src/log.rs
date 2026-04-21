@@ -104,6 +104,14 @@ pub(crate) fn trace_debug(message: impl AsRef<str>) {
     }
 }
 
+pub(crate) fn trace_debug_lazy(message: impl FnOnce() -> String) {
+    if !trace_debug_is_enabled() {
+        return;
+    }
+
+    trace_debug(message());
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReqLogConfigFile {
     #[serde(default)]
@@ -337,5 +345,20 @@ mod tests {
         );
 
         log_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn log_test10_req_aus_lag_lazy_trace_skips_closure_when_disabled() {
+        let previous = trace_debug_is_enabled();
+        configure_trace_debug_enabled(false);
+
+        let evaluated = std::sync::atomic::AtomicUsize::new(0);
+        trace_debug_lazy(|| {
+            evaluated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            "should not be evaluated".to_string()
+        });
+
+        assert_eq!(evaluated.load(std::sync::atomic::Ordering::SeqCst), 0);
+        configure_trace_debug_enabled(previous);
     }
 }
