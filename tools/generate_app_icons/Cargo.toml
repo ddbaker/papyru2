@@ -1,0 +1,9 @@
+[package]
+name = "generate_app_icons"
+version = "0.1.0"
+publish = false
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+resvg = "=0.45.1"

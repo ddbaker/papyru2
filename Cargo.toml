@@ -50,6 +50,3 @@ zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
-
-[target.'cfg(windows)'.build-dependencies]
-winres = "0.1"

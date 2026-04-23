@@ -117,6 +117,22 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Generate application icon assets
+        run: cargo run --release --manifest-path tools/generate_app_icons/Cargo.toml
+
+      - name: Verify generated icon assets are committed
+        shell: pwsh
+        run: |
+          $changes = git status --porcelain -- assets/icons
+
+          if ($changes) {
+            Write-Output "::error title=Generated icon assets are stale::Icon assets are not updated. Run 'cargo run --release --manifest-path tools/generate_app_icons/Cargo.toml' locally, then commit the regenerated files under assets/icons."
+            Write-Output ""
+            Write-Output "Changed generated icon files:"
+            Write-Output $changes
+            exit 1
+          }
+
       - name: Build release binaries
         run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 
