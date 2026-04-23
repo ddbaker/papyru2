@@ -182,7 +182,7 @@ jobs:
         run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: papyru2-${{ matrix.platform }}-portable-zip
           path: dist/*.zip
@@ -197,7 +197,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Download workflow artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist-artifacts
 
