@@ -133,6 +133,48 @@ jobs:
             exit 1
           }
 
+      - name: Add Windows resource compiler to PATH
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            Write-Error "vswhere.exe was not found at $vswhere"
+            exit 1
+          }
+
+          $vsInstallPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstallPath) {
+            Write-Error "Visual Studio installation path could not be resolved."
+            exit 1
+          }
+
+          $searchRoots = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
+            $vsInstallPath
+          ) | Where-Object { Test-Path $_ }
+
+          $rcPath = $null
+          foreach ($root in $searchRoots) {
+            $candidate = Get-ChildItem -Path $root -Filter rc.exe -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -match '[\\/]x64[\\/]rc\.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($candidate) {
+              $rcPath = $candidate.FullName
+              break
+            }
+          }
+
+          if (-not $rcPath) {
+            Write-Error "rc.exe was not found under the Windows SDK or Visual Studio installation."
+            exit 1
+          }
+
+          $rcDir = Split-Path -Path $rcPath -Parent
+          Add-Content -Path $env:GITHUB_PATH -Value $rcDir
+          Write-Output "Using rc.exe from $rcDir"
+
       - name: Build release binaries
         run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 
