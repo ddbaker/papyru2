@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
-    input::{Input, InputState},
+    input::{Backspace, Delete, Input, InputState, Position},
 };
 
 use gpui_component::input::InputEvent;
@@ -47,9 +47,9 @@ pub(crate) fn read_editor_text_from_disk(path: &Path) -> std::io::Result<String>
 
 fn should_emit_backspace_at_line_head_on_change(
     previous_value: &str,
-    previous_cursor: &gpui_component::input::Position,
+    previous_cursor: &Position,
     value: &str,
-    cursor: &gpui_component::input::Position,
+    cursor: &Position,
 ) -> bool {
     let is_noop_change = value == previous_value;
     let at_editor_origin = cursor.line == 0 && cursor.character == 0;
@@ -75,6 +75,180 @@ fn should_emit_backspace_at_line_head_on_change(
         && previous_cursor.character == 0;
 
     req_assoc12_candidate || req_assoc14_candidate || req_assoc17_blank_multiline_noop
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlainDeleteDirection {
+    Backward,
+    Forward,
+}
+
+fn byte_index_from_position(value: &str, position: &Position) -> usize {
+    let target_line = position.line as usize;
+    let target_character = position.character as usize;
+    let mut line = 0usize;
+    let mut character = 0usize;
+
+    for (byte_index, ch) in value.char_indices() {
+        if line == target_line && character >= target_character {
+            return byte_index;
+        }
+
+        if ch == '\n' {
+            if line == target_line {
+                return byte_index;
+            }
+            line += 1;
+            character = 0;
+        } else {
+            character += 1;
+        }
+    }
+
+    value.len()
+}
+
+fn position_from_byte_index(value: &str, byte_index: usize) -> Position {
+    let mut line = 0u32;
+    let mut character = 0u32;
+
+    for (current_byte_index, ch) in value.char_indices() {
+        if current_byte_index >= byte_index {
+            break;
+        }
+
+        if ch == '\n' {
+            line += 1;
+            character = 0;
+        } else {
+            character += 1;
+        }
+    }
+
+    Position { line, character }
+}
+
+fn byte_index_from_utf16_offset(value: &str, target_utf16_offset: usize) -> usize {
+    let mut utf16_offset = 0usize;
+
+    for (byte_index, ch) in value.char_indices() {
+        if utf16_offset == target_utf16_offset {
+            return byte_index;
+        }
+
+        let next_utf16_offset = utf16_offset + ch.len_utf16();
+        if next_utf16_offset > target_utf16_offset {
+            return byte_index;
+        }
+        if next_utf16_offset == target_utf16_offset {
+            return byte_index + ch.len_utf8();
+        }
+
+        utf16_offset = next_utf16_offset;
+    }
+
+    value.len()
+}
+
+fn apply_delete_byte_range_to_text(
+    value: &str,
+    byte_range: std::ops::Range<usize>,
+) -> Option<(String, Position)> {
+    let start = byte_range.start.min(byte_range.end).min(value.len());
+    let end = byte_range.start.max(byte_range.end).min(value.len());
+
+    if start == end || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
+        return None;
+    }
+
+    let mut new_value = String::with_capacity(value.len() - (end - start));
+    new_value.push_str(&value[..start]);
+    new_value.push_str(&value[end..]);
+    let new_cursor = position_from_byte_index(value, start);
+
+    Some((new_value, new_cursor))
+}
+
+fn apply_delete_utf16_range_to_text(
+    value: &str,
+    utf16_range: std::ops::Range<usize>,
+) -> Option<(String, Position)> {
+    let byte_range = byte_index_from_utf16_offset(value, utf16_range.start)
+        ..byte_index_from_utf16_offset(value, utf16_range.end);
+    apply_delete_byte_range_to_text(value, byte_range)
+}
+
+fn previous_delete_range(value: &str, cursor_byte_index: usize) -> std::ops::Range<usize> {
+    let Some((previous_start, previous_char)) = value[..cursor_byte_index].char_indices().last()
+    else {
+        return 0..0;
+    };
+
+    if previous_char == '\n' {
+        if let Some((cr_start, '\r')) = value[..previous_start].char_indices().last() {
+            return cr_start..cursor_byte_index;
+        }
+    }
+
+    if previous_char.is_whitespace() {
+        let line_start = value[..previous_start]
+            .rfind('\n')
+            .map_or(0, |index| index + '\n'.len_utf8());
+        let line_end = value[cursor_byte_index..]
+            .find('\n')
+            .map_or(value.len(), |index| cursor_byte_index + index);
+        let whitespace_is_at_visual_line_tail = value[previous_start..line_end]
+            .chars()
+            .all(|ch| ch != '\n' && ch.is_whitespace());
+
+        if whitespace_is_at_visual_line_tail {
+            let previous_visible_char = value[line_start..previous_start]
+                .char_indices()
+                .rev()
+                .find(|(_, ch)| !ch.is_whitespace());
+
+            if let Some((visible_start, _)) = previous_visible_char {
+                return (line_start + visible_start)..cursor_byte_index;
+            }
+        }
+    }
+
+    previous_start..cursor_byte_index
+}
+
+fn next_delete_boundary(value: &str, cursor_byte_index: usize) -> usize {
+    let Some(first_char) = value[cursor_byte_index..].chars().next() else {
+        return cursor_byte_index;
+    };
+
+    let next = cursor_byte_index + first_char.len_utf8();
+    if first_char == '\r' && value[next..].starts_with('\n') {
+        return next + '\n'.len_utf8();
+    }
+
+    next
+}
+
+fn apply_plain_delete_to_text(
+    value: &str,
+    cursor: &Position,
+    direction: PlainDeleteDirection,
+) -> Option<(String, Position)> {
+    let cursor_byte_index = byte_index_from_position(value, cursor);
+    let range = match direction {
+        PlainDeleteDirection::Backward if cursor_byte_index == 0 => return None,
+        PlainDeleteDirection::Backward => previous_delete_range(value, cursor_byte_index),
+        PlainDeleteDirection::Forward if cursor_byte_index >= value.len() => return None,
+        PlainDeleteDirection::Forward => {
+            cursor_byte_index..next_delete_boundary(value, cursor_byte_index)
+        }
+    };
+
+    if range.is_empty() {
+        return None;
+    }
+
+    apply_delete_byte_range_to_text(value, range)
 }
 
 const RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE: u32 = 9;
@@ -237,7 +411,7 @@ impl Papyru2Editor {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !event.is_held {
             cx.emit(EditorEvent::UserInteraction);
         }
@@ -251,18 +425,94 @@ impl Papyru2Editor {
             event.keystroke.key_char.as_deref().unwrap_or("<none>")
         ));
 
-        if key == "backspace" || key == "delete" {
-            let state = self.input_state.read(cx);
-            let cursor = state.cursor_position();
-            crate::log::trace_debug(format!(
-                "editor backspace candidate cursor=({}, {}) value_len={}",
-                cursor.line,
-                cursor.character,
-                state.value().len()
-            ));
+        let plain_delete_direction = if !event.keystroke.modifiers.modified() {
+            match key.as_str() {
+                "backspace" => Some(PlainDeleteDirection::Backward),
+                "delete" | "forwarddelete" | "del" => Some(PlainDeleteDirection::Forward),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        if let Some(direction) = plain_delete_direction {
+            self.handle_plain_delete_action(key.as_str(), direction, window, cx);
+            return;
         }
 
         cx.propagate();
+    }
+
+    fn handle_plain_delete_action(
+        &mut self,
+        key: &str,
+        direction: PlainDeleteDirection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (cursor, value, selected_range_utf16) = self.input_state.update(cx, |state, cx| {
+            let selection = state
+                .selected_text_range(false, window, cx)
+                .map(|selection| selection.range)
+                .filter(|range| !range.is_empty());
+            (
+                state.cursor_position(),
+                state.value().to_string(),
+                selection,
+            )
+        });
+
+        crate::log::trace_debug(format!(
+            "editor action {key} captured cursor=({}, {}) value_len={} selection_utf16={:?}",
+            cursor.line,
+            cursor.character,
+            value.len(),
+            selected_range_utf16
+        ));
+
+        let selection_deleted = selected_range_utf16.is_some();
+        let replacement = if let Some(selected_range_utf16) = selected_range_utf16 {
+            apply_delete_utf16_range_to_text(&value, selected_range_utf16)
+        } else {
+            apply_plain_delete_to_text(&value, &cursor, direction)
+        };
+
+        if let Some((new_value, new_cursor)) = replacement {
+            crate::log::trace_debug(format!(
+                "editor handled action {key} char-safe cursor=({}, {}) new_cursor=({}, {}) old_len={} new_len={} selection_deleted={}",
+                cursor.line,
+                cursor.character,
+                new_cursor.line,
+                new_cursor.character,
+                value.len(),
+                new_value.len(),
+                selection_deleted
+            ));
+            self.input_state.update(cx, |state, cx| {
+                state.set_value(new_value, window, cx);
+                state.set_cursor_position(new_cursor, window, cx);
+            });
+        } else if direction == PlainDeleteDirection::Backward
+            && should_emit_backspace_at_line_head_on_change(
+                &self.last_value,
+                &self.last_cursor,
+                &value,
+                &cursor,
+            )
+        {
+            crate::log::trace_debug("editor handled action backspace no-op at origin char-safe");
+            cx.emit(EditorEvent::BackspaceAtLineHead);
+        }
+
+        cx.stop_propagation();
+    }
+
+    fn on_backspace_action(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        self.handle_plain_delete_action("Backspace", PlainDeleteDirection::Backward, window, cx);
+    }
+
+    fn on_delete_action(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        self.handle_plain_delete_action("Delete", PlainDeleteDirection::Forward, window, cx);
     }
 
     fn on_move_up_action(
@@ -541,6 +791,8 @@ impl Render for Papyru2Editor {
             .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
+            .capture_action(cx.listener(Self::on_backspace_action))
+            .capture_action(cx.listener(Self::on_delete_action))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 if req_assoc18_editor_input_guard_active {
@@ -637,6 +889,142 @@ mod tests {
         assert_eq!(loaded, expected);
 
         remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn editor_delete_test1_backspace_after_box_deletes_whole_utf8_character() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+
+        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+            "- □",
+            &cursor,
+            super::PlainDeleteDirection::Backward,
+        )
+        .expect("delete box character");
+
+        assert_eq!(new_value, "- ");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor_delete_test2_backspace_after_surrogate_pair_deletes_whole_character() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 2,
+        };
+
+        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+            "a🙂",
+            &cursor,
+            super::PlainDeleteDirection::Backward,
+        )
+        .expect("delete emoji character");
+
+        assert_eq!(new_value, "a");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 1);
+    }
+
+    #[test]
+    fn editor_delete_test3_backspace_after_box_with_trailing_space_deletes_visible_character() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 4,
+        };
+
+        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+            "- □ ",
+            &cursor,
+            super::PlainDeleteDirection::Backward,
+        )
+        .expect("delete box character and trailing space");
+
+        assert_eq!(new_value, "- ");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor_delete_test4_backspace_after_ascii_with_trailing_space_deletes_visible_character() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 4,
+        };
+
+        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+            "- a ",
+            &cursor,
+            super::PlainDeleteDirection::Backward,
+        )
+        .expect("delete visible ascii character with trailing space");
+
+        assert_eq!(new_value, "- ");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor_delete_test5_space_inside_line_deletes_only_space() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 4,
+        };
+
+        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+            "- a b",
+            &cursor,
+            super::PlainDeleteDirection::Backward,
+        )
+        .expect("delete space inside line");
+
+        assert_eq!(new_value, "- ab");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 3);
+    }
+
+    #[test]
+    fn editor_delete_test5_forward_delete_removes_whole_utf8_character() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 2,
+        };
+
+        let (new_value, new_cursor) =
+            super::apply_plain_delete_to_text("- □", &cursor, super::PlainDeleteDirection::Forward)
+                .expect("forward delete box character");
+
+        assert_eq!(new_value, "- ");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor_delete_test6_selection_deletes_whole_utf8_range() {
+        let (new_value, new_cursor) = super::apply_delete_utf16_range_to_text("- □ text", 2..3)
+            .expect("delete selected box character");
+
+        assert_eq!(new_value, "-  text");
+        assert_eq!(new_cursor.line, 0);
+        assert_eq!(new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor_delete_test7_selection_deletes_multiple_lines() {
+        let value = "alpha\n- □\nbeta";
+        let selection_start = "alpha\n".encode_utf16().count();
+        let selection_end = "alpha\n- □\n".encode_utf16().count();
+
+        let (new_value, new_cursor) =
+            super::apply_delete_utf16_range_to_text(value, selection_start..selection_end)
+                .expect("delete selected multiline text");
+
+        assert_eq!(new_value, "alpha\nbeta");
+        assert_eq!(new_cursor.line, 1);
+        assert_eq!(new_cursor.character, 0);
     }
 
     #[test]
