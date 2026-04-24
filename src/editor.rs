@@ -23,11 +23,49 @@ pub struct EditorSnapshot {
     pub cursor_char: u32,
 }
 
+#[derive(Clone, Debug)]
+struct EditorCustomHistoryEntry {
+    before_value: String,
+    before_cursor: gpui_component::input::Position,
+    after_value: String,
+    after_cursor: gpui_component::input::Position,
+}
+
+fn pop_matching_custom_undo_entry(
+    history: &mut Vec<EditorCustomHistoryEntry>,
+    current_value: &str,
+) -> Option<EditorCustomHistoryEntry> {
+    if history
+        .last()
+        .is_some_and(|entry| entry.after_value == current_value)
+    {
+        history.pop()
+    } else {
+        None
+    }
+}
+
+fn pop_matching_custom_redo_entry(
+    history: &mut Vec<EditorCustomHistoryEntry>,
+    current_value: &str,
+) -> Option<EditorCustomHistoryEntry> {
+    if history
+        .last()
+        .is_some_and(|entry| entry.before_value == current_value)
+    {
+        history.pop()
+    } else {
+        None
+    }
+}
+
 pub struct Papyru2Editor {
     input_state: Entity<InputState>,
     last_value: String,
     last_cursor: gpui_component::input::Position,
     pending_programmatic_change_events: usize,
+    custom_undo_stack: Vec<EditorCustomHistoryEntry>,
+    custom_redo_stack: Vec<EditorCustomHistoryEntry>,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
@@ -403,6 +441,8 @@ impl Papyru2Editor {
             last_value,
             last_cursor,
             pending_programmatic_change_events: 0,
+            custom_undo_stack: Vec::new(),
+            custom_redo_stack: Vec::new(),
             current_editing_file_path: None,
             _subscriptions,
             font_size_logged_once: false,
@@ -488,6 +528,17 @@ impl Papyru2Editor {
                 new_value.len(),
                 selection_deleted
             ));
+            self.custom_undo_stack.push(EditorCustomHistoryEntry {
+                before_value: value,
+                before_cursor: cursor,
+                after_value: new_value.clone(),
+                after_cursor: new_cursor,
+            });
+            self.custom_redo_stack.clear();
+            crate::log::trace_debug(format!(
+                "editor custom delete history pushed undo_depth={} redo_depth=0",
+                self.custom_undo_stack.len()
+            ));
             self.input_state.update(cx, |state, cx| {
                 state.set_value(new_value, window, cx);
                 state.set_cursor_position(new_cursor, window, cx);
@@ -513,6 +564,89 @@ impl Papyru2Editor {
 
     fn on_delete_action(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         self.handle_plain_delete_action("Delete", PlainDeleteDirection::Forward, window, cx);
+    }
+
+    fn on_undo_action(
+        &mut self,
+        _: &gpui_component::input::Undo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_value = self.input_state.read(cx).value().to_string();
+        let Some(entry) =
+            pop_matching_custom_undo_entry(&mut self.custom_undo_stack, &current_value)
+        else {
+            crate::log::trace_debug(format!(
+                "editor action Undo propagate custom_undo_depth={} current_len={}",
+                self.custom_undo_stack.len(),
+                current_value.len()
+            ));
+            cx.propagate();
+            return;
+        };
+
+        crate::log::trace_debug(format!(
+            "editor action Undo restored custom delete before_len={} after_len={} undo_depth={} redo_depth={}",
+            entry.before_value.len(),
+            entry.after_value.len(),
+            self.custom_undo_stack.len(),
+            self.custom_redo_stack.len() + 1
+        ));
+        self.input_state.update(cx, |state, cx| {
+            state.set_value(entry.before_value.clone(), window, cx);
+            state.set_cursor_position(entry.before_cursor, window, cx);
+        });
+        self.custom_redo_stack.push(entry);
+        cx.stop_propagation();
+    }
+
+    fn on_redo_action(
+        &mut self,
+        _: &gpui_component::input::Redo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current_value = self.input_state.read(cx).value().to_string();
+        let Some(entry) =
+            pop_matching_custom_redo_entry(&mut self.custom_redo_stack, &current_value)
+        else {
+            crate::log::trace_debug(format!(
+                "editor action Redo propagate custom_redo_depth={} current_len={}",
+                self.custom_redo_stack.len(),
+                current_value.len()
+            ));
+            cx.propagate();
+            return;
+        };
+
+        crate::log::trace_debug(format!(
+            "editor action Redo restored custom delete before_len={} after_len={} undo_depth={} redo_depth={}",
+            entry.before_value.len(),
+            entry.after_value.len(),
+            self.custom_undo_stack.len() + 1,
+            self.custom_redo_stack.len()
+        ));
+        self.input_state.update(cx, |state, cx| {
+            state.set_value(entry.after_value.clone(), window, cx);
+            state.set_cursor_position(entry.after_cursor, window, cx);
+        });
+        self.custom_undo_stack.push(entry);
+        cx.stop_propagation();
+    }
+
+    fn clear_custom_delete_history(&mut self, reason: &str) {
+        if self.custom_undo_stack.is_empty() && self.custom_redo_stack.is_empty() {
+            return;
+        }
+
+        crate::log::trace_debug(format!(
+            "editor custom delete history cleared reason={} undo_depth={} redo_depth={}",
+            reason,
+            self.custom_undo_stack.len(),
+            self.custom_redo_stack.len()
+        ));
+        self.custom_undo_stack.clear();
+        self.custom_redo_stack.clear();
     }
 
     fn on_move_up_action(
@@ -561,6 +695,7 @@ impl Papyru2Editor {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
 
+        self.clear_custom_delete_history("apply_text_and_cursor");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (apply_text_and_cursor, pending={})",
@@ -627,6 +762,7 @@ impl Papyru2Editor {
         let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
         let anchor_line = rpc_centering_anchor_line(cursor_line, total_lines);
 
+        self.clear_custom_delete_history("open_content_from_rpc");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (open_content_from_rpc, pending={}, target_line={}, anchor_line={}, total_lines={})",
@@ -713,6 +849,7 @@ impl Papyru2Editor {
             .unwrap_or("txt")
             .to_string();
 
+        self.clear_custom_delete_history("open_file");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (open_file, pending={})",
@@ -793,6 +930,8 @@ impl Render for Papyru2Editor {
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::on_backspace_action))
             .capture_action(cx.listener(Self::on_delete_action))
+            .capture_action(cx.listener(Self::on_undo_action))
+            .capture_action(cx.listener(Self::on_redo_action))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 if req_assoc18_editor_input_guard_active {
@@ -1025,6 +1164,58 @@ mod tests {
         assert_eq!(new_value, "alpha\nbeta");
         assert_eq!(new_cursor.line, 1);
         assert_eq!(new_cursor.character, 0);
+    }
+
+    #[test]
+    fn editor_undo_test1_custom_delete_undo_pops_only_matching_after_value() {
+        let entry = super::EditorCustomHistoryEntry {
+            before_value: "alpha\nbeta".to_string(),
+            before_cursor: gpui_component::input::Position {
+                line: 1,
+                character: 0,
+            },
+            after_value: "alpha".to_string(),
+            after_cursor: gpui_component::input::Position {
+                line: 0,
+                character: 5,
+            },
+        };
+        let mut history = vec![entry.clone()];
+
+        assert!(super::pop_matching_custom_undo_entry(&mut history, "alpha-x").is_none());
+        assert_eq!(history.len(), 1);
+
+        let popped = super::pop_matching_custom_undo_entry(&mut history, "alpha")
+            .expect("matching custom undo entry");
+        assert_eq!(popped.before_value, "alpha\nbeta");
+        assert_eq!(popped.after_value, "alpha");
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn editor_undo_test2_custom_delete_redo_pops_only_matching_before_value() {
+        let entry = super::EditorCustomHistoryEntry {
+            before_value: "alpha\nbeta".to_string(),
+            before_cursor: gpui_component::input::Position {
+                line: 1,
+                character: 0,
+            },
+            after_value: "alpha".to_string(),
+            after_cursor: gpui_component::input::Position {
+                line: 0,
+                character: 5,
+            },
+        };
+        let mut history = vec![entry.clone()];
+
+        assert!(super::pop_matching_custom_redo_entry(&mut history, "alpha").is_none());
+        assert_eq!(history.len(), 1);
+
+        let popped = super::pop_matching_custom_redo_entry(&mut history, "alpha\nbeta")
+            .expect("matching custom redo entry");
+        assert_eq!(popped.before_value, "alpha\nbeta");
+        assert_eq!(popped.after_value, "alpha");
+        assert!(history.is_empty());
     }
 
     #[test]
