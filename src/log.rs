@@ -8,6 +8,171 @@ static TRACE_DEBUG_LOG_PATH: std::sync::OnceLock<std::sync::Mutex<PathBuf>> =
 static TRACE_DEBUG_ENABLED: std::sync::OnceLock<std::sync::atomic::AtomicBool> =
     std::sync::OnceLock::new();
 
+const REQ_BOOT_PROFILE_ENV_VAR: &str = "PAPYRU2_BOOT_PROFILE";
+pub(crate) const PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME: &str = "papyru2_boot_profile.log";
+
+static BOOT_PROFILE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static BOOT_PROFILE_STATE: std::sync::OnceLock<std::sync::Mutex<BootProfileState>> =
+    std::sync::OnceLock::new();
+
+#[derive(Debug)]
+struct BootProfileState {
+    start_instant: std::time::Instant,
+    start_epoch_ms: u128,
+    output_path: Option<PathBuf>,
+    lines: Vec<String>,
+    flushed: bool,
+}
+
+impl BootProfileState {
+    fn new() -> Self {
+        let start_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+
+        Self {
+            start_instant: std::time::Instant::now(),
+            start_epoch_ms,
+            output_path: None,
+            lines: Vec::new(),
+            flushed: false,
+        }
+    }
+}
+
+fn req_boot_profile_enabled_from_env_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn req_boot_profile_enabled_from_env() -> bool {
+    std::env::var(REQ_BOOT_PROFILE_ENV_VAR)
+        .map(|value| req_boot_profile_enabled_from_env_value(value.as_str()))
+        .unwrap_or(false)
+}
+
+pub(crate) fn req_boot_profile_enabled() -> bool {
+    *BOOT_PROFILE_ENABLED.get_or_init(req_boot_profile_enabled_from_env)
+}
+
+fn boot_profile_output_path_from_app_paths(app_paths: &crate::path_resolver::AppPaths) -> PathBuf {
+    app_paths.log_file_path(PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME)
+}
+
+fn default_boot_profile_log_path() -> PathBuf {
+    crate::path_resolver::AppPaths::resolve()
+        .map(|app_paths| boot_profile_output_path_from_app_paths(&app_paths))
+        .unwrap_or_else(|_| PathBuf::from(PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME))
+}
+
+fn boot_profile_state_lock() -> &'static std::sync::Mutex<BootProfileState> {
+    BOOT_PROFILE_STATE.get_or_init(|| std::sync::Mutex::new(BootProfileState::new()))
+}
+
+pub(crate) fn configure_boot_profile_log_path(app_paths: &crate::path_resolver::AppPaths) {
+    if !req_boot_profile_enabled() {
+        return;
+    }
+
+    if let Ok(mut state) = boot_profile_state_lock().lock() {
+        state.output_path = Some(boot_profile_output_path_from_app_paths(app_paths));
+    }
+}
+
+fn boot_profile_push_line(stage: &str, detail: String) {
+    if !req_boot_profile_enabled() {
+        return;
+    }
+
+    let Ok(mut state) = boot_profile_state_lock().lock() else {
+        return;
+    };
+
+    if state.flushed {
+        return;
+    }
+
+    let elapsed_ms = state.start_instant.elapsed().as_millis();
+    if detail.is_empty() {
+        state.lines.push(format!("{elapsed_ms:>6}ms {stage}"));
+    } else {
+        state
+            .lines
+            .push(format!("{elapsed_ms:>6}ms {stage} {detail}"));
+    }
+}
+
+pub(crate) fn boot_profile_mark(stage: &str) {
+    boot_profile_push_line(stage, String::new());
+}
+
+pub(crate) fn boot_profile_mark_detail(stage: &str, detail: String) {
+    boot_profile_push_line(stage, detail);
+}
+
+pub(crate) fn boot_profile_mark_timing(stage: &str, duration: std::time::Duration, detail: String) {
+    if detail.is_empty() {
+        boot_profile_push_line(stage, format!("duration_ms={}", duration.as_millis()));
+    } else {
+        boot_profile_push_line(
+            stage,
+            format!("duration_ms={} {detail}", duration.as_millis()),
+        );
+    }
+}
+
+pub(crate) fn flush_boot_profile(reason: &str) {
+    if !req_boot_profile_enabled() {
+        return;
+    }
+
+    let Ok(mut state) = boot_profile_state_lock().lock() else {
+        return;
+    };
+
+    if state.flushed {
+        return;
+    }
+
+    let total_ms = state.start_instant.elapsed().as_millis();
+    let output_path = state
+        .output_path
+        .clone()
+        .unwrap_or_else(default_boot_profile_log_path);
+
+    let mut output = String::new();
+    output.push('\n');
+    output.push_str(&format!(
+        "[boot-profile] start_epoch_ms={} reason={} total_ms={}\n",
+        state.start_epoch_ms, reason, total_ms
+    ));
+    for line in &state.lines {
+        output.push_str(line.as_str());
+        output.push('\n');
+    }
+    output.push_str("[boot-profile] end\n");
+
+    state.flushed = true;
+    drop(state);
+
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_path.as_path())
+    {
+        let _ = std::io::Write::write_all(&mut file, output.as_bytes());
+    } else {
+        eprintln!(
+            "papyru2 boot profile write failed path={} reason={reason}",
+            output_path.display()
+        );
+        eprintln!("{output}");
+    }
+}
+
 pub(crate) fn req_log_profile_default_enabled() -> bool {
     cfg!(debug_assertions)
 }
@@ -76,10 +241,13 @@ fn rotate_startup_log_file(log_path: &Path) -> std::io::Result<()> {
 
 pub(crate) fn prepare_startup_log_files(
     app_paths: &crate::path_resolver::AppPaths,
+    prepare_debug_log: bool,
 ) -> std::io::Result<()> {
     let debug_log_path = debug_log_path_from_app_paths(app_paths);
     let pin_file_log_path = app_paths.log_file_path(PAPYRU2_PIN_FILE_LOG_FILE_NAME);
-    rotate_startup_log_file(debug_log_path.as_path())?;
+    if prepare_debug_log {
+        rotate_startup_log_file(debug_log_path.as_path())?;
+    }
     rotate_startup_log_file(pin_file_log_path.as_path())?;
     Ok(())
 }
@@ -224,7 +392,7 @@ mod tests {
         std::fs::write(debug_bak.as_path(), "debug-stale-bak").expect("write stale debug bak");
         std::fs::write(pin_bak.as_path(), "pin-stale-bak").expect("write stale pin bak");
 
-        prepare_startup_log_files(&paths).expect("prepare startup logs");
+        prepare_startup_log_files(&paths, true).expect("prepare startup logs");
 
         assert_eq!(
             std::fs::read_to_string(debug_bak.as_path()).expect("read rotated debug bak"),
@@ -273,7 +441,7 @@ mod tests {
             std::fs::remove_file(pin_bak.as_path()).expect("remove existing pin bak");
         }
 
-        prepare_startup_log_files(&paths).expect("prepare startup logs from missing state");
+        prepare_startup_log_files(&paths, true).expect("prepare startup logs from missing state");
 
         assert!(debug_log.exists());
         assert!(pin_log.exists());
@@ -360,5 +528,19 @@ mod tests {
 
         assert_eq!(evaluated.load(std::sync::atomic::Ordering::SeqCst), 0);
         configure_trace_debug_enabled(previous);
+    }
+
+    #[test]
+    fn log_test11_req_boot_profile_parser_accepts_truthy_tokens() {
+        for value in ["1", "true", "TRUE", " yes ", "On"] {
+            assert!(req_boot_profile_enabled_from_env_value(value));
+        }
+    }
+
+    #[test]
+    fn log_test12_req_boot_profile_parser_rejects_non_truthy_tokens() {
+        for value in ["", "0", "false", "no", "off", "unexpected"] {
+            assert!(!req_boot_profile_enabled_from_env_value(value));
+        }
     }
 }

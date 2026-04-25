@@ -742,6 +742,8 @@ pub struct Papyru2App {
     pub(crate) selection_focus_reassert_pending: bool,
     pub(crate) rpc_highlight_active: bool,
     pub(crate) rpc_highlight_line_1_based: Option<u32>,
+    pub(crate) boot_profile_first_render_marked: bool,
+    pub(crate) pending_startup_daily_dir: Option<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -921,6 +923,9 @@ impl Papyru2App {
         editor_config: EditorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
+        let app_new_started = Instant::now();
+        crate::log::boot_profile_mark("startup.papyru2_app_new.enter");
+
         let split_left_panel_size = normalize_split_left_panel_size(restored_splitter_left_size);
         trace_debug(format!(
             "window_position splitter restore left_size={} applied={}",
@@ -929,6 +934,8 @@ impl Papyru2App {
         ));
 
         let layout_split_state = cx.new(|_| ResizableState::default());
+
+        let top_bars_started = Instant::now();
         let top_bars = cx.new(|cx| {
             TopBars::new(
                 window,
@@ -938,8 +945,22 @@ impl Papyru2App {
                 cx,
             )
         });
+        crate::log::boot_profile_mark_timing(
+            "startup.top_bars_new",
+            top_bars_started.elapsed(),
+            String::new(),
+        );
+
         let singleline = top_bars.read(cx).singleline();
+
+        let editor_started = Instant::now();
         let editor = cx.new(|cx| Papyru2Editor::new(window, ui_color_config, editor_config, cx));
+        crate::log::boot_profile_mark_timing(
+            "startup.editor_new",
+            editor_started.elapsed(),
+            String::new(),
+        );
+
         let protected_delete_roots = vec![
             app_paths.data_dir.clone(),
             app_paths.user_document_dir.clone(),
@@ -949,11 +970,18 @@ impl Papyru2App {
             "file_tree app root_dir={}",
             file_tree_root_dir.display()
         ));
+
+        let ensure_daily_started = Instant::now();
         let startup_daily_dir = match crate::file_update_handler::ensure_daily_directory(
             app_paths.user_document_dir.as_path(),
             chrono::Local::now(),
         ) {
             Ok(path) => {
+                crate::log::boot_profile_mark_timing(
+                    "startup.ensure_daily_directory",
+                    ensure_daily_started.elapsed(),
+                    format!("ok=true path={}", path.display()),
+                );
                 trace_debug(format!(
                     "file_tree req-ftr18 startup daily_dir ensured path={}",
                     path.display()
@@ -961,12 +989,19 @@ impl Papyru2App {
                 path
             }
             Err(error) => {
+                crate::log::boot_profile_mark_timing(
+                    "startup.ensure_daily_directory",
+                    ensure_daily_started.elapsed(),
+                    format!("ok=false error={error}"),
+                );
                 trace_debug(format!(
                     "file_tree req-ftr18 startup daily_dir ensure failed error={error}"
                 ));
                 panic!("file_tree req-ftr18 startup daily_dir ensure failed: {error}");
             }
         };
+
+        let file_tree_started = Instant::now();
         let file_tree = cx.new(move |cx| {
             FileTreeView::new(
                 protected_delete_roots,
@@ -975,12 +1010,31 @@ impl Papyru2App {
                 cx,
             )
         });
+        crate::log::boot_profile_mark_timing(
+            "startup.file_tree_view_new",
+            file_tree_started.elapsed(),
+            String::new(),
+        );
+
+        let watcher_started = Instant::now();
         let (file_tree_watcher, file_tree_refresh_rx) =
             match crate::file_tree_watcher::start_file_tree_watcher(
                 app_paths.user_document_dir.clone(),
             ) {
-                Ok(watcher) => watcher,
+                Ok(watcher) => {
+                    crate::log::boot_profile_mark_timing(
+                        "startup.file_tree_watcher_start",
+                        watcher_started.elapsed(),
+                        "ok=true".to_string(),
+                    );
+                    watcher
+                }
                 Err(error) => {
+                    crate::log::boot_profile_mark_timing(
+                        "startup.file_tree_watcher_start",
+                        watcher_started.elapsed(),
+                        format!("ok=false error={error}"),
+                    );
                     trace_debug(format!("file_tree watcher init failed error={error}"));
                     panic!("file_tree watcher init failed: {error}");
                 }
@@ -1008,6 +1062,8 @@ impl Papyru2App {
             editor_autosave.clone(),
             file_workflow.clone(),
         );
+        crate::log::boot_profile_mark("startup.autosave_worker_spawned");
+
         let (quic_rpc_ui_tx, quic_rpc_ui_rx) =
             smol::channel::unbounded::<crate::quic_rpc::QuicRpcUiCommand>();
         crate::quic_rpc::spawn_quic_rpc_server(
@@ -1015,6 +1071,8 @@ impl Papyru2App {
             file_workflow.clone(),
             quic_rpc_ui_tx,
         );
+        crate::log::boot_profile_mark("startup.quic_rpc_server_spawned");
+
         let quic_window_handle = Window::window_handle(window);
         cx.spawn(async move |this, cx| {
             while let Ok(command) = quic_rpc_ui_rx.recv().await {
@@ -1058,6 +1116,9 @@ impl Papyru2App {
                     }
                     FileTreeEvent::RecyclebinDeleteRequested(paths) => {
                         this.on_file_tree_delete_requested(paths.clone(), window, cx);
+                    }
+                    FileTreeEvent::InitialLoadCompleted => {
+                        this.handle_file_tree_initial_load_completed(window, cx);
                     }
                 },
             ),
@@ -1250,9 +1311,43 @@ impl Papyru2App {
             selection_focus_reassert_pending: false,
             rpc_highlight_active: false,
             rpc_highlight_line_1_based: None,
+            boot_profile_first_render_marked: false,
+            pending_startup_daily_dir: Some(startup_daily_dir.clone()),
         };
 
-        this.apply_req_ftr18_startup_daily_folder_positioning(startup_daily_dir, window, cx);
+        let startup_position_started = Instant::now();
+        let startup_position_prepared = this.apply_req_ftr18_startup_daily_folder_positioning(
+            startup_daily_dir.clone(),
+            window,
+            cx,
+        );
+        this.pending_startup_daily_dir =
+            crate::file_tree::req_boot_pending_startup_daily_dir_after_initial_position_attempt(
+                startup_daily_dir.clone(),
+                startup_position_prepared,
+            );
+        if startup_position_prepared {
+            crate::log::boot_profile_mark_timing(
+                "startup.file_tree_startup_positioning",
+                startup_position_started.elapsed(),
+                "deferred=false prepared=true".to_string(),
+            );
+        } else {
+            crate::log::boot_profile_mark_timing(
+                "startup.file_tree_startup_positioning",
+                startup_position_started.elapsed(),
+                "deferred=true prepared=false".to_string(),
+            );
+        }
+
+        this.file_tree
+            .update(cx, |file_tree, cx| file_tree.start_initial_load(cx));
+
+        crate::log::boot_profile_mark_timing(
+            "startup.papyru2_app_new.exit",
+            app_new_started.elapsed(),
+            String::new(),
+        );
 
         this
     }
@@ -1260,6 +1355,11 @@ impl Papyru2App {
 
 impl Render for Papyru2App {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.boot_profile_first_render_marked {
+            self.boot_profile_first_render_marked = true;
+            crate::log::boot_profile_mark("startup.app_render.first");
+        }
+
         v_flex()
             .id("papyru2")
             .size_full()
@@ -2343,16 +2443,31 @@ mod editor_config_tests {
 }
 
 pub fn run() {
+    crate::log::boot_profile_mark("startup.process_entry");
+
+    let cli_parse_started = Instant::now();
     let cli_override = match crate::path_resolver::parse_cli_mode_override(std::env::args()) {
         Ok(override_mode) => override_mode,
         Err(error) => {
+            crate::log::boot_profile_mark_timing(
+                "startup.parse_cli_override",
+                cli_parse_started.elapsed(),
+                format!("ok=false error={error}"),
+            );
+            crate::log::flush_boot_profile("parse_cli_override_error");
             trace_debug(format!("path_resolver CLI parse failed error={error}"));
             eprintln!("papyru2 CLI override parsing failed: {error}");
             eprintln!("use either --portable or --installed (not both)");
             return;
         }
     };
+    crate::log::boot_profile_mark_timing(
+        "startup.parse_cli_override",
+        cli_parse_started.elapsed(),
+        format!("ok=true cli_override={cli_override:?}"),
+    );
 
+    let path_resolve_started = Instant::now();
     let resolved_paths = match cli_override {
         Some(mode) => crate::path_resolver::AppPaths::resolve_with_cli_override(Some(mode)),
         None => crate::path_resolver::AppPaths::resolve(),
@@ -2361,11 +2476,27 @@ pub fn run() {
     let app_paths = match resolved_paths {
         Ok(paths) => paths,
         Err(error) => {
+            crate::log::boot_profile_mark_timing(
+                "startup.path_resolver",
+                path_resolve_started.elapsed(),
+                format!("ok=false error={error}"),
+            );
+            crate::log::flush_boot_profile("path_resolver_error");
             trace_debug(format!("path_resolver resolve failed error={error}"));
             eprintln!("papyru2 path resolver failed: {error}");
             return;
         }
     };
+    crate::log::configure_boot_profile_log_path(&app_paths);
+    crate::log::boot_profile_mark_timing(
+        "startup.path_resolver",
+        path_resolve_started.elapsed(),
+        format!(
+            "ok=true mode={:?} reason={}",
+            app_paths.mode,
+            app_paths.mode.reason()
+        ),
+    );
 
     let color_config_path = app_paths.config_file_path(PAPYRU2_CONF_FILE_NAME);
     let req_log_profile_default = crate::log::req_log_profile_default_enabled();
@@ -2376,11 +2507,26 @@ pub fn run() {
         req_log_config_override,
     );
     crate::log::configure_trace_debug_enabled(req_log_effective_enabled);
+    crate::log::boot_profile_mark_detail(
+        "startup.log_config",
+        format!(
+            "profile_default={} config_override={req_log_config_override:?} effective={req_log_effective_enabled}",
+            req_log_profile_default
+        ),
+    );
 
     crate::log::configure_trace_debug_log_path(&app_paths);
-    if let Err(error) = crate::log::prepare_startup_log_files(&app_paths) {
+    let prepare_logs_started = Instant::now();
+    let prepare_logs_result =
+        crate::log::prepare_startup_log_files(&app_paths, req_log_effective_enabled);
+    if let Err(error) = &prepare_logs_result {
         eprintln!("papyru2 startup log preparation failed: {error}");
     }
+    crate::log::boot_profile_mark_timing(
+        "startup.prepare_startup_log_files",
+        prepare_logs_started.elapsed(),
+        format!("ok={}", prepare_logs_result.is_ok()),
+    );
 
     trace_debug(format!(
         "req-log startup profile_default={} config_override={req_log_config_override:?} effective={req_log_effective_enabled}",
@@ -2405,14 +2551,27 @@ pub fn run() {
         log_file.display()
     ));
 
+    let ui_color_started = Instant::now();
     let ui_color_config = load_or_create_ui_color_config(color_config_path.as_path());
+    crate::log::boot_profile_mark_timing(
+        "startup.load_ui_color_config",
+        ui_color_started.elapsed(),
+        String::new(),
+    );
     trace_debug(format!(
         "req-colr startup colors path={} background={} foreground={}",
         color_config_path.display(),
         req_colr_hex_text(ui_color_config.background_rgb_hex),
         req_colr_hex_text(ui_color_config.foreground_rgb_hex),
     ));
+
+    let editor_config_started = Instant::now();
     let editor_config = load_req_editor_config(color_config_path.as_path());
+    crate::log::boot_profile_mark_timing(
+        "startup.load_editor_config",
+        editor_config_started.elapsed(),
+        String::new(),
+    );
     trace_debug(format!(
         "req-editor startup config path={} code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
         color_config_path.display(),
@@ -2422,6 +2581,7 @@ pub fn run() {
         editor_config.show_whitespaces
     ));
 
+    let window_position_started = Instant::now();
     let window_position_path =
         app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
     let persisted_window_position =
@@ -2442,6 +2602,11 @@ pub fn run() {
                 None
             }
         };
+    crate::log::boot_profile_mark_timing(
+        "startup.load_window_position",
+        window_position_started.elapsed(),
+        format!("found={}", persisted_window_position.is_some()),
+    );
     let restored_splitter_left_size = persisted_window_position
         .as_ref()
         .and_then(|state| state.splitter_left_size());
@@ -2450,12 +2615,34 @@ pub fn run() {
         restored_splitter_left_size
     ));
 
+    let application_new_started = Instant::now();
     let app = Application::new().with_assets(AppAssets);
+    crate::log::boot_profile_mark_timing(
+        "startup.application_new",
+        application_new_started.elapsed(),
+        String::new(),
+    );
 
     app.run(move |cx| {
-        gpui_component::init(cx);
-        apply_req_colr_theme_overrides(ui_color_config, cx);
+        crate::log::boot_profile_mark("startup.app_run_enter");
 
+        let component_init_started = Instant::now();
+        gpui_component::init(cx);
+        crate::log::boot_profile_mark_timing(
+            "startup.gpui_component_init",
+            component_init_started.elapsed(),
+            String::new(),
+        );
+
+        let apply_theme_started = Instant::now();
+        apply_req_colr_theme_overrides(ui_color_config, cx);
+        crate::log::boot_profile_mark_timing(
+            "startup.apply_theme_overrides",
+            apply_theme_started.elapsed(),
+            String::new(),
+        );
+
+        let window_options_started = Instant::now();
         let primary_display = cx.primary_display();
         let primary_monitor_id = primary_display.as_ref().map(|display| u32::from(display.id()));
 
@@ -2542,6 +2729,14 @@ pub fn run() {
 
         let window_options =
             build_startup_window_options(startup_bounds, startup_display_id_for_options);
+        crate::log::boot_profile_mark_timing(
+            "startup.build_window_options",
+            window_options_started.elapsed(),
+            format!(
+                "has_bounds={} startup_display_id={startup_display_id_for_options:?}",
+                window_options.window_bounds.is_some()
+            ),
+        );
         trace_debug(format!(
             "window_options startup focus={} show={} has_bounds={} startup_monitor_id={:?} resolved_startup_display_id={:?} applied_startup_display_id={:?} startup_bounds={:?} option_bounds={:?}",
             window_options.focus,
@@ -2559,8 +2754,14 @@ pub fn run() {
         let restored_splitter_left_size = restored_splitter_left_size;
         let ui_color_config = ui_color_config;
         let editor_config = editor_config;
+        crate::log::boot_profile_mark("startup.open_window_spawn_scheduled");
         cx.spawn(async move |cx| {
-            cx.open_window(window_options, move |window, cx| {
+            crate::log::boot_profile_mark("startup.open_window_async_enter");
+            let open_window_started = Instant::now();
+            let open_window_result = cx.open_window(window_options, move |window, cx| {
+                let root_build_started = Instant::now();
+                crate::log::boot_profile_mark("startup.open_window_callback_enter");
+
                 let startup_window_position_guard =
                     Rc::new(RefCell::new(startup_window_position_guard(
                         persisted_window_position
@@ -2654,8 +2855,31 @@ pub fn run() {
                     true
                 });
 
-                cx.new(|cx| Root::new(view, window, cx))
-            })?;
+                let root = cx.new(|cx| Root::new(view, window, cx));
+                crate::log::boot_profile_mark_timing(
+                    "startup.open_window_root_build",
+                    root_build_started.elapsed(),
+                    String::new(),
+                );
+                root
+            });
+
+            match open_window_result {
+                Ok(_) => crate::log::boot_profile_mark_timing(
+                    "startup.open_window",
+                    open_window_started.elapsed(),
+                    "ok=true".to_string(),
+                ),
+                Err(error) => {
+                    crate::log::boot_profile_mark_timing(
+                        "startup.open_window",
+                        open_window_started.elapsed(),
+                        format!("ok=false error={error}"),
+                    );
+                    crate::log::flush_boot_profile("open_window_error");
+                    return Err(error.into());
+                }
+            }
 
             Ok::<_, anyhow::Error>(())
         })

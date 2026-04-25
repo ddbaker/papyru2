@@ -19,6 +19,7 @@ pub enum FileTreeEvent {
     SelectionChanged(PathBuf),
     OpenFile(PathBuf),
     RecyclebinDeleteRequested(Vec<PathBuf>),
+    InitialLoadCompleted,
 }
 
 pub(crate) fn should_restore_selection_after_watcher_refresh(
@@ -201,9 +202,34 @@ pub struct FileTreeView {
     req_ftr26_row_height_px: f32,
     req_frt27_padding_daily_dir: Option<PathBuf>,
     ui_color_config: crate::app::UiColorConfig,
+    initial_load_started: bool,
+    initial_load_completed: bool,
 }
 
 impl EventEmitter<FileTreeEvent> for FileTreeView {}
+
+pub(crate) fn req_boot_pending_startup_daily_dir_after_initial_position_attempt(
+    daily_dir: PathBuf,
+    startup_position_prepared: bool,
+) -> Option<PathBuf> {
+    if startup_position_prepared {
+        None
+    } else {
+        Some(daily_dir)
+    }
+}
+
+pub(crate) fn req_boot_take_pending_startup_daily_dir_for_initial_load_completion(
+    pending_startup_daily_dir: &mut Option<PathBuf>,
+) -> Option<PathBuf> {
+    pending_startup_daily_dir.take()
+}
+
+pub(crate) fn req_boot_should_skip_watcher_refresh_until_initial_load_complete(
+    initial_load_completed: bool,
+) -> bool {
+    !initial_load_completed
+}
 
 impl FileTreeView {
     pub fn new(
@@ -212,10 +238,13 @@ impl FileTreeView {
         ui_color_config: crate::app::UiColorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
+        let file_tree_new_started = std::time::Instant::now();
+
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let horizontal_scroll_handle = ScrollHandle::new();
         let focus_handle = cx.focus_handle().tab_stop(true);
 
+        #[allow(unused_mut)]
         let mut this = Self {
             tree_state,
             horizontal_scroll_handle,
@@ -233,6 +262,8 @@ impl FileTreeView {
             req_ftr26_row_height_px: req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size)),
             req_frt27_padding_daily_dir: None,
             ui_color_config,
+            initial_load_started: false,
+            initial_load_completed: false,
         };
         crate::log::trace_debug(format!(
             "file_tree init root_dir={}",
@@ -242,8 +273,165 @@ impl FileTreeView {
             "req-editor6 file_tree font_size_policy={}",
             req_editor_file_tree_font_size_policy()
         ));
-        this.load_files(cx);
+
+        #[cfg(test)]
+        {
+            this.initial_load_started = true;
+            this.load_files(cx);
+            this.initial_load_completed = true;
+        }
+
+        crate::log::boot_profile_mark_timing(
+            "startup.file_tree_new_total",
+            file_tree_new_started.elapsed(),
+            format!(
+                "root_dir={} top_level_count={} initial_load_started={} initial_load_completed={}",
+                this.tree_root_dir.display(),
+                this.root_items.len(),
+                this.initial_load_started,
+                this.initial_load_completed
+            ),
+        );
+
         this
+    }
+
+    pub fn start_initial_load(&mut self, cx: &mut Context<Self>) {
+        if self.initial_load_started {
+            #[cfg(test)]
+            {
+                cx.emit(FileTreeEvent::InitialLoadCompleted);
+            }
+            return;
+        }
+
+        self.initial_load_started = true;
+        crate::log::boot_profile_mark_detail(
+            "startup.file_tree_initial_load_start",
+            format!("root_dir={}", self.tree_root_dir.display()),
+        );
+
+        #[cfg(test)]
+        {
+            self.load_files(cx);
+            self.initial_load_completed = true;
+            cx.emit(FileTreeEvent::InitialLoadCompleted);
+            crate::log::flush_boot_profile("initial_file_tree_load_completed_test");
+        }
+
+        #[cfg(not(test))]
+        {
+            let tree_root_dir = self.tree_root_dir.clone();
+            cx.spawn(async move |this, cx| {
+                let load_started = std::time::Instant::now();
+                let scan_result = smol::unblock(move || scan_file_tree_model(&tree_root_dir)).await;
+
+                let Some(this) = this.upgrade() else {
+                    return;
+                };
+
+                let _ = this.update(cx, move |file_tree, cx| {
+                    file_tree.apply_file_tree_scan_result(scan_result, cx);
+                    file_tree.initial_load_completed = true;
+                    cx.emit(FileTreeEvent::InitialLoadCompleted);
+                    crate::log::boot_profile_mark_timing(
+                        "file_tree.initial_load_total",
+                        load_started.elapsed(),
+                        format!(
+                            "root_items={} visible_item_count={}",
+                            file_tree.root_items.len(),
+                            file_tree.visible_item_ids.len()
+                        ),
+                    );
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn apply_file_tree_scan_result(
+        &mut self,
+        scan_result: FileTreeScanResult,
+        cx: &mut Context<Self>,
+    ) {
+        crate::log::boot_profile_mark_timing(
+            "file_tree.build_file_items",
+            scan_result.build_duration,
+            format!(
+                "dir_count={} file_count={} max_depth={} read_dir_calls={} read_dir_errors={}",
+                scan_result.build_stats.directory_count,
+                scan_result.build_stats.file_count,
+                scan_result.build_stats.max_depth,
+                scan_result.build_stats.read_dir_calls,
+                scan_result.build_stats.read_dir_errors
+            ),
+        );
+        crate::log::boot_profile_mark_timing(
+            "file_tree.collect_directory_item_ids",
+            scan_result.collect_directory_duration,
+            format!(
+                "directory_item_count={}",
+                scan_result.directory_item_ids.len()
+            ),
+        );
+
+        let previous_items = self.root_items.clone();
+        let expanded_folder_item_ids = expanded_folder_item_ids(&previous_items);
+
+        let mut refreshed_items = tree_items_from_models(scan_result.item_models);
+        let expanded_restored_count =
+            apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
+        let req_ftr19_daily_dirs = req_ftr19_first_file_daily_dirs(
+            &previous_items,
+            &refreshed_items,
+            self.tree_root_dir.as_path(),
+        );
+        let req_ftr19_opened_folder_count = apply_req_ftr19_first_file_auto_open(
+            &mut refreshed_items,
+            self.tree_root_dir.as_path(),
+            &req_ftr19_daily_dirs,
+        );
+        let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
+        self.root_items = refreshed_items;
+        self.directory_item_ids = scan_result.directory_item_ids;
+
+        if req_ftr19_daily_dir_count > 0 {
+            let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
+            daily_dirs.sort();
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr19 first_file_auto_open daily_dirs={} opened_folder_count={}",
+                daily_dirs.join(","),
+                req_ftr19_opened_folder_count
+            ));
+        }
+
+        crate::log::trace_debug(format!(
+            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={} directory_item_count={}",
+            self.tree_root_dir.display(),
+            self.root_items.len(),
+            expanded_folder_item_ids.len(),
+            expanded_restored_count,
+            req_ftr19_daily_dir_count,
+            req_ftr19_opened_folder_count,
+            self.directory_item_ids.len()
+        ));
+
+        self.set_items_from_model(cx);
+
+        crate::log::boot_profile_mark_timing(
+            "file_tree.load_files_total",
+            scan_result.total_duration,
+            format!(
+                "root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={} directory_item_count={}",
+                self.tree_root_dir.display(),
+                self.root_items.len(),
+                expanded_folder_item_ids.len(),
+                expanded_restored_count,
+                req_ftr19_daily_dir_count,
+                req_ftr19_opened_folder_count,
+                self.directory_item_ids.len()
+            ),
+        );
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -510,53 +698,13 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
-        let previous_items = self.root_items.clone();
-        let expanded_folder_item_ids = expanded_folder_item_ids(&previous_items);
-
-        let mut refreshed_items = build_file_items(&self.tree_root_dir, &self.tree_root_dir);
-        let mut directory_item_ids = HashSet::new();
-        collect_directory_item_ids_from_tree(&refreshed_items, &mut directory_item_ids);
-
-        let expanded_restored_count =
-            apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
-        let req_ftr19_daily_dirs = req_ftr19_first_file_daily_dirs(
-            &previous_items,
-            &refreshed_items,
-            self.tree_root_dir.as_path(),
-        );
-        let req_ftr19_opened_folder_count = apply_req_ftr19_first_file_auto_open(
-            &mut refreshed_items,
-            self.tree_root_dir.as_path(),
-            &req_ftr19_daily_dirs,
-        );
-        let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
-        self.root_items = refreshed_items;
-        self.directory_item_ids = directory_item_ids;
-
-        if req_ftr19_daily_dir_count > 0 {
-            let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
-            daily_dirs.sort();
-            crate::log::trace_debug(format!(
-                "file_tree req-ftr19 first_file_auto_open daily_dirs={} opened_folder_count={}",
-                daily_dirs.join(","),
-                req_ftr19_opened_folder_count
-            ));
-        }
-
-        crate::log::trace_debug(format!(
-            "file_tree load root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={} directory_item_count={}",
-            self.tree_root_dir.display(),
-            self.root_items.len(),
-            expanded_folder_item_ids.len(),
-            expanded_restored_count,
-            req_ftr19_daily_dir_count,
-            req_ftr19_opened_folder_count,
-            self.directory_item_ids.len()
-        ));
-        self.set_items_from_model(cx);
+        let scan_result = scan_file_tree_model(&self.tree_root_dir);
+        self.apply_file_tree_scan_result(scan_result, cx);
     }
 
     fn set_items_from_model(&mut self, cx: &mut Context<Self>) {
+        let set_items_started = std::time::Instant::now();
+
         let mut valid_item_ids = HashSet::new();
         collect_tree_item_ids(&self.root_items, &mut valid_item_ids);
         retain_existing_selections(&mut self.selected_item_ids, &valid_item_ids);
@@ -575,6 +723,17 @@ impl FileTreeView {
             state.set_items(items, cx);
         });
         self.rebuild_visible_item_ids();
+
+        crate::log::boot_profile_mark_timing(
+            "file_tree.set_items_from_model",
+            set_items_started.elapsed(),
+            format!(
+                "root_items={} selected_item_count={} visible_item_count={}",
+                self.root_items.len(),
+                self.selected_item_ids.len(),
+                self.visible_item_ids.len()
+            ),
+        );
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -840,7 +999,8 @@ impl Render for FileTreeView {
         self.req_ftr26_row_height_px =
             req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size));
 
-        if !self.font_size_logged_once {
+        let first_render = !self.font_size_logged_once;
+        if first_render {
             crate::log::trace_debug(format!(
                 "req-editor-font-size snapshot component=file_tree policy={} tree_text_size=text_sm theme.font_size={:?} theme.mono_font_size={:?} req_colr_background=#{:06x} req_colr_foreground=#{:06x}",
                 req_editor_file_tree_font_size_policy(),
@@ -865,6 +1025,23 @@ impl Render for FileTreeView {
         }
 
         self.rebuild_visible_item_ids();
+
+        if first_render {
+            crate::log::boot_profile_mark_detail(
+                "startup.file_tree_render.first",
+                format!(
+                    "root_items={} visible_item_count={} content_width_px={:.1} initial_load_completed={}",
+                    self.root_items.len(),
+                    self.visible_item_ids.len(),
+                    req_ftr25_content_width_px,
+                    self.initial_load_completed
+                ),
+            );
+            if self.initial_load_completed {
+                crate::log::flush_boot_profile("first_file_tree_render");
+            }
+        }
+
         let file_tree_entity = cx.entity();
         let row_entity = file_tree_entity.clone();
 
@@ -1007,8 +1184,71 @@ impl Render for FileTreeView {
     }
 }
 
+#[cfg(test)]
 fn build_file_items(root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
+    let (item_models, _) = build_file_items_with_stats(root, path);
+    tree_items_from_models(item_models)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BuildFileItemsStats {
+    directory_count: usize,
+    file_count: usize,
+    max_depth: usize,
+    read_dir_calls: usize,
+    read_dir_errors: usize,
+}
+
+#[derive(Clone, Debug)]
+struct FileTreeItemModel {
+    id: String,
+    label: String,
+    is_directory: bool,
+    children: Vec<FileTreeItemModel>,
+}
+
+fn tree_items_from_models(models: Vec<FileTreeItemModel>) -> Vec<TreeItem> {
+    models.into_iter().map(tree_item_from_model).collect()
+}
+
+fn tree_item_from_model(model: FileTreeItemModel) -> TreeItem {
+    let children = tree_items_from_models(model.children);
+    if model.is_directory {
+        TreeItem::new(model.id, model.label).children(children)
+    } else {
+        TreeItem::new(model.id, model.label)
+    }
+}
+
+fn collect_directory_item_ids_from_models(
+    items: &[FileTreeItemModel],
+    directory_item_ids: &mut HashSet<String>,
+) {
+    for item in items {
+        if item.is_directory {
+            directory_item_ids.insert(item.id.clone());
+        }
+        collect_directory_item_ids_from_models(&item.children, directory_item_ids);
+    }
+}
+
+fn build_file_items_with_stats(
+    root: &PathBuf,
+    path: &PathBuf,
+) -> (Vec<FileTreeItemModel>, BuildFileItemsStats) {
+    let mut stats = BuildFileItemsStats::default();
+    let item_models = build_file_items_recursive(root, path, 0, &mut stats);
+    (item_models, stats)
+}
+
+fn build_file_items_recursive(
+    root: &PathBuf,
+    path: &PathBuf,
+    depth: usize,
+    stats: &mut BuildFileItemsStats,
+) -> Vec<FileTreeItemModel> {
     let mut items = Vec::new();
+    stats.read_dir_calls += 1;
 
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
@@ -1031,18 +1271,66 @@ fn build_file_items(root: &PathBuf, path: &PathBuf) -> Vec<TreeItem> {
             let id = path.to_string_lossy().to_string();
 
             if path.is_dir() {
-                let children = build_file_items(root, &path);
-                items.push(TreeItem::new(id, file_name).children(children));
+                stats.directory_count += 1;
+                stats.max_depth = stats.max_depth.max(depth.saturating_add(1));
+                let children =
+                    build_file_items_recursive(root, &path, depth.saturating_add(1), stats);
+                items.push(FileTreeItemModel {
+                    id,
+                    label: file_name,
+                    is_directory: true,
+                    children,
+                });
             } else {
-                items.push(TreeItem::new(id, file_name));
+                stats.file_count += 1;
+                items.push(FileTreeItemModel {
+                    id,
+                    label: file_name,
+                    is_directory: false,
+                    children: Vec::new(),
+                });
             }
         }
+    } else {
+        stats.read_dir_errors += 1;
     }
 
     sort_tree_items(&mut items);
     items
 }
 
+struct FileTreeScanResult {
+    item_models: Vec<FileTreeItemModel>,
+    directory_item_ids: HashSet<String>,
+    build_stats: BuildFileItemsStats,
+    build_duration: std::time::Duration,
+    collect_directory_duration: std::time::Duration,
+    total_duration: std::time::Duration,
+}
+
+fn scan_file_tree_model(tree_root_dir: &PathBuf) -> FileTreeScanResult {
+    let scan_started = std::time::Instant::now();
+
+    let build_started = std::time::Instant::now();
+    let (item_models, build_stats) = build_file_items_with_stats(tree_root_dir, tree_root_dir);
+    let build_duration = build_started.elapsed();
+
+    let collect_started = std::time::Instant::now();
+    let mut directory_item_ids = HashSet::new();
+    collect_directory_item_ids_from_models(&item_models, &mut directory_item_ids);
+    let collect_directory_duration = collect_started.elapsed();
+
+    FileTreeScanResult {
+        item_models,
+        directory_item_ids,
+        build_stats,
+        build_duration,
+        collect_directory_duration,
+        total_duration: scan_started.elapsed(),
+    }
+}
+
+#[cfg(test)]
 fn collect_directory_item_ids_from_tree(
     items: &[TreeItem],
     directory_item_ids: &mut HashSet<String>,
@@ -1055,10 +1343,10 @@ fn collect_directory_item_ids_from_tree(
     }
 }
 
-fn sort_tree_items(items: &mut [TreeItem]) {
+fn sort_tree_items(items: &mut [FileTreeItemModel]) {
     items.sort_by(|a, b| {
-        b.is_folder()
-            .cmp(&a.is_folder())
+        b.is_directory
+            .cmp(&a.is_directory)
             .then(a.label.cmp(&b.label))
     });
 }
@@ -1959,6 +2247,19 @@ impl crate::app::Papyru2App {
     }
 
     pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
+        let initial_load_completed = self.file_tree.read(cx).initial_load_completed;
+        if req_boot_should_skip_watcher_refresh_until_initial_load_complete(initial_load_completed)
+        {
+            crate::log::trace_debug(
+                "file_tree watcher refresh skipped initial_load_completed=false",
+            );
+            crate::log::boot_profile_mark_detail(
+                "file_tree.watcher_refresh_skipped",
+                "reason=initial_load_incomplete".to_string(),
+            );
+            return;
+        }
+
         let refresh_total_started_at = std::time::Instant::now();
         let current_edit_path = self.file_workflow.current_edit_path();
         let current_edit_daily_dir = current_edit_path
@@ -2103,7 +2404,7 @@ impl crate::app::Papyru2App {
         daily_dir: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         let immediate_plan = self.file_tree.update(cx, |file_tree, cx| {
             file_tree.apply_req_ftr18_startup_daily_folder_position(daily_dir.as_path(), cx)
         });
@@ -2112,7 +2413,7 @@ impl crate::app::Papyru2App {
                 "file_tree req-ftr18 startup immediate prepared=false daily_dir={}",
                 daily_dir.display()
             ));
-            return;
+            return false;
         };
 
         self.file_tree.update(cx, |file_tree, cx| {
@@ -2173,6 +2474,38 @@ impl crate::app::Papyru2App {
                 ));
             });
         });
+
+        true
+    }
+
+    pub(crate) fn handle_file_tree_initial_load_completed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(daily_dir) = req_boot_take_pending_startup_daily_dir_for_initial_load_completion(
+            &mut self.pending_startup_daily_dir,
+        ) else {
+            crate::log::trace_debug(
+                "file_tree startup initial-load completion ignored (no pending daily_dir)",
+            );
+            crate::log::flush_boot_profile("initial_file_tree_load_completed_no_pending_daily_dir");
+            return;
+        };
+
+        let startup_position_started = std::time::Instant::now();
+        let prepared =
+            self.apply_req_ftr18_startup_daily_folder_positioning(daily_dir.clone(), window, cx);
+        crate::log::boot_profile_mark_timing(
+            "startup.file_tree_startup_positioning",
+            startup_position_started.elapsed(),
+            format!(
+                "deferred=true prepared={} daily_dir={}",
+                prepared,
+                daily_dir.display()
+            ),
+        );
+        crate::log::flush_boot_profile("initial_file_tree_load_completed");
     }
 
     pub(crate) fn on_file_tree_delete_requested(
@@ -2330,6 +2663,9 @@ mod tests {
         build_file_items, collect_tree_item_ids, collect_visible_item_ids,
         delete_entries_for_file_tree, expanded_folder_item_ids, find_visible_index,
         is_delete_protected_path, move_entries_to_recyclebin, replace_single_selection,
+        req_boot_pending_startup_daily_dir_after_initial_position_attempt,
+        req_boot_should_skip_watcher_refresh_until_initial_load_complete,
+        req_boot_take_pending_startup_daily_dir_for_initial_load_completion,
         req_ftr17_post_delete_decision_from_filesystem,
         req_ftr17_post_delete_decision_from_remaining_files, req_ftr17_sort_key,
         req_ftr23_daily_dir_plan, retain_existing_selections, select_range_items,
@@ -2350,6 +2686,44 @@ mod tests {
     };
 
     use super::{ReqFtr25RenderPolicy, req_ftr25_render_policy};
+
+    #[test]
+    fn boot_test2_deferred_startup_daily_folder_positioning_keeps_pending_dir() {
+        let daily_dir = PathBuf::from("C:/tmp/user_document/2026/04/25");
+
+        assert_eq!(
+            req_boot_pending_startup_daily_dir_after_initial_position_attempt(
+                daily_dir.clone(),
+                false,
+            ),
+            Some(daily_dir.clone())
+        );
+        assert_eq!(
+            req_boot_pending_startup_daily_dir_after_initial_position_attempt(daily_dir, true),
+            None
+        );
+    }
+
+    #[test]
+    fn boot_test3_initial_load_completion_consumes_pending_daily_dir_once() {
+        let daily_dir = PathBuf::from("C:/tmp/user_document/2026/04/25");
+        let mut pending = Some(daily_dir.clone());
+
+        assert_eq!(
+            req_boot_take_pending_startup_daily_dir_for_initial_load_completion(&mut pending),
+            Some(daily_dir)
+        );
+        assert_eq!(
+            req_boot_take_pending_startup_daily_dir_for_initial_load_completion(&mut pending),
+            None
+        );
+    }
+
+    #[test]
+    fn boot_test4_watcher_refresh_waits_until_initial_load_completes() {
+        assert!(req_boot_should_skip_watcher_refresh_until_initial_load_complete(false));
+        assert!(!req_boot_should_skip_watcher_refresh_until_initial_load_complete(true));
+    }
 
     fn new_temp_root(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
