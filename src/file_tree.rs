@@ -1,6 +1,8 @@
 use std::{
     collections::HashSet,
-    fs, io,
+    fs,
+    hash::{Hash, Hasher},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -192,6 +194,7 @@ pub struct FileTreeView {
     tree_root_dir: PathBuf,
     root_items: Vec<TreeItem>,
     directory_item_ids: HashSet<String>,
+    file_tree_model_fingerprint: Option<u64>,
     protected_delete_roots: Vec<PathBuf>,
     selected_item_ids: HashSet<String>,
     delete_shortcut_armed: bool,
@@ -252,6 +255,7 @@ impl FileTreeView {
             tree_root_dir,
             root_items: Vec::new(),
             directory_item_ids: HashSet::new(),
+            file_tree_model_fingerprint: None,
             protected_delete_roots,
             selected_item_ids: HashSet::new(),
             delete_shortcut_armed: false,
@@ -419,6 +423,7 @@ impl FileTreeView {
         let req_ftr19_daily_dir_count = req_ftr19_daily_dirs.len();
         self.root_items = refreshed_items;
         self.directory_item_ids = scan_result.directory_item_ids;
+        self.file_tree_model_fingerprint = Some(scan_result.structural_fingerprint);
 
         if req_ftr19_daily_dir_count > 0 {
             let mut daily_dirs: Vec<String> = req_ftr19_daily_dirs.iter().cloned().collect();
@@ -543,6 +548,15 @@ impl FileTreeView {
                 )
             },
         );
+    }
+
+    fn read_with_current_tree_fingerprint(&self) -> (Option<u64>, usize, usize, usize) {
+        (
+            self.file_tree_model_fingerprint,
+            self.root_items.len(),
+            self.visible_item_ids.len(),
+            self.directory_item_ids.len(),
+        )
     }
 
     fn apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
@@ -1325,6 +1339,25 @@ fn collect_directory_item_ids_from_models(
     }
 }
 
+fn file_tree_model_structural_fingerprint(items: &[FileTreeItemModel]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hash_file_tree_item_models(items, &mut hasher);
+    hasher.finish()
+}
+
+fn hash_file_tree_item_models<H>(items: &[FileTreeItemModel], hasher: &mut H)
+where
+    H: Hasher,
+{
+    items.len().hash(hasher);
+    for item in items {
+        item.id.hash(hasher);
+        item.label.hash(hasher);
+        item.is_directory.hash(hasher);
+        hash_file_tree_item_models(&item.children, hasher);
+    }
+}
+
 fn build_file_items_with_stats(
     root: &PathBuf,
     path: &PathBuf,
@@ -1395,6 +1428,7 @@ fn build_file_items_recursive(
 struct FileTreeScanResult {
     item_models: Vec<FileTreeItemModel>,
     directory_item_ids: HashSet<String>,
+    structural_fingerprint: u64,
     build_stats: BuildFileItemsStats,
     build_duration: std::time::Duration,
     collect_directory_duration: std::time::Duration,
@@ -1485,10 +1519,12 @@ fn scan_file_tree_model(tree_root_dir: &PathBuf) -> FileTreeScanResult {
     let mut directory_item_ids = HashSet::new();
     collect_directory_item_ids_from_models(&item_models, &mut directory_item_ids);
     let collect_directory_duration = collect_started.elapsed();
+    let structural_fingerprint = file_tree_model_structural_fingerprint(&item_models);
 
     FileTreeScanResult {
         item_models,
         directory_item_ids,
+        structural_fingerprint,
         build_stats,
         build_duration,
         collect_directory_duration,
@@ -2557,6 +2593,52 @@ impl crate::app::Papyru2App {
         cx: &mut Context<Self>,
     ) {
         let apply_started = std::time::Instant::now();
+        let scan_fingerprint = scan_result.structural_fingerprint;
+        let (
+            current_fingerprint,
+            root_items_before,
+            visible_item_count_before,
+            directory_item_count_before,
+        ) = self.file_tree.read(cx).read_with_current_tree_fingerprint();
+        if current_fingerprint == Some(scan_fingerprint) {
+            let apply_elapsed = apply_started.elapsed();
+            crate::log::runtime_profile_mark_timing_lazy(
+                "file_tree.watcher_refresh_apply",
+                apply_elapsed,
+                || {
+                    format!(
+                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} root_items={} visible_item_count={} directory_item_count={}",
+                        generation,
+                        scan_fingerprint,
+                        root_items_before,
+                        visible_item_count_before,
+                        directory_item_count_before
+                    )
+                },
+            );
+            crate::log::runtime_profile_mark_timing_lazy(
+                "file_tree.watcher_refresh_total",
+                background_scan_elapsed.saturating_add(apply_elapsed),
+                || {
+                    format!(
+                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                        generation,
+                        scan_fingerprint,
+                        background_scan_elapsed.as_millis(),
+                        apply_elapsed.as_millis()
+                    )
+                },
+            );
+            crate::log::trace_debug(format!(
+                "file_tree watcher refresh async skipped unchanged generation={} fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                generation,
+                scan_fingerprint,
+                background_scan_elapsed.as_millis(),
+                apply_elapsed.as_millis()
+            ));
+            return;
+        }
+
         let current_edit_path = self.file_workflow.current_edit_path();
         let current_edit_daily_dir = current_edit_path
             .as_deref()
@@ -2607,8 +2689,10 @@ impl crate::app::Papyru2App {
             apply_elapsed,
             || {
                 format!(
-                    "generation={} root_items={} visible_item_count={} directory_item_count={} restored_selection={} req-frt27_padding_rows={:?}",
+                    "generation={} apply_skipped=false fingerprint={} previous_fingerprint={:?} root_items={} visible_item_count={} directory_item_count={} restored_selection={} req-frt27_padding_rows={:?}",
                     generation,
+                    scan_fingerprint,
+                    current_fingerprint,
                     root_items,
                     visible_item_count,
                     directory_item_count,
@@ -2622,7 +2706,7 @@ impl crate::app::Papyru2App {
             background_scan_elapsed.saturating_add(apply_elapsed),
             || {
                 format!(
-                    "generation={} current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                    "generation={} apply_skipped=false current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
                     generation,
                     current_edit_path.is_some(),
                     restored_selection,
@@ -3126,6 +3210,56 @@ mod tests {
             FileTreeWatcherRefreshCompletionDecision::Ignore {
                 completed_generation: 1,
             }
+        );
+    }
+
+    #[test]
+    fn aus_lag3_test8_model_fingerprint_is_stable_for_same_structure() {
+        let items = vec![super::FileTreeItemModel {
+            id: "root/a.txt".to_string(),
+            label: "a.txt".to_string(),
+            is_directory: false,
+            children: Vec::new(),
+        }];
+        let same_items = vec![super::FileTreeItemModel {
+            id: "root/a.txt".to_string(),
+            label: "a.txt".to_string(),
+            is_directory: false,
+            children: Vec::new(),
+        }];
+
+        assert_eq!(
+            super::file_tree_model_structural_fingerprint(&items),
+            super::file_tree_model_structural_fingerprint(&same_items)
+        );
+    }
+
+    #[test]
+    fn aus_lag3_test9_model_fingerprint_changes_for_shape_changes() {
+        let original = vec![super::FileTreeItemModel {
+            id: "root/a.txt".to_string(),
+            label: "a.txt".to_string(),
+            is_directory: false,
+            children: Vec::new(),
+        }];
+        let changed = vec![
+            super::FileTreeItemModel {
+                id: "root/a.txt".to_string(),
+                label: "a.txt".to_string(),
+                is_directory: false,
+                children: Vec::new(),
+            },
+            super::FileTreeItemModel {
+                id: "root/b.txt".to_string(),
+                label: "b.txt".to_string(),
+                is_directory: false,
+                children: Vec::new(),
+            },
+        ];
+
+        assert_ne!(
+            super::file_tree_model_structural_fingerprint(&original),
+            super::file_tree_model_structural_fingerprint(&changed)
         );
     }
 
