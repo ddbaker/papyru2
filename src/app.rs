@@ -24,7 +24,7 @@ use windows::Win32::{
 };
 
 use crate::editor::Papyru2Editor;
-use crate::file_tree::{FileTreeEvent, FileTreeView};
+use crate::file_tree::{FileTreeEvent, FileTreeView, FileTreeWatcherRefreshState};
 use crate::top_bars::{SHARED_INTER_PANEL_SPACING_PX, TopBars};
 
 pub(crate) use crate::log::trace_debug;
@@ -739,6 +739,7 @@ pub struct Papyru2App {
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) app_paths: crate::path_resolver::AppPaths,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
+    pub(crate) file_tree_watcher_refresh_state: FileTreeWatcherRefreshState,
     pub(crate) selection_focus_reassert_pending: bool,
     pub(crate) rpc_highlight_active: bool,
     pub(crate) rpc_highlight_line_1_based: Option<u32>,
@@ -1308,6 +1309,7 @@ impl Papyru2App {
             _subscriptions: subscriptions,
             app_paths,
             _file_tree_watcher: file_tree_watcher,
+            file_tree_watcher_refresh_state: FileTreeWatcherRefreshState::default(),
             selection_focus_reassert_pending: false,
             rpc_highlight_active: false,
             rpc_highlight_line_1_based: None,
@@ -2488,6 +2490,7 @@ pub fn run() {
         }
     };
     crate::log::configure_boot_profile_log_path(&app_paths);
+    crate::log::configure_runtime_profile_log_path(&app_paths);
     crate::log::boot_profile_mark_timing(
         "startup.path_resolver",
         path_resolve_started.elapsed(),

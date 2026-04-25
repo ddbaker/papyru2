@@ -213,15 +213,34 @@ pub fn spawn_editor_autosave_worker(
                 "autosave step-5 raise event path={} text_len={}",
                 target, editor_len
             ));
+            crate::log::runtime_profile_mark_detail_lazy("autosave.due", || {
+                format!("path={} text_len={}", target, editor_len)
+            });
 
+            let autosave_started = Instant::now();
             match autosave_workflow.try_autosave_in_edit(payload) {
                 Ok(true) => {
+                    crate::log::runtime_profile_mark_timing_lazy(
+                        "autosave.try_autosave_in_edit",
+                        autosave_started.elapsed(),
+                        || format!("ok=true saved=true path={} text_len={}", target, editor_len),
+                    );
                     crate::log::trace_debug(format!(
                         "autosave success path={} text_len={} (step-6 reset)",
                         target, editor_len
                     ));
                 }
                 Ok(false) => {
+                    crate::log::runtime_profile_mark_timing_lazy(
+                        "autosave.try_autosave_in_edit",
+                        autosave_started.elapsed(),
+                        || {
+                            format!(
+                                "ok=true saved=false path={} text_len={}",
+                                target, editor_len
+                            )
+                        },
+                    );
                     crate::log::trace_debug(format!(
                         "autosave critical skipped (state/path invalid) path={}",
                         target
@@ -232,6 +251,16 @@ pub fn spawn_editor_autosave_worker(
                     );
                 }
                 Err(error) => {
+                    crate::log::runtime_profile_mark_timing_lazy(
+                        "autosave.try_autosave_in_edit",
+                        autosave_started.elapsed(),
+                        || {
+                            format!(
+                                "ok=false path={} text_len={} error={error}",
+                                target, editor_len
+                            )
+                        },
+                    );
                     crate::log::trace_debug(format!(
                         "autosave failure path={} error={error} (step-6 reset)",
                         target
@@ -405,7 +434,25 @@ fn process_event(event: FileWorkflowEvent) -> io::Result<FileWorkflowEventResult
             Ok(FileWorkflowEventResult::Renamed { path })
         }
         FileWorkflowEvent::AutoSave(request) => {
-            let path = save_editor_text_payload_atomic(&request.payload)?;
+            let save_started = Instant::now();
+            let save_result = save_editor_text_payload_atomic(&request.payload);
+            crate::log::runtime_profile_mark_timing_lazy(
+                "autosave.worker_save",
+                save_started.elapsed(),
+                || match &save_result {
+                    Ok(path) => format!(
+                        "ok=true path={} text_len={}",
+                        path.display(),
+                        request.payload.editor_text.len()
+                    ),
+                    Err(error) => format!(
+                        "ok=false path={} text_len={} error={error}",
+                        request.payload.current_path.display(),
+                        request.payload.editor_text.len()
+                    ),
+                },
+            );
+            let path = save_result?;
             Ok(FileWorkflowEventResult::AutoSaved { path })
         }
         FileWorkflowEvent::RpcPin(request) => {
@@ -677,9 +724,22 @@ impl SinglelineCreateFileWorkflow {
             current_path
         };
 
+        let dispatch_started = Instant::now();
         let result = self
             .dispatcher
-            .dispatch_blocking(FileWorkflowEvent::AutoSave(AutoSaveFileRequest { payload }))?;
+            .dispatch_blocking(FileWorkflowEvent::AutoSave(AutoSaveFileRequest { payload }));
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.dispatch_blocking",
+            dispatch_started.elapsed(),
+            || match &result {
+                Ok(FileWorkflowEventResult::AutoSaved { path }) => {
+                    format!("ok=true result=autosaved path={}", path.display())
+                }
+                Ok(other) => format!("ok=true result={other:?}"),
+                Err(error) => format!("ok=false error={error}"),
+            },
+        );
+        let result = result?;
 
         match result {
             FileWorkflowEventResult::AutoSaved { path } => {
@@ -1062,6 +1122,7 @@ pub fn rename_text_file(request: &RenameFileRequest) -> io::Result<PathBuf> {
 }
 
 fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Result<PathBuf> {
+    let save_started = Instant::now();
     // Keep a serde round-trip in event handling to satisfy req-aus4 payload serialization contract,
     // while persisting raw editor text as the file content.
     let serialized = serde_json::to_vec(payload)
@@ -1069,12 +1130,84 @@ fn save_editor_text_payload_atomic(payload: &EditorAutoSavePayload) -> io::Resul
     let decoded: EditorAutoSavePayload = serde_json::from_slice(&serialized)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
 
-    let relocated_path = move_existing_file_to_daily_directory(
+    let move_started = Instant::now();
+    let relocated_path_result = move_existing_file_to_daily_directory(
         decoded.current_path.as_path(),
         decoded.user_document_dir.as_path(),
         Local::now(),
-    )?;
-    write_editor_text_atomic(relocated_path.as_path(), decoded.editor_text.as_bytes())?;
+    );
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.move_to_daily",
+        move_started.elapsed(),
+        || match &relocated_path_result {
+            Ok(path) => format!(
+                "ok=true old_path={} new_path={} moved={}",
+                decoded.current_path.display(),
+                path.display(),
+                path != &decoded.current_path
+            ),
+            Err(error) => format!(
+                "ok=false old_path={} error={error}",
+                decoded.current_path.display()
+            ),
+        },
+    );
+    let relocated_path = match relocated_path_result {
+        Ok(path) => path,
+        Err(error) => {
+            crate::log::runtime_profile_mark_timing_lazy(
+                "autosave.save_payload_total",
+                save_started.elapsed(),
+                || format!("ok=false phase=move error={error}"),
+            );
+            return Err(error);
+        }
+    };
+
+    let write_started = Instant::now();
+    let write_result =
+        write_editor_text_atomic(relocated_path.as_path(), decoded.editor_text.as_bytes());
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.write_atomic",
+        write_started.elapsed(),
+        || match &write_result {
+            Ok(()) => format!(
+                "ok=true path={} bytes={}",
+                relocated_path.display(),
+                decoded.editor_text.len()
+            ),
+            Err(error) => format!(
+                "ok=false path={} bytes={} error={error}",
+                relocated_path.display(),
+                decoded.editor_text.len()
+            ),
+        },
+    );
+    if let Err(error) = write_result {
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.save_payload_total",
+            save_started.elapsed(),
+            || {
+                format!(
+                    "ok=false phase=write path={} error={error}",
+                    relocated_path.display()
+                )
+            },
+        );
+        return Err(error);
+    }
+
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.save_payload_total",
+        save_started.elapsed(),
+        || {
+            format!(
+                "ok=true path={} bytes={}",
+                relocated_path.display(),
+                decoded.editor_text.len()
+            )
+        },
+    );
     Ok(relocated_path)
 }
 
@@ -1090,53 +1223,213 @@ fn write_editor_text_atomic_with_replace<F>(
 where
     F: Fn(&Path, &Path) -> io::Result<()>,
 {
+    let write_total_started = Instant::now();
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "editor autosave path has no parent directory",
         )
     })?;
-    fs::create_dir_all(parent)?;
+
+    let create_dir_started = Instant::now();
+    let create_dir_result = fs::create_dir_all(parent);
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_create_parent_dir",
+        create_dir_started.elapsed(),
+        || match &create_dir_result {
+            Ok(()) => format!("ok=true parent={}", parent.display()),
+            Err(error) => format!("ok=false parent={} error={error}", parent.display()),
+        },
+    );
+    if let Err(error) = create_dir_result {
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.atomic_write_total",
+            write_total_started.elapsed(),
+            || {
+                format!(
+                    "ok=false phase=create_parent_dir path={} error={error}",
+                    path.display()
+                )
+            },
+        );
+        return Err(error);
+    }
 
     let temp_path = editor_temp_path_for_atomic_write(path)?;
-    if temp_path.is_file() {
+    let temp_existed = temp_path.is_file();
+    crate::log::runtime_profile_mark_detail_lazy("autosave.atomic_temp_path", || {
+        format!(
+            "path={} temp_path={} temp_existed={}",
+            path.display(),
+            temp_path.display(),
+            temp_existed
+        )
+    });
+    if temp_existed {
         fs::remove_file(&temp_path)?;
     }
-    let mut temp_file = fs::File::create(&temp_path).map_err(|error| {
+
+    let create_temp_started = Instant::now();
+    let temp_file_result = fs::File::create(&temp_path).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("editor autosave atomic write failed (create temp): {error}"),
         )
-    })?;
-    std::io::Write::write_all(&mut temp_file, bytes).map_err(|error| {
+    });
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_create_temp",
+        create_temp_started.elapsed(),
+        || match &temp_file_result {
+            Ok(_) => format!("ok=true temp_path={}", temp_path.display()),
+            Err(error) => format!("ok=false temp_path={} error={error}", temp_path.display()),
+        },
+    );
+    let mut temp_file = match temp_file_result {
+        Ok(temp_file) => temp_file,
+        Err(error) => {
+            crate::log::runtime_profile_mark_timing_lazy(
+                "autosave.atomic_write_total",
+                write_total_started.elapsed(),
+                || {
+                    format!(
+                        "ok=false phase=create_temp path={} error={error}",
+                        path.display()
+                    )
+                },
+            );
+            return Err(error);
+        }
+    };
+
+    let write_temp_started = Instant::now();
+    let write_temp_result = std::io::Write::write_all(&mut temp_file, bytes).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("editor autosave atomic write failed (write temp): {error}"),
         )
-    })?;
-    temp_file.sync_all().map_err(|error| {
+    });
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_write_temp",
+        write_temp_started.elapsed(),
+        || match &write_temp_result {
+            Ok(()) => format!(
+                "ok=true temp_path={} bytes={}",
+                temp_path.display(),
+                bytes.len()
+            ),
+            Err(error) => format!(
+                "ok=false temp_path={} bytes={} error={error}",
+                temp_path.display(),
+                bytes.len()
+            ),
+        },
+    );
+    if let Err(error) = write_temp_result {
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.atomic_write_total",
+            write_total_started.elapsed(),
+            || {
+                format!(
+                    "ok=false phase=write_temp path={} error={error}",
+                    path.display()
+                )
+            },
+        );
+        return Err(error);
+    }
+
+    let sync_temp_started = Instant::now();
+    let sync_temp_result = temp_file.sync_all().map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("editor autosave atomic write failed (sync temp): {error}"),
         )
-    })?;
+    });
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_sync_temp",
+        sync_temp_started.elapsed(),
+        || match &sync_temp_result {
+            Ok(()) => format!("ok=true temp_path={}", temp_path.display()),
+            Err(error) => format!("ok=false temp_path={} error={error}", temp_path.display()),
+        },
+    );
+    if let Err(error) = sync_temp_result {
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.atomic_write_total",
+            write_total_started.elapsed(),
+            || {
+                format!(
+                    "ok=false phase=sync_temp path={} error={error}",
+                    path.display()
+                )
+            },
+        );
+        return Err(error);
+    }
     drop(temp_file);
 
-    if let Err(replace_error) = replace_fn(&temp_path, path).map_err(|error| {
+    let replace_started = Instant::now();
+    let replace_result = replace_fn(&temp_path, path).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("editor autosave atomic write failed (replace target): {error}"),
         )
-    }) {
+    });
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_replace_target",
+        replace_started.elapsed(),
+        || match &replace_result {
+            Ok(()) => format!(
+                "ok=true temp_path={} target_path={}",
+                temp_path.display(),
+                path.display()
+            ),
+            Err(error) => format!(
+                "ok=false temp_path={} target_path={} error={error}",
+                temp_path.display(),
+                path.display()
+            ),
+        },
+    );
+    if let Err(replace_error) = replace_result {
+        let replace_error_kind = replace_error.kind();
+        let replace_error_text = replace_error.to_string();
         if let Err(cleanup_error) = cleanup_editor_temp_file(&temp_path) {
-            return Err(io::Error::new(
-                replace_error.kind(),
-                format!("{replace_error}; cleanup temp failed: {cleanup_error}"),
-            ));
+            let combined_error = io::Error::new(
+                replace_error_kind,
+                format!("{replace_error_text}; cleanup temp failed: {cleanup_error}"),
+            );
+            crate::log::runtime_profile_mark_timing_lazy(
+                "autosave.atomic_write_total",
+                write_total_started.elapsed(),
+                || {
+                    format!(
+                        "ok=false phase=replace_cleanup path={} error={}",
+                        path.display(),
+                        combined_error
+                    )
+                },
+            );
+            return Err(combined_error);
         }
-        return Err(replace_error);
+        crate::log::runtime_profile_mark_timing_lazy(
+            "autosave.atomic_write_total",
+            write_total_started.elapsed(),
+            || {
+                format!(
+                    "ok=false phase=replace path={} error={replace_error_text}",
+                    path.display()
+                )
+            },
+        );
+        return Err(io::Error::new(replace_error_kind, replace_error_text));
     }
 
+    crate::log::runtime_profile_mark_timing_lazy(
+        "autosave.atomic_write_total",
+        write_total_started.elapsed(),
+        || format!("ok=true path={} bytes={}", path.display(), bytes.len()),
+    );
     Ok(())
 }
 

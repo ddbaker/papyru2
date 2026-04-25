@@ -354,6 +354,7 @@ impl FileTreeView {
         scan_result: FileTreeScanResult,
         cx: &mut Context<Self>,
     ) {
+        let apply_started = std::time::Instant::now();
         crate::log::boot_profile_mark_timing(
             "file_tree.build_file_items",
             scan_result.build_duration,
@@ -366,6 +367,20 @@ impl FileTreeView {
                 scan_result.build_stats.read_dir_errors
             ),
         );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.build_file_items",
+            scan_result.build_duration,
+            || {
+                format!(
+                    "dir_count={} file_count={} max_depth={} read_dir_calls={} read_dir_errors={}",
+                    scan_result.build_stats.directory_count,
+                    scan_result.build_stats.file_count,
+                    scan_result.build_stats.max_depth,
+                    scan_result.build_stats.read_dir_calls,
+                    scan_result.build_stats.read_dir_errors
+                )
+            },
+        );
         crate::log::boot_profile_mark_timing(
             "file_tree.collect_directory_item_ids",
             scan_result.collect_directory_duration,
@@ -373,6 +388,16 @@ impl FileTreeView {
                 "directory_item_count={}",
                 scan_result.directory_item_ids.len()
             ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.collect_directory_item_ids",
+            scan_result.collect_directory_duration,
+            || {
+                format!(
+                    "directory_item_count={}",
+                    scan_result.directory_item_ids.len()
+                )
+            },
         );
 
         let previous_items = self.root_items.clone();
@@ -432,6 +457,34 @@ impl FileTreeView {
                 self.directory_item_ids.len()
             ),
         );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.load_files_total",
+            scan_result.total_duration,
+            || {
+                format!(
+                    "root_dir={} top_level_count={} expanded_snapshot_count={} expanded_restored_count={} req_ftr19_daily_dir_count={} req_ftr19_opened_folder_count={} directory_item_count={}",
+                    self.tree_root_dir.display(),
+                    self.root_items.len(),
+                    expanded_folder_item_ids.len(),
+                    expanded_restored_count,
+                    req_ftr19_daily_dir_count,
+                    req_ftr19_opened_folder_count,
+                    self.directory_item_ids.len()
+                )
+            },
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.apply_scan_result_total",
+            apply_started.elapsed(),
+            || {
+                format!(
+                    "root_items={} visible_item_count={} selected_item_count={}",
+                    self.root_items.len(),
+                    self.visible_item_ids.len(),
+                    self.selected_item_ids.len()
+                )
+            },
+        );
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -476,7 +529,20 @@ impl FileTreeView {
     }
 
     pub fn refresh_from_filesystem(&mut self, cx: &mut Context<Self>) {
+        let refresh_started = std::time::Instant::now();
         self.load_files(cx);
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.refresh_from_filesystem",
+            refresh_started.elapsed(),
+            || {
+                format!(
+                    "root_dir={} root_items={} visible_item_count={}",
+                    self.tree_root_dir.display(),
+                    self.root_items.len(),
+                    self.visible_item_ids.len()
+                )
+            },
+        );
     }
 
     fn apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
@@ -698,7 +764,22 @@ impl FileTreeView {
     }
 
     fn load_files(&mut self, cx: &mut Context<Self>) {
+        let scan_started = std::time::Instant::now();
         let scan_result = scan_file_tree_model(&self.tree_root_dir);
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.scan_file_tree_model_sync",
+            scan_started.elapsed(),
+            || {
+                format!(
+                    "root_dir={} dir_count={} file_count={} read_dir_calls={} read_dir_errors={}",
+                    self.tree_root_dir.display(),
+                    scan_result.build_stats.directory_count,
+                    scan_result.build_stats.file_count,
+                    scan_result.build_stats.read_dir_calls,
+                    scan_result.build_stats.read_dir_errors
+                )
+            },
+        );
         self.apply_file_tree_scan_result(scan_result, cx);
     }
 
@@ -733,6 +814,18 @@ impl FileTreeView {
                 self.selected_item_ids.len(),
                 self.visible_item_ids.len()
             ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.set_items_from_model",
+            set_items_started.elapsed(),
+            || {
+                format!(
+                    "root_items={} selected_item_count={} visible_item_count={}",
+                    self.root_items.len(),
+                    self.selected_item_ids.len(),
+                    self.visible_item_ids.len()
+                )
+            },
         );
     }
 
@@ -1306,6 +1399,79 @@ struct FileTreeScanResult {
     build_duration: std::time::Duration,
     collect_directory_duration: std::time::Duration,
     total_duration: std::time::Duration,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileTreeWatcherRefreshState {
+    latest_requested_generation: u64,
+    in_flight_generation: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileTreeWatcherRefreshRequestDecision {
+    Spawn {
+        generation: u64,
+    },
+    Coalesced {
+        latest_generation: u64,
+        in_flight_generation: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileTreeWatcherRefreshCompletionDecision {
+    Apply {
+        generation: u64,
+    },
+    Rescan {
+        completed_generation: u64,
+        next_generation: u64,
+    },
+    Ignore {
+        completed_generation: u64,
+    },
+}
+
+impl FileTreeWatcherRefreshState {
+    pub(crate) fn request(&mut self) -> FileTreeWatcherRefreshRequestDecision {
+        self.latest_requested_generation = self.latest_requested_generation.saturating_add(1);
+        let generation = self.latest_requested_generation;
+
+        if let Some(in_flight_generation) = self.in_flight_generation {
+            return FileTreeWatcherRefreshRequestDecision::Coalesced {
+                latest_generation: generation,
+                in_flight_generation,
+            };
+        }
+
+        self.in_flight_generation = Some(generation);
+        FileTreeWatcherRefreshRequestDecision::Spawn { generation }
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        completed_generation: u64,
+    ) -> FileTreeWatcherRefreshCompletionDecision {
+        if self.in_flight_generation != Some(completed_generation) {
+            return FileTreeWatcherRefreshCompletionDecision::Ignore {
+                completed_generation,
+            };
+        }
+
+        self.in_flight_generation = None;
+        if completed_generation < self.latest_requested_generation {
+            let next_generation = self.latest_requested_generation;
+            self.in_flight_generation = Some(next_generation);
+            return FileTreeWatcherRefreshCompletionDecision::Rescan {
+                completed_generation,
+                next_generation,
+            };
+        }
+
+        FileTreeWatcherRefreshCompletionDecision::Apply {
+            generation: completed_generation,
+        }
+    }
 }
 
 fn scan_file_tree_model(tree_root_dir: &PathBuf) -> FileTreeScanResult {
@@ -2257,10 +2423,140 @@ impl crate::app::Papyru2App {
                 "file_tree.watcher_refresh_skipped",
                 "reason=initial_load_incomplete".to_string(),
             );
+            crate::log::runtime_profile_mark_detail(
+                "file_tree.watcher_refresh_skipped",
+                "reason=initial_load_incomplete".to_string(),
+            );
             return;
         }
 
-        let refresh_total_started_at = std::time::Instant::now();
+        match self.file_tree_watcher_refresh_state.request() {
+            FileTreeWatcherRefreshRequestDecision::Spawn { generation } => {
+                crate::log::runtime_profile_mark_detail(
+                    "file_tree.watcher_refresh_request",
+                    format!("generation={generation} action=spawn"),
+                );
+                self.spawn_file_tree_watcher_refresh_scan(generation, cx);
+            }
+            FileTreeWatcherRefreshRequestDecision::Coalesced {
+                latest_generation,
+                in_flight_generation,
+            } => {
+                crate::log::runtime_profile_mark_detail(
+                    "file_tree.watcher_refresh_request",
+                    format!(
+                        "generation={latest_generation} action=coalesced in_flight_generation={in_flight_generation}"
+                    ),
+                );
+                crate::log::trace_debug(format!(
+                    "file_tree watcher refresh coalesced generation={latest_generation} in_flight_generation={in_flight_generation}"
+                ));
+            }
+        }
+    }
+
+    fn spawn_file_tree_watcher_refresh_scan(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let tree_root_dir = self.file_tree.read(cx).tree_root_dir.clone();
+        crate::log::trace_debug(format!(
+            "file_tree watcher refresh scan spawned generation={} root_dir={}",
+            generation,
+            tree_root_dir.display()
+        ));
+
+        cx.spawn(async move |this, cx| {
+            let background_scan_started = std::time::Instant::now();
+            let scan_result = smol::unblock(move || scan_file_tree_model(&tree_root_dir)).await;
+            let background_scan_elapsed = background_scan_started.elapsed();
+
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            let _ = this.update(cx, move |app, cx| {
+                app.finish_file_tree_watcher_refresh(
+                    generation,
+                    scan_result,
+                    background_scan_elapsed,
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn finish_file_tree_watcher_refresh(
+        &mut self,
+        generation: u64,
+        scan_result: FileTreeScanResult,
+        background_scan_elapsed: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        let scan_dir_count = scan_result.build_stats.directory_count;
+        let scan_file_count = scan_result.build_stats.file_count;
+        let scan_read_dir_calls = scan_result.build_stats.read_dir_calls;
+        let scan_read_dir_errors = scan_result.build_stats.read_dir_errors;
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.watcher_refresh_background_scan",
+            background_scan_elapsed,
+            || {
+                format!(
+                    "generation={} dir_count={} file_count={} read_dir_calls={} read_dir_errors={}",
+                    generation,
+                    scan_dir_count,
+                    scan_file_count,
+                    scan_read_dir_calls,
+                    scan_read_dir_errors
+                )
+            },
+        );
+
+        match self.file_tree_watcher_refresh_state.complete(generation) {
+            FileTreeWatcherRefreshCompletionDecision::Apply { generation } => {
+                self.apply_completed_file_tree_watcher_scan_result(
+                    generation,
+                    scan_result,
+                    background_scan_elapsed,
+                    cx,
+                );
+            }
+            FileTreeWatcherRefreshCompletionDecision::Rescan {
+                completed_generation,
+                next_generation,
+            } => {
+                crate::log::runtime_profile_mark_detail(
+                    "file_tree.watcher_refresh_stale",
+                    format!(
+                        "completed_generation={} next_generation={} action=rescan",
+                        completed_generation, next_generation
+                    ),
+                );
+                crate::log::trace_debug(format!(
+                    "file_tree watcher refresh stale completed_generation={} next_generation={}",
+                    completed_generation, next_generation
+                ));
+                self.spawn_file_tree_watcher_refresh_scan(next_generation, cx);
+            }
+            FileTreeWatcherRefreshCompletionDecision::Ignore {
+                completed_generation,
+            } => {
+                crate::log::runtime_profile_mark_detail(
+                    "file_tree.watcher_refresh_completion_ignored",
+                    format!("completed_generation={completed_generation}"),
+                );
+                crate::log::trace_debug(format!(
+                    "file_tree watcher refresh completion ignored generation={completed_generation}"
+                ));
+            }
+        }
+    }
+
+    fn apply_completed_file_tree_watcher_scan_result(
+        &mut self,
+        generation: u64,
+        scan_result: FileTreeScanResult,
+        background_scan_elapsed: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) {
+        let apply_started = std::time::Instant::now();
         let current_edit_path = self.file_workflow.current_edit_path();
         let current_edit_daily_dir = current_edit_path
             .as_deref()
@@ -2274,20 +2570,22 @@ impl crate::app::Papyru2App {
         );
         let mut restored_selection = false;
         let mut req_frt27_padding_rows = None;
-        let mut filesystem_refresh_elapsed_ms = None;
+        let mut root_items = 0usize;
+        let mut visible_item_count = 0usize;
+        let mut directory_item_count = 0usize;
         self.file_tree.update(cx, |file_tree, cx| {
-            let filesystem_refresh_started_at = std::time::Instant::now();
-            file_tree.refresh_from_filesystem(cx);
-            filesystem_refresh_elapsed_ms =
-                Some(filesystem_refresh_started_at.elapsed().as_millis());
+            file_tree.apply_file_tree_scan_result(scan_result, cx);
+            root_items = file_tree.root_items.len();
+            visible_item_count = file_tree.visible_item_ids.len();
+            directory_item_count = file_tree.directory_item_ids.len();
             if let Some(daily_dir) = req_frt27_daily_dir.as_deref()
                 && let Some((_, _, padding_rows)) = file_tree
                     .apply_req_frt27_consistent_dynamic_padding_for_daily_dir(
                         daily_dir,
                         if current_edit_daily_dir.is_some() {
-                            "watcher-refresh"
+                            "watcher-refresh-async"
                         } else {
-                            "watcher-refresh-retained"
+                            "watcher-refresh-async-retained"
                         },
                         cx,
                     )
@@ -2303,16 +2601,51 @@ impl crate::app::Papyru2App {
                 restored_selection = file_tree.restore_selection_for_path(path, cx);
             }
         });
+        let apply_elapsed = apply_started.elapsed();
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.watcher_refresh_apply",
+            apply_elapsed,
+            || {
+                format!(
+                    "generation={} root_items={} visible_item_count={} directory_item_count={} restored_selection={} req-frt27_padding_rows={:?}",
+                    generation,
+                    root_items,
+                    visible_item_count,
+                    directory_item_count,
+                    restored_selection,
+                    req_frt27_padding_rows
+                )
+            },
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.watcher_refresh_total",
+            background_scan_elapsed.saturating_add(apply_elapsed),
+            || {
+                format!(
+                    "generation={} current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                    generation,
+                    current_edit_path.is_some(),
+                    restored_selection,
+                    current_edit_daily_dir.is_some(),
+                    retained_req_frt27_daily_dir.is_some(),
+                    req_frt27_daily_dir.is_some(),
+                    req_frt27_padding_rows,
+                    background_scan_elapsed.as_millis(),
+                    apply_elapsed.as_millis()
+                )
+            },
+        );
         crate::log::trace_debug(format!(
-            "file_tree watcher refresh applied current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} filesystem_refresh_elapsed_ms={:?} total_elapsed_ms={}",
+            "file_tree watcher refresh async applied generation={} current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+            generation,
             current_edit_path.is_some(),
             restored_selection,
             current_edit_daily_dir.is_some(),
             retained_req_frt27_daily_dir.is_some(),
             req_frt27_daily_dir.is_some(),
             req_frt27_padding_rows,
-            filesystem_refresh_elapsed_ms,
-            refresh_total_started_at.elapsed().as_millis()
+            background_scan_elapsed.as_millis(),
+            apply_elapsed.as_millis()
         ));
     }
 
@@ -2659,10 +2992,12 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        ReqFtr17PostDeleteDecision, ReqFtr23DailyDirPlan, TreeItem, apply_expanded_folder_item_ids,
-        build_file_items, collect_tree_item_ids, collect_visible_item_ids,
-        delete_entries_for_file_tree, expanded_folder_item_ids, find_visible_index,
-        is_delete_protected_path, move_entries_to_recyclebin, replace_single_selection,
+        FileTreeWatcherRefreshCompletionDecision, FileTreeWatcherRefreshRequestDecision,
+        FileTreeWatcherRefreshState, ReqFtr17PostDeleteDecision, ReqFtr23DailyDirPlan, TreeItem,
+        apply_expanded_folder_item_ids, build_file_items, collect_tree_item_ids,
+        collect_visible_item_ids, delete_entries_for_file_tree, expanded_folder_item_ids,
+        find_visible_index, is_delete_protected_path, move_entries_to_recyclebin,
+        replace_single_selection,
         req_boot_pending_startup_daily_dir_after_initial_position_attempt,
         req_boot_should_skip_watcher_refresh_until_initial_load_complete,
         req_boot_take_pending_startup_daily_dir_for_initial_load_completion,
@@ -2723,6 +3058,75 @@ mod tests {
     fn boot_test4_watcher_refresh_waits_until_initial_load_completes() {
         assert!(req_boot_should_skip_watcher_refresh_until_initial_load_complete(false));
         assert!(!req_boot_should_skip_watcher_refresh_until_initial_load_complete(true));
+    }
+
+    #[test]
+    fn aus_lag3_test5_refresh_state_coalesces_while_scan_is_in_flight() {
+        let mut state = FileTreeWatcherRefreshState::default();
+
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Spawn { generation: 1 }
+        );
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Coalesced {
+                latest_generation: 2,
+                in_flight_generation: 1,
+            }
+        );
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Coalesced {
+                latest_generation: 3,
+                in_flight_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn aus_lag3_test6_refresh_state_rescans_after_stale_completion() {
+        let mut state = FileTreeWatcherRefreshState::default();
+
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Spawn { generation: 1 }
+        );
+        let _ = state.request();
+        assert_eq!(
+            state.complete(1),
+            FileTreeWatcherRefreshCompletionDecision::Rescan {
+                completed_generation: 1,
+                next_generation: 2,
+            }
+        );
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Coalesced {
+                latest_generation: 3,
+                in_flight_generation: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn aus_lag3_test7_refresh_state_applies_latest_completion() {
+        let mut state = FileTreeWatcherRefreshState::default();
+
+        assert_eq!(
+            state.request(),
+            FileTreeWatcherRefreshRequestDecision::Spawn { generation: 1 }
+        );
+        assert_eq!(
+            state.complete(1),
+            FileTreeWatcherRefreshCompletionDecision::Apply { generation: 1 }
+        );
+        assert_eq!(
+            state.complete(1),
+            FileTreeWatcherRefreshCompletionDecision::Ignore {
+                completed_generation: 1,
+            }
+        );
     }
 
     fn new_temp_root(name: &str) -> PathBuf {

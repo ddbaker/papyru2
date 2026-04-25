@@ -86,7 +86,8 @@ fn watcher_loop(
         if let Some(event_result) = next_event {
             match event_result {
                 Ok(event) => {
-                    if should_schedule_refresh(root_dir.as_path(), &event) {
+                    let schedule_refresh = should_schedule_refresh(root_dir.as_path(), &event);
+                    if schedule_refresh {
                         let first_path = event
                             .paths
                             .first()
@@ -98,10 +99,42 @@ fn watcher_loop(
                             event.paths.len(),
                             first_path
                         ));
+                        crate::log::runtime_profile_mark_detail_lazy(
+                            "file_tree.watcher_event",
+                            || {
+                                format!(
+                                    "accepted=true kind={:?} path_count={} first_path={}",
+                                    event.kind,
+                                    event.paths.len(),
+                                    first_path
+                                )
+                            },
+                        );
                         pending_deadline = Some(Instant::now() + FILE_TREE_WATCH_DEBOUNCE);
+                    } else {
+                        crate::log::runtime_profile_mark_detail_lazy(
+                            "file_tree.watcher_event",
+                            || {
+                                let first_path = event
+                                    .paths
+                                    .first()
+                                    .map(|path| path.display().to_string())
+                                    .unwrap_or_else(|| "<none>".to_string());
+                                format!(
+                                    "accepted=false kind={:?} path_count={} first_path={}",
+                                    event.kind,
+                                    event.paths.len(),
+                                    first_path
+                                )
+                            },
+                        );
                     }
                 }
                 Err(error) => {
+                    crate::log::runtime_profile_mark_detail_lazy(
+                        "file_tree.watcher_event_error",
+                        || format!("error={error}"),
+                    );
                     crate::log::trace_debug(format!("file_tree watcher event error={error}"));
                 }
             }
@@ -113,6 +146,7 @@ fn watcher_loop(
         }
 
         crate::log::trace_debug("file_tree watcher debounce flush");
+        crate::log::runtime_profile_mark_detail("file_tree.watcher_debounce_flush", String::new());
         if refresh_tx.send_blocking(()).is_err() {
             break;
         }

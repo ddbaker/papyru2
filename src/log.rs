@@ -10,9 +10,14 @@ static TRACE_DEBUG_ENABLED: std::sync::OnceLock<std::sync::atomic::AtomicBool> =
 
 const REQ_BOOT_PROFILE_ENV_VAR: &str = "PAPYRU2_BOOT_PROFILE";
 pub(crate) const PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME: &str = "papyru2_boot_profile.log";
+const REQ_RUNTIME_PROFILE_ENV_VAR: &str = "PAPYRU2_RUNTIME_PROFILE";
+pub(crate) const PAPYRU2_RUNTIME_PROFILE_LOG_FILE_NAME: &str = "papyru2_runtime_profile.log";
 
 static BOOT_PROFILE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 static BOOT_PROFILE_STATE: std::sync::OnceLock<std::sync::Mutex<BootProfileState>> =
+    std::sync::OnceLock::new();
+static RUNTIME_PROFILE_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static RUNTIME_PROFILE_LOG_PATH: std::sync::OnceLock<std::sync::Mutex<PathBuf>> =
     std::sync::OnceLock::new();
 
 #[derive(Debug)]
@@ -41,11 +46,15 @@ impl BootProfileState {
     }
 }
 
-fn req_boot_profile_enabled_from_env_value(value: &str) -> bool {
+fn req_profile_enabled_from_env_value(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+fn req_boot_profile_enabled_from_env_value(value: &str) -> bool {
+    req_profile_enabled_from_env_value(value)
 }
 
 fn req_boot_profile_enabled_from_env() -> bool {
@@ -58,6 +67,20 @@ pub(crate) fn req_boot_profile_enabled() -> bool {
     *BOOT_PROFILE_ENABLED.get_or_init(req_boot_profile_enabled_from_env)
 }
 
+fn req_runtime_profile_enabled_from_env_value(value: &str) -> bool {
+    req_profile_enabled_from_env_value(value)
+}
+
+fn req_runtime_profile_enabled_from_env() -> bool {
+    std::env::var(REQ_RUNTIME_PROFILE_ENV_VAR)
+        .map(|value| req_runtime_profile_enabled_from_env_value(value.as_str()))
+        .unwrap_or(false)
+}
+
+pub(crate) fn req_runtime_profile_enabled() -> bool {
+    *RUNTIME_PROFILE_ENABLED.get_or_init(req_runtime_profile_enabled_from_env)
+}
+
 fn boot_profile_output_path_from_app_paths(app_paths: &crate::path_resolver::AppPaths) -> PathBuf {
     app_paths.log_file_path(PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME)
 }
@@ -68,8 +91,25 @@ fn default_boot_profile_log_path() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from(PAPYRU2_BOOT_PROFILE_LOG_FILE_NAME))
 }
 
+fn runtime_profile_output_path_from_app_paths(
+    app_paths: &crate::path_resolver::AppPaths,
+) -> PathBuf {
+    app_paths.log_file_path(PAPYRU2_RUNTIME_PROFILE_LOG_FILE_NAME)
+}
+
+fn default_runtime_profile_log_path() -> PathBuf {
+    crate::path_resolver::AppPaths::resolve()
+        .map(|app_paths| runtime_profile_output_path_from_app_paths(&app_paths))
+        .unwrap_or_else(|_| PathBuf::from(PAPYRU2_RUNTIME_PROFILE_LOG_FILE_NAME))
+}
+
 fn boot_profile_state_lock() -> &'static std::sync::Mutex<BootProfileState> {
     BOOT_PROFILE_STATE.get_or_init(|| std::sync::Mutex::new(BootProfileState::new()))
+}
+
+fn runtime_profile_log_path_lock() -> &'static std::sync::Mutex<PathBuf> {
+    RUNTIME_PROFILE_LOG_PATH
+        .get_or_init(|| std::sync::Mutex::new(default_runtime_profile_log_path()))
 }
 
 pub(crate) fn configure_boot_profile_log_path(app_paths: &crate::path_resolver::AppPaths) {
@@ -79,6 +119,16 @@ pub(crate) fn configure_boot_profile_log_path(app_paths: &crate::path_resolver::
 
     if let Ok(mut state) = boot_profile_state_lock().lock() {
         state.output_path = Some(boot_profile_output_path_from_app_paths(app_paths));
+    }
+}
+
+pub(crate) fn configure_runtime_profile_log_path(app_paths: &crate::path_resolver::AppPaths) {
+    if !req_runtime_profile_enabled() {
+        return;
+    }
+
+    if let Ok(mut output_path) = runtime_profile_log_path_lock().lock() {
+        *output_path = runtime_profile_output_path_from_app_paths(app_paths);
     }
 }
 
@@ -105,12 +155,68 @@ fn boot_profile_push_line(stage: &str, detail: String) {
     }
 }
 
+fn runtime_profile_epoch_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn runtime_profile_push_line(stage: &str, detail: String) {
+    if !req_runtime_profile_enabled() {
+        return;
+    }
+
+    let output_path = runtime_profile_log_path_lock()
+        .lock()
+        .map(|path| path.clone())
+        .unwrap_or_else(|_| default_runtime_profile_log_path());
+    let epoch_ms = runtime_profile_epoch_ms();
+    let line = if detail.is_empty() {
+        format!("[runtime-profile] epoch_ms={epoch_ms} stage={stage}\n")
+    } else {
+        format!("[runtime-profile] epoch_ms={epoch_ms} stage={stage} {detail}\n")
+    };
+
+    if let Some(parent) = output_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_path.as_path())
+    {
+        let _ = std::io::Write::write_all(&mut file, line.as_bytes());
+    } else {
+        eprintln!(
+            "papyru2 runtime profile write failed path={}",
+            output_path.display()
+        );
+        eprintln!("{line}");
+    }
+}
+
 pub(crate) fn boot_profile_mark(stage: &str) {
     boot_profile_push_line(stage, String::new());
 }
 
 pub(crate) fn boot_profile_mark_detail(stage: &str, detail: String) {
     boot_profile_push_line(stage, detail);
+}
+
+pub(crate) fn runtime_profile_mark_detail(stage: &str, detail: String) {
+    runtime_profile_push_line(stage, detail);
+}
+
+pub(crate) fn runtime_profile_mark_detail_lazy<F>(stage: &str, detail: F)
+where
+    F: FnOnce() -> String,
+{
+    if !req_runtime_profile_enabled() {
+        return;
+    }
+
+    runtime_profile_push_line(stage, detail());
 }
 
 pub(crate) fn boot_profile_mark_timing(stage: &str, duration: std::time::Duration, detail: String) {
@@ -122,6 +228,35 @@ pub(crate) fn boot_profile_mark_timing(stage: &str, duration: std::time::Duratio
             format!("duration_ms={} {detail}", duration.as_millis()),
         );
     }
+}
+
+pub(crate) fn runtime_profile_mark_timing(
+    stage: &str,
+    duration: std::time::Duration,
+    detail: String,
+) {
+    if detail.is_empty() {
+        runtime_profile_push_line(stage, format!("duration_ms={}", duration.as_millis()));
+    } else {
+        runtime_profile_push_line(
+            stage,
+            format!("duration_ms={} {detail}", duration.as_millis()),
+        );
+    }
+}
+
+pub(crate) fn runtime_profile_mark_timing_lazy<F>(
+    stage: &str,
+    duration: std::time::Duration,
+    detail: F,
+) where
+    F: FnOnce() -> String,
+{
+    if !req_runtime_profile_enabled() {
+        return;
+    }
+
+    runtime_profile_mark_timing(stage, duration, detail());
 }
 
 pub(crate) fn flush_boot_profile(reason: &str) {
@@ -541,6 +676,20 @@ mod tests {
     fn log_test12_req_boot_profile_parser_rejects_non_truthy_tokens() {
         for value in ["", "0", "false", "no", "off", "unexpected"] {
             assert!(!req_boot_profile_enabled_from_env_value(value));
+        }
+    }
+
+    #[test]
+    fn log_test13_req_runtime_profile_parser_accepts_truthy_tokens() {
+        for value in ["1", "true", "TRUE", " yes ", "On"] {
+            assert!(req_runtime_profile_enabled_from_env_value(value));
+        }
+    }
+
+    #[test]
+    fn log_test14_req_runtime_profile_parser_rejects_non_truthy_tokens() {
+        for value in ["", "0", "false", "no", "off", "unexpected"] {
+            assert!(!req_runtime_profile_enabled_from_env_value(value));
         }
     }
 }
