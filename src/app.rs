@@ -89,12 +89,29 @@ impl Default for EditorConfig {
     }
 }
 
+pub(crate) const REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX: f32 = 0.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct FileTreeConfig {
+    pub horizontal_scroll_launch_offset_px: f32,
+}
+
+impl Default for FileTreeConfig {
+    fn default() -> Self {
+        Self {
+            horizontal_scroll_launch_offset_px: REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX,
+        }
+    }
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReqColrConfigFile {
     #[serde(default)]
     color: ReqColrColorSection,
     #[serde(default)]
     editor: ReqEditorSection,
+    #[serde(default)]
+    file_tree: ReqFileTreeSection,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -117,6 +134,24 @@ struct ReqEditorSection {
     show_whitespaces: Option<bool>,
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReqFileTreeSection {
+    #[serde(default)]
+    scrollbar: ReqFileTreeScrollbarSection,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReqFileTreeScrollbarSection {
+    #[serde(default)]
+    hz: ReqFileTreeScrollbarHzSection,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ReqFileTreeScrollbarHzSection {
+    #[serde(default)]
+    move_to_right_at_launch: Option<toml::Value>,
+}
+
 pub(crate) fn req_colr_rgb_hex_to_hsla(rgb_hex: u32) -> Hsla {
     Hsla::from(rgb(rgb_hex))
 }
@@ -135,13 +170,14 @@ fn req_colr_hex_text(rgb_hex: u32) -> String {
 
 fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) -> String {
     format!(
-        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\n",
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
         colors.background_rgb_hex,
         colors.foreground_rgb_hex,
         editor.code_editor,
         editor.soft_wrap,
         editor.line_number,
-        editor.show_whitespaces
+        editor.show_whitespaces,
+        REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX
     )
 }
 
@@ -308,6 +344,80 @@ pub(crate) fn load_req_editor_config(path: &std::path::Path) -> EditorConfig {
                 defaults.soft_wrap,
                 defaults.line_number,
                 defaults.show_whitespaces
+            ));
+            defaults
+        }
+    }
+}
+
+pub(crate) fn req_ftrhsc_default_file_tree_config() -> FileTreeConfig {
+    FileTreeConfig::default()
+}
+
+fn req_ftrhsc_move_to_right_at_launch_px_from_toml(value: Option<&toml::Value>) -> f32 {
+    match value {
+        Some(toml::Value::Integer(raw)) if *raw >= 0 => *raw as f32,
+        Some(toml::Value::Float(raw)) if raw.is_finite() && *raw >= 0.0 => *raw as f32,
+        _ => REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX,
+    }
+}
+
+fn req_ftrhsc_file_tree_config_from_parsed(parsed: &ReqColrConfigFile) -> FileTreeConfig {
+    FileTreeConfig {
+        horizontal_scroll_launch_offset_px: req_ftrhsc_move_to_right_at_launch_px_from_toml(
+            parsed
+                .file_tree
+                .scrollbar
+                .hz
+                .move_to_right_at_launch
+                .as_ref(),
+        ),
+    }
+}
+
+fn load_file_tree_config_result(path: &std::path::Path) -> std::io::Result<FileTreeConfig> {
+    if path.exists() && !path.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "req-ftrhsc config path is not a file path={}",
+                path.display()
+            ),
+        ));
+    }
+
+    let defaults = req_ftrhsc_default_file_tree_config();
+    if !path.is_file() {
+        trace_debug(format!(
+            "req-ftrhsc config missing path={} defaults move_to_right_at_launch_px={}",
+            path.display(),
+            defaults.horizontal_scroll_launch_offset_px
+        ));
+        return Ok(defaults);
+    }
+
+    let raw = std::fs::read_to_string(path)?;
+    let parsed: ReqColrConfigFile = toml::from_str(&raw)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+    let resolved = req_ftrhsc_file_tree_config_from_parsed(&parsed);
+    trace_debug(format!(
+        "req-ftrhsc config loaded path={} move_to_right_at_launch_px={}",
+        path.display(),
+        resolved.horizontal_scroll_launch_offset_px
+    ));
+    Ok(resolved)
+}
+
+pub(crate) fn load_file_tree_config(path: &std::path::Path) -> FileTreeConfig {
+    match load_file_tree_config_result(path) {
+        Ok(config) => config,
+        Err(error) => {
+            let defaults = req_ftrhsc_default_file_tree_config();
+            trace_debug(format!(
+                "req-ftrhsc config fallback path={} error={} defaults move_to_right_at_launch_px={}",
+                path.display(),
+                error,
+                defaults.horizontal_scroll_launch_offset_px
             ));
             defaults
         }
@@ -922,6 +1032,7 @@ impl Papyru2App {
         startup_window_position_guard: Rc<RefCell<Option<StartupWindowPositionGuard>>>,
         ui_color_config: UiColorConfig,
         editor_config: EditorConfig,
+        file_tree_config: FileTreeConfig,
         cx: &mut Context<Self>,
     ) -> Self {
         let app_new_started = Instant::now();
@@ -1008,6 +1119,7 @@ impl Papyru2App {
                 protected_delete_roots,
                 file_tree_root_dir.clone(),
                 ui_color_config,
+                file_tree_config,
                 cx,
             )
         });
@@ -2442,6 +2554,42 @@ mod editor_config_tests {
 
         req_editor_test_cleanup(root.as_path());
     }
+
+    #[test]
+    fn ftrhsc_test1_config_parser_accepts_valid_offsets() {
+        let parsed: super::ReqColrConfigFile =
+            toml::from_str("[file_tree.scrollbar.hz]\nmove_to_right_at_launch = 48\n")
+                .expect("parse integer ftrhsc config");
+        let resolved = super::req_ftrhsc_file_tree_config_from_parsed(&parsed);
+        assert_eq!(resolved.horizontal_scroll_launch_offset_px, 48.0);
+
+        let parsed: super::ReqColrConfigFile =
+            toml::from_str("[file_tree.scrollbar.hz]\nmove_to_right_at_launch = 12.5\n")
+                .expect("parse float ftrhsc config");
+        let resolved = super::req_ftrhsc_file_tree_config_from_parsed(&parsed);
+        assert_eq!(resolved.horizontal_scroll_launch_offset_px, 12.5);
+    }
+
+    #[test]
+    fn ftrhsc_test2_config_parser_invalid_and_missing_values_resolve_to_zero() {
+        for raw in [
+            "",
+            "[file_tree]\n",
+            "[file_tree.scrollbar.hz]\n",
+            "[file_tree.scrollbar.hz]\nmove_to_right_at_launch = -1\n",
+            "[file_tree.scrollbar.hz]\nmove_to_right_at_launch = \"right\"\n",
+            "[file_tree.scrollbar.hz]\nmove_to_right_at_launch = true\n",
+        ] {
+            let parsed: super::ReqColrConfigFile =
+                toml::from_str(raw).expect("parse ftrhsc config");
+            let resolved = super::req_ftrhsc_file_tree_config_from_parsed(&parsed);
+            assert_eq!(
+                resolved.horizontal_scroll_launch_offset_px,
+                super::REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX,
+                "raw config should resolve to default zero: {raw:?}"
+            );
+        }
+    }
 }
 
 pub fn run() {
@@ -2582,6 +2730,19 @@ pub fn run() {
         editor_config.soft_wrap,
         editor_config.line_number,
         editor_config.show_whitespaces
+    ));
+
+    let file_tree_config_started = Instant::now();
+    let file_tree_config = load_file_tree_config(color_config_path.as_path());
+    crate::log::boot_profile_mark_timing(
+        "startup.load_file_tree_config",
+        file_tree_config_started.elapsed(),
+        String::new(),
+    );
+    trace_debug(format!(
+        "req-ftrhsc startup config path={} move_to_right_at_launch_px={}",
+        color_config_path.display(),
+        file_tree_config.horizontal_scroll_launch_offset_px
     ));
 
     let window_position_started = Instant::now();
@@ -2757,6 +2918,7 @@ pub fn run() {
         let restored_splitter_left_size = restored_splitter_left_size;
         let ui_color_config = ui_color_config;
         let editor_config = editor_config;
+        let file_tree_config = file_tree_config;
         crate::log::boot_profile_mark("startup.open_window_spawn_scheduled");
         cx.spawn(async move |cx| {
             crate::log::boot_profile_mark("startup.open_window_async_enter");
@@ -2789,6 +2951,7 @@ pub fn run() {
                         app_startup_window_position_guard,
                         ui_color_config,
                         editor_config,
+                        file_tree_config,
                         cx,
                     )
                 });

@@ -187,6 +187,39 @@ fn req_ftr25_visible_content_width_px(items: &[TreeItem]) -> f32 {
     max_width
 }
 
+pub(crate) fn req_ftrhsc_max_horizontal_scroll_offset_px(
+    content_width_px: f32,
+    viewport_width_px: f32,
+) -> f32 {
+    if !content_width_px.is_finite()
+        || !viewport_width_px.is_finite()
+        || content_width_px <= 0.0
+        || viewport_width_px <= 0.0
+    {
+        return 0.0;
+    }
+
+    (content_width_px - viewport_width_px).max(0.0)
+}
+
+pub(crate) fn req_ftrhsc_resolve_launch_scroll_offset_px(
+    configured_px: f32,
+    content_width_px: f32,
+    viewport_width_px: f32,
+) -> f32 {
+    if !configured_px.is_finite() || configured_px <= 0.0 {
+        return 0.0;
+    }
+
+    let max_offset_px =
+        req_ftrhsc_max_horizontal_scroll_offset_px(content_width_px, viewport_width_px);
+    if configured_px <= max_offset_px {
+        configured_px
+    } else {
+        0.0
+    }
+}
+
 pub struct FileTreeView {
     tree_state: Entity<TreeState>,
     horizontal_scroll_handle: ScrollHandle,
@@ -203,6 +236,9 @@ pub struct FileTreeView {
     font_size_logged_once: bool,
     req_ftr26_viewport_height_px: Option<f32>,
     req_ftr26_row_height_px: f32,
+    req_ftrhsc_viewport_width_px: Option<f32>,
+    req_ftrhsc_launch_offset_px: f32,
+    req_ftrhsc_launch_scroll_pending: bool,
     req_frt27_padding_daily_dir: Option<PathBuf>,
     ui_color_config: crate::app::UiColorConfig,
     initial_load_started: bool,
@@ -239,6 +275,7 @@ impl FileTreeView {
         protected_delete_roots: Vec<PathBuf>,
         tree_root_dir: PathBuf,
         ui_color_config: crate::app::UiColorConfig,
+        file_tree_config: crate::app::FileTreeConfig,
         cx: &mut Context<Self>,
     ) -> Self {
         let file_tree_new_started = std::time::Instant::now();
@@ -246,6 +283,7 @@ impl FileTreeView {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let horizontal_scroll_handle = ScrollHandle::new();
         let focus_handle = cx.focus_handle().tab_stop(true);
+        let req_ftrhsc_launch_offset_px = file_tree_config.horizontal_scroll_launch_offset_px;
 
         #[allow(unused_mut)]
         let mut this = Self {
@@ -264,6 +302,9 @@ impl FileTreeView {
             font_size_logged_once: false,
             req_ftr26_viewport_height_px: None,
             req_ftr26_row_height_px: req_ftr26_tree_row_height_px(f32::from(cx.theme().font_size)),
+            req_ftrhsc_viewport_width_px: None,
+            req_ftrhsc_launch_offset_px,
+            req_ftrhsc_launch_scroll_pending: req_ftrhsc_launch_offset_px > 0.0,
             req_frt27_padding_daily_dir: None,
             ui_color_config,
             initial_load_started: false,
@@ -272,6 +313,10 @@ impl FileTreeView {
         crate::log::trace_debug(format!(
             "file_tree init root_dir={}",
             this.tree_root_dir.display()
+        ));
+        crate::log::trace_debug(format!(
+            "file_tree req-ftrhsc init move_to_right_at_launch_px={} pending={}",
+            this.req_ftrhsc_launch_offset_px, this.req_ftrhsc_launch_scroll_pending
         ));
         crate::log::trace_debug(format!(
             "req-editor6 file_tree font_size_policy={}",
@@ -283,6 +328,7 @@ impl FileTreeView {
             this.initial_load_started = true;
             this.load_files(cx);
             this.initial_load_completed = true;
+            this.apply_req_ftrhsc_launch_horizontal_scroll_offset("new_test_initial_load", cx);
         }
 
         crate::log::boot_profile_mark_timing(
@@ -319,6 +365,7 @@ impl FileTreeView {
         {
             self.load_files(cx);
             self.initial_load_completed = true;
+            self.apply_req_ftrhsc_launch_horizontal_scroll_offset("start_initial_load_test", cx);
             cx.emit(FileTreeEvent::InitialLoadCompleted);
             crate::log::flush_boot_profile("initial_file_tree_load_completed_test");
         }
@@ -337,6 +384,10 @@ impl FileTreeView {
                 let _ = this.update(cx, move |file_tree, cx| {
                     file_tree.apply_file_tree_scan_result(scan_result, cx);
                     file_tree.initial_load_completed = true;
+                    file_tree.apply_req_ftrhsc_launch_horizontal_scroll_offset(
+                        "start_initial_load_async_complete",
+                        cx,
+                    );
                     cx.emit(FileTreeEvent::InitialLoadCompleted);
                     crate::log::boot_profile_mark_timing(
                         "file_tree.initial_load_total",
@@ -490,6 +541,60 @@ impl FileTreeView {
                 )
             },
         );
+    }
+
+    fn apply_req_ftrhsc_launch_horizontal_scroll_offset(
+        &mut self,
+        reason: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.req_ftrhsc_launch_scroll_pending {
+            return;
+        }
+
+        if !self.initial_load_completed {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftrhsc launch_scroll deferred reason={} configured_px={} initial_load_completed=false",
+                reason, self.req_ftrhsc_launch_offset_px
+            ));
+            return;
+        }
+
+        let Some(viewport_width_px) = self.req_ftrhsc_viewport_width_px else {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftrhsc launch_scroll deferred reason={} configured_px={} viewport_width_px=unmeasured",
+                reason, self.req_ftrhsc_launch_offset_px
+            ));
+            return;
+        };
+
+        let content_width_px = req_ftr25_visible_content_width_px(&self.root_items);
+        let resolved_px = req_ftrhsc_resolve_launch_scroll_offset_px(
+            self.req_ftrhsc_launch_offset_px,
+            content_width_px,
+            viewport_width_px,
+        );
+        let status = if resolved_px > 0.0 {
+            "applied"
+        } else if self.req_ftrhsc_launch_offset_px > 0.0 {
+            "invalid_or_too_large_fallback_zero"
+        } else {
+            "default_zero"
+        };
+        let current_offset = self.horizontal_scroll_handle.offset();
+        self.horizontal_scroll_handle
+            .set_offset(point(px(-resolved_px), current_offset.y));
+        self.req_ftrhsc_launch_scroll_pending = false;
+        crate::log::trace_debug(format!(
+            "file_tree req-ftrhsc launch_scroll status={} reason={} configured_px={} resolved_px={} content_width_px={:.1} viewport_width_px={:.1}",
+            status,
+            reason,
+            self.req_ftrhsc_launch_offset_px,
+            resolved_px,
+            content_width_px,
+            viewport_width_px
+        ));
+        cx.notify();
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -1246,13 +1351,16 @@ impl Render for FileTreeView {
         let tree_view = div()
             .size_full()
             .on_children_prepainted(move |children_bounds, _window, cx| {
-                let viewport_height_px = children_bounds
-                    .first()
-                    .map(|bounds| f32::from(bounds.size.height))
+                let viewport_size = children_bounds.first().map(|bounds| bounds.size);
+                let viewport_height_px = viewport_size
+                    .map(|size| f32::from(size.height))
                     .filter(|height| height.is_finite() && *height > 0.0);
+                let viewport_width_px = viewport_size
+                    .map(|size| f32::from(size.width))
+                    .filter(|width| width.is_finite() && *width > 0.0);
 
-                if let Some(height) = viewport_height_px {
-                    viewport_entity.update(cx, |this, _cx| {
+                viewport_entity.update(cx, |this, cx| {
+                    if let Some(height) = viewport_height_px {
                         let should_update =
                             this.req_ftr26_viewport_height_px.map_or(true, |current| {
                                 (current - height).abs() > REQ_FTR26_VIEWPORT_EPSILON_PX
@@ -1260,8 +1368,18 @@ impl Render for FileTreeView {
                         if should_update {
                             this.req_ftr26_viewport_height_px = Some(height);
                         }
-                    });
-                }
+                    }
+                    if let Some(width) = viewport_width_px {
+                        let should_update =
+                            this.req_ftrhsc_viewport_width_px.map_or(true, |current| {
+                                (current - width).abs() > REQ_FTR26_VIEWPORT_EPSILON_PX
+                            });
+                        if should_update {
+                            this.req_ftrhsc_viewport_width_px = Some(width);
+                        }
+                    }
+                    this.apply_req_ftrhsc_launch_horizontal_scroll_offset("viewport_prepaint", cx);
+                });
             })
             .child(tree_content);
 
@@ -5335,5 +5453,33 @@ mod tests {
             Some(current_edit_daily_dir.to_path_buf())
         );
         assert_eq!(super::req_frt27_watcher_padding_daily_dir(None, None), None);
+    }
+
+    #[test]
+    fn ftrhsc_test3_launch_offset_resolution_accepts_valid_offset_in_range() {
+        assert_eq!(
+            super::req_ftrhsc_resolve_launch_scroll_offset_px(64.0, 500.0, 300.0),
+            64.0
+        );
+    }
+
+    #[test]
+    fn ftrhsc_test4_launch_offset_resolution_rejects_too_large_offset() {
+        assert_eq!(
+            super::req_ftrhsc_resolve_launch_scroll_offset_px(250.0, 500.0, 300.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn ftrhsc_test4b_launch_offset_resolution_preserves_zero_for_no_scroll_range() {
+        assert_eq!(
+            super::req_ftrhsc_resolve_launch_scroll_offset_px(24.0, 300.0, 300.0),
+            0.0
+        );
+        assert_eq!(
+            super::req_ftrhsc_resolve_launch_scroll_offset_px(24.0, 250.0, 300.0),
+            0.0
+        );
     }
 }

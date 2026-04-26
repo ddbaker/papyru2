@@ -8,3 +8,6 @@ line_number = false
 
 [debug]
 #log = false
+
+[file_tree.scrollbar.hz]
+move_to_right_at_launch = 55
