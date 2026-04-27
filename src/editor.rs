@@ -1,9 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
-    input::{Input, InputState, Position},
+    input::{Backspace, Input, InputState, Position},
 };
 
 use gpui_component::input::InputEvent;
@@ -21,6 +24,13 @@ pub struct EditorSnapshot {
     pub value: String,
     pub cursor_line: u32,
     pub cursor_char: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NarrowBoxBackspaceGuard {
+    byte_range: Range<usize>,
+    utf16_range: Range<usize>,
+    new_cursor: Position,
 }
 
 pub struct Papyru2Editor {
@@ -75,6 +85,125 @@ fn should_emit_backspace_at_line_head_on_change(
         && previous_cursor.character == 0;
 
     req_assoc12_candidate || req_assoc14_candidate || req_assoc17_blank_multiline_noop
+}
+
+fn byte_index_from_position(value: &str, position: &Position) -> usize {
+    let target_line = position.line as usize;
+    let target_character = position.character as usize;
+    let mut line = 0usize;
+    let mut character = 0usize;
+    let mut chars = value.char_indices().peekable();
+
+    while let Some((byte_index, ch)) = chars.next() {
+        if line == target_line && character >= target_character {
+            return byte_index;
+        }
+
+        match ch {
+            '\r' => {
+                if line == target_line {
+                    return byte_index;
+                }
+                if chars.peek().is_some_and(|(_, next)| *next == '\n') {
+                    chars.next();
+                }
+                line += 1;
+                character = 0;
+            }
+            '\n' => {
+                if line == target_line {
+                    return byte_index;
+                }
+                line += 1;
+                character = 0;
+            }
+            _ => {
+                character += 1;
+            }
+        }
+    }
+
+    value.len()
+}
+
+fn position_from_byte_index(value: &str, byte_index: usize) -> Position {
+    let mut line = 0u32;
+    let mut character = 0u32;
+    let mut chars = value.char_indices().peekable();
+
+    while let Some((current_byte_index, ch)) = chars.next() {
+        if current_byte_index >= byte_index {
+            break;
+        }
+
+        match ch {
+            '\r' => {
+                line += 1;
+                character = 0;
+                if chars.peek().is_some_and(|(next_byte_index, next)| {
+                    *next_byte_index < byte_index && *next == '\n'
+                }) {
+                    chars.next();
+                }
+            }
+            '\n' => {
+                line += 1;
+                character = 0;
+            }
+            _ => {
+                character += 1;
+            }
+        }
+    }
+
+    Position { line, character }
+}
+
+fn utf16_offset_from_byte_index(value: &str, byte_index: usize) -> Option<usize> {
+    if !value.is_char_boundary(byte_index) {
+        return None;
+    }
+
+    Some(value[..byte_index].encode_utf16().count())
+}
+
+fn narrow_box_backspace_guard(
+    key: &str,
+    has_modifiers: bool,
+    value: &str,
+    cursor: &Position,
+    has_selection: bool,
+) -> Option<NarrowBoxBackspaceGuard> {
+    if !key.eq_ignore_ascii_case("backspace") || has_modifiers || has_selection {
+        return None;
+    }
+    if cursor.line == 0 && cursor.character == 0 {
+        return None;
+    }
+
+    let cursor_byte_index = byte_index_from_position(value, cursor);
+    if cursor_byte_index == 0 || !value.is_char_boundary(cursor_byte_index) {
+        return None;
+    }
+
+    let (previous_start, previous_char) = value[..cursor_byte_index].char_indices().last()?;
+    if previous_char != '□' {
+        return None;
+    }
+
+    let previous_end = cursor_byte_index;
+    if !value.is_char_boundary(previous_start) || !value.is_char_boundary(previous_end) {
+        return None;
+    }
+
+    let utf16_start = utf16_offset_from_byte_index(value, previous_start)?;
+    let utf16_end = utf16_start + previous_char.len_utf16();
+
+    Some(NarrowBoxBackspaceGuard {
+        byte_range: previous_start..previous_end,
+        utf16_range: utf16_start..utf16_end,
+        new_cursor: position_from_byte_index(value, previous_start),
+    })
 }
 
 const RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE: u32 = 9;
@@ -237,21 +366,96 @@ impl Papyru2Editor {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if !event.is_held {
             cx.emit(EditorEvent::UserInteraction);
         }
         let key_raw = event.keystroke.key.as_str();
         let key = key_raw.to_ascii_lowercase();
+        let has_modifiers = event.keystroke.modifiers.modified();
         crate::log::trace_debug(format!(
-            "editor keydown raw='{}' key='{}' held={} key_char={}",
+            "editor keydown raw='{}' key='{}' held={} modified={} key_char={}",
             key_raw,
             key,
             event.is_held,
+            has_modifiers,
             event.keystroke.key_char.as_deref().unwrap_or("<none>")
         ));
 
         cx.propagate();
+    }
+
+    fn on_backspace_action(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.handle_narrow_box_backspace_guard("backspace", false, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+
+        cx.propagate();
+    }
+
+    fn handle_narrow_box_backspace_guard(
+        &mut self,
+        key: &str,
+        has_modifiers: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (cursor, value, has_selection) = self.input_state.update(cx, |state, cx| {
+            let has_selection = state
+                .selected_text_range(false, window, cx)
+                .map(|selection| !selection.range.is_empty())
+                .unwrap_or(false);
+
+            (
+                state.cursor_position(),
+                state.value().to_string(),
+                has_selection,
+            )
+        });
+
+        let Some(guard) =
+            narrow_box_backspace_guard(key, has_modifiers, &value, &cursor, has_selection)
+        else {
+            let cursor_byte_index = byte_index_from_position(&value, &cursor);
+            let previous_char =
+                if cursor_byte_index > 0 && value.is_char_boundary(cursor_byte_index) {
+                    value[..cursor_byte_index].chars().next_back()
+                } else {
+                    None
+                };
+            crate::log::trace_debug(format!(
+                "req-editor16 narrow_backspace_box_guard_skipped cursor=({}, {}) has_selection={} previous_char={:?} value_len={}",
+                cursor.line,
+                cursor.character,
+                has_selection,
+                previous_char,
+                value.len()
+            ));
+            return false;
+        };
+
+        crate::log::trace_debug(format!(
+            "req-editor16 narrow_backspace_box_guard_applied cursor=({}, {}) byte_range={:?} utf16_range={:?} value_len={}",
+            cursor.line,
+            cursor.character,
+            guard.byte_range,
+            guard.utf16_range,
+            value.len()
+        ));
+
+        self.input_state.update(cx, |state, cx| {
+            gpui::EntityInputHandler::replace_text_in_range(
+                state,
+                Some(guard.utf16_range.clone()),
+                "",
+                window,
+                cx,
+            );
+            state.set_cursor_position(guard.new_cursor, window, cx);
+        });
+
+        true
     }
 
     fn on_move_up_action(
@@ -530,6 +734,7 @@ impl Render for Papyru2Editor {
             .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
+            .capture_action(cx.listener(Self::on_backspace_action))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 if req_assoc18_editor_input_guard_active {
@@ -626,6 +831,122 @@ mod tests {
         assert_eq!(loaded, expected);
 
         remove_temp_root(root.as_path());
+    }
+
+    #[test]
+    fn editor16_test1_narrow_box_guard_matches_box_after_cursor() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+
+        let guard = super::narrow_box_backspace_guard("backspace", false, "- □", &cursor, false)
+            .expect("box guard");
+
+        assert_eq!(guard.byte_range, 2..5);
+        assert_eq!(guard.utf16_range, 2..3);
+        assert_eq!(guard.new_cursor.line, 0);
+        assert_eq!(guard.new_cursor.character, 2);
+    }
+
+    #[test]
+    fn editor16_test2_narrow_box_guard_rejects_normal_ascii() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+
+        assert!(
+            super::narrow_box_backspace_guard("backspace", false, "- a", &cursor, false).is_none()
+        );
+    }
+
+    #[test]
+    fn editor16_test3_narrow_box_guard_rejects_emoji_and_cjk_text() {
+        let emoji_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 2,
+        };
+        let cjk_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+
+        assert!(
+            super::narrow_box_backspace_guard("backspace", false, "a🙂", &emoji_cursor, false,)
+                .is_none()
+        );
+        assert!(
+            super::narrow_box_backspace_guard("backspace", false, "日本語", &cjk_cursor, false,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn editor16_test4_narrow_box_guard_rejects_selection_modified_key_and_delete() {
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+
+        assert!(
+            super::narrow_box_backspace_guard("backspace", false, "- □", &cursor, true).is_none()
+        );
+        assert!(
+            super::narrow_box_backspace_guard("backspace", true, "- □", &cursor, false).is_none()
+        );
+        assert!(
+            super::narrow_box_backspace_guard("delete", false, "- □", &cursor, false).is_none()
+        );
+    }
+
+    #[test]
+    fn editor16_test5_narrow_box_guard_rejects_line_head_association_and_trailing_space() {
+        let origin_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 0,
+        };
+        let trailing_space_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 4,
+        };
+
+        assert!(
+            super::narrow_box_backspace_guard("backspace", false, "abc", &origin_cursor, false,)
+                .is_none()
+        );
+        assert!(
+            super::narrow_box_backspace_guard(
+                "backspace",
+                false,
+                "- □ ",
+                &trailing_space_cursor,
+                false,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn editor16_test6_narrow_box_guard_matches_crlf_and_cr_second_line() {
+        for value in ["head\r\n- □\r\ntail", "head\r- □\rtail"] {
+            for character in [3, 4] {
+                let cursor = gpui_component::input::Position { line: 1, character };
+                let box_start = value.find('□').expect("box char");
+                let guard =
+                    super::narrow_box_backspace_guard("backspace", false, value, &cursor, false)
+                        .expect("box guard with CR line endings");
+
+                assert_eq!(guard.byte_range, box_start..box_start + '□'.len_utf8());
+                assert_eq!(
+                    guard.utf16_range,
+                    value[..box_start].encode_utf16().count()
+                        ..value[..box_start].encode_utf16().count() + 1
+                );
+                assert_eq!(guard.new_cursor.line, 1);
+                assert_eq!(guard.new_cursor.character, 2);
+            }
+        }
     }
 
     #[test]
