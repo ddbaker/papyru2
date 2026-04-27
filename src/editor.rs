@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
-    input::{Backspace, Delete, Input, InputState, Position},
+    input::{Input, InputState, Position},
 };
 
 use gpui_component::input::InputEvent;
@@ -23,49 +23,11 @@ pub struct EditorSnapshot {
     pub cursor_char: u32,
 }
 
-#[derive(Clone, Debug)]
-struct EditorCustomHistoryEntry {
-    before_value: String,
-    before_cursor: gpui_component::input::Position,
-    after_value: String,
-    after_cursor: gpui_component::input::Position,
-}
-
-fn pop_matching_custom_undo_entry(
-    history: &mut Vec<EditorCustomHistoryEntry>,
-    current_value: &str,
-) -> Option<EditorCustomHistoryEntry> {
-    if history
-        .last()
-        .is_some_and(|entry| entry.after_value == current_value)
-    {
-        history.pop()
-    } else {
-        None
-    }
-}
-
-fn pop_matching_custom_redo_entry(
-    history: &mut Vec<EditorCustomHistoryEntry>,
-    current_value: &str,
-) -> Option<EditorCustomHistoryEntry> {
-    if history
-        .last()
-        .is_some_and(|entry| entry.before_value == current_value)
-    {
-        history.pop()
-    } else {
-        None
-    }
-}
-
 pub struct Papyru2Editor {
     input_state: Entity<InputState>,
     last_value: String,
     last_cursor: gpui_component::input::Position,
     pending_programmatic_change_events: usize,
-    custom_undo_stack: Vec<EditorCustomHistoryEntry>,
-    custom_redo_stack: Vec<EditorCustomHistoryEntry>,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
@@ -113,180 +75,6 @@ fn should_emit_backspace_at_line_head_on_change(
         && previous_cursor.character == 0;
 
     req_assoc12_candidate || req_assoc14_candidate || req_assoc17_blank_multiline_noop
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PlainDeleteDirection {
-    Backward,
-    Forward,
-}
-
-fn byte_index_from_position(value: &str, position: &Position) -> usize {
-    let target_line = position.line as usize;
-    let target_character = position.character as usize;
-    let mut line = 0usize;
-    let mut character = 0usize;
-
-    for (byte_index, ch) in value.char_indices() {
-        if line == target_line && character >= target_character {
-            return byte_index;
-        }
-
-        if ch == '\n' {
-            if line == target_line {
-                return byte_index;
-            }
-            line += 1;
-            character = 0;
-        } else {
-            character += 1;
-        }
-    }
-
-    value.len()
-}
-
-fn position_from_byte_index(value: &str, byte_index: usize) -> Position {
-    let mut line = 0u32;
-    let mut character = 0u32;
-
-    for (current_byte_index, ch) in value.char_indices() {
-        if current_byte_index >= byte_index {
-            break;
-        }
-
-        if ch == '\n' {
-            line += 1;
-            character = 0;
-        } else {
-            character += 1;
-        }
-    }
-
-    Position { line, character }
-}
-
-fn byte_index_from_utf16_offset(value: &str, target_utf16_offset: usize) -> usize {
-    let mut utf16_offset = 0usize;
-
-    for (byte_index, ch) in value.char_indices() {
-        if utf16_offset == target_utf16_offset {
-            return byte_index;
-        }
-
-        let next_utf16_offset = utf16_offset + ch.len_utf16();
-        if next_utf16_offset > target_utf16_offset {
-            return byte_index;
-        }
-        if next_utf16_offset == target_utf16_offset {
-            return byte_index + ch.len_utf8();
-        }
-
-        utf16_offset = next_utf16_offset;
-    }
-
-    value.len()
-}
-
-fn apply_delete_byte_range_to_text(
-    value: &str,
-    byte_range: std::ops::Range<usize>,
-) -> Option<(String, Position)> {
-    let start = byte_range.start.min(byte_range.end).min(value.len());
-    let end = byte_range.start.max(byte_range.end).min(value.len());
-
-    if start == end || !value.is_char_boundary(start) || !value.is_char_boundary(end) {
-        return None;
-    }
-
-    let mut new_value = String::with_capacity(value.len() - (end - start));
-    new_value.push_str(&value[..start]);
-    new_value.push_str(&value[end..]);
-    let new_cursor = position_from_byte_index(value, start);
-
-    Some((new_value, new_cursor))
-}
-
-fn apply_delete_utf16_range_to_text(
-    value: &str,
-    utf16_range: std::ops::Range<usize>,
-) -> Option<(String, Position)> {
-    let byte_range = byte_index_from_utf16_offset(value, utf16_range.start)
-        ..byte_index_from_utf16_offset(value, utf16_range.end);
-    apply_delete_byte_range_to_text(value, byte_range)
-}
-
-fn previous_delete_range(value: &str, cursor_byte_index: usize) -> std::ops::Range<usize> {
-    let Some((previous_start, previous_char)) = value[..cursor_byte_index].char_indices().last()
-    else {
-        return 0..0;
-    };
-
-    if previous_char == '\n' {
-        if let Some((cr_start, '\r')) = value[..previous_start].char_indices().last() {
-            return cr_start..cursor_byte_index;
-        }
-    }
-
-    if previous_char.is_whitespace() {
-        let line_start = value[..previous_start]
-            .rfind('\n')
-            .map_or(0, |index| index + '\n'.len_utf8());
-        let line_end = value[cursor_byte_index..]
-            .find('\n')
-            .map_or(value.len(), |index| cursor_byte_index + index);
-        let whitespace_is_at_visual_line_tail = value[previous_start..line_end]
-            .chars()
-            .all(|ch| ch != '\n' && ch.is_whitespace());
-
-        if whitespace_is_at_visual_line_tail {
-            let previous_visible_char = value[line_start..previous_start]
-                .char_indices()
-                .rev()
-                .find(|(_, ch)| !ch.is_whitespace());
-
-            if let Some((visible_start, _)) = previous_visible_char {
-                return (line_start + visible_start)..cursor_byte_index;
-            }
-        }
-    }
-
-    previous_start..cursor_byte_index
-}
-
-fn next_delete_boundary(value: &str, cursor_byte_index: usize) -> usize {
-    let Some(first_char) = value[cursor_byte_index..].chars().next() else {
-        return cursor_byte_index;
-    };
-
-    let next = cursor_byte_index + first_char.len_utf8();
-    if first_char == '\r' && value[next..].starts_with('\n') {
-        return next + '\n'.len_utf8();
-    }
-
-    next
-}
-
-fn apply_plain_delete_to_text(
-    value: &str,
-    cursor: &Position,
-    direction: PlainDeleteDirection,
-) -> Option<(String, Position)> {
-    let cursor_byte_index = byte_index_from_position(value, cursor);
-    let range = match direction {
-        PlainDeleteDirection::Backward if cursor_byte_index == 0 => return None,
-        PlainDeleteDirection::Backward => previous_delete_range(value, cursor_byte_index),
-        PlainDeleteDirection::Forward if cursor_byte_index >= value.len() => return None,
-        PlainDeleteDirection::Forward => {
-            cursor_byte_index..next_delete_boundary(value, cursor_byte_index)
-        }
-    };
-
-    if range.is_empty() {
-        return None;
-    }
-
-    apply_delete_byte_range_to_text(value, range)
 }
 
 const RPC_SCROLL_CENTERING_HALF_LINES_ESTIMATE: u32 = 9;
@@ -441,8 +229,6 @@ impl Papyru2Editor {
             last_value,
             last_cursor,
             pending_programmatic_change_events: 0,
-            custom_undo_stack: Vec::new(),
-            custom_redo_stack: Vec::new(),
             current_editing_file_path: None,
             _subscriptions,
             font_size_logged_once: false,
@@ -451,7 +237,7 @@ impl Papyru2Editor {
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         if !event.is_held {
             cx.emit(EditorEvent::UserInteraction);
         }
@@ -465,188 +251,7 @@ impl Papyru2Editor {
             event.keystroke.key_char.as_deref().unwrap_or("<none>")
         ));
 
-        let plain_delete_direction = if !event.keystroke.modifiers.modified() {
-            match key.as_str() {
-                "backspace" => Some(PlainDeleteDirection::Backward),
-                "delete" | "forwarddelete" | "del" => Some(PlainDeleteDirection::Forward),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        if let Some(direction) = plain_delete_direction {
-            self.handle_plain_delete_action(key.as_str(), direction, window, cx);
-            return;
-        }
-
         cx.propagate();
-    }
-
-    fn handle_plain_delete_action(
-        &mut self,
-        key: &str,
-        direction: PlainDeleteDirection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (cursor, value, selected_range_utf16) = self.input_state.update(cx, |state, cx| {
-            let selection = state
-                .selected_text_range(false, window, cx)
-                .map(|selection| selection.range)
-                .filter(|range| !range.is_empty());
-            (
-                state.cursor_position(),
-                state.value().to_string(),
-                selection,
-            )
-        });
-
-        crate::log::trace_debug(format!(
-            "editor action {key} captured cursor=({}, {}) value_len={} selection_utf16={:?}",
-            cursor.line,
-            cursor.character,
-            value.len(),
-            selected_range_utf16
-        ));
-
-        let selection_deleted = selected_range_utf16.is_some();
-        let replacement = if let Some(selected_range_utf16) = selected_range_utf16 {
-            apply_delete_utf16_range_to_text(&value, selected_range_utf16)
-        } else {
-            apply_plain_delete_to_text(&value, &cursor, direction)
-        };
-
-        if let Some((new_value, new_cursor)) = replacement {
-            crate::log::trace_debug(format!(
-                "editor handled action {key} char-safe cursor=({}, {}) new_cursor=({}, {}) old_len={} new_len={} selection_deleted={}",
-                cursor.line,
-                cursor.character,
-                new_cursor.line,
-                new_cursor.character,
-                value.len(),
-                new_value.len(),
-                selection_deleted
-            ));
-            self.custom_undo_stack.push(EditorCustomHistoryEntry {
-                before_value: value,
-                before_cursor: cursor,
-                after_value: new_value.clone(),
-                after_cursor: new_cursor,
-            });
-            self.custom_redo_stack.clear();
-            crate::log::trace_debug(format!(
-                "editor custom delete history pushed undo_depth={} redo_depth=0",
-                self.custom_undo_stack.len()
-            ));
-            self.input_state.update(cx, |state, cx| {
-                state.set_value(new_value, window, cx);
-                state.set_cursor_position(new_cursor, window, cx);
-            });
-        } else if direction == PlainDeleteDirection::Backward
-            && should_emit_backspace_at_line_head_on_change(
-                &self.last_value,
-                &self.last_cursor,
-                &value,
-                &cursor,
-            )
-        {
-            crate::log::trace_debug("editor handled action backspace no-op at origin char-safe");
-            cx.emit(EditorEvent::BackspaceAtLineHead);
-        }
-
-        cx.stop_propagation();
-    }
-
-    fn on_backspace_action(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        self.handle_plain_delete_action("Backspace", PlainDeleteDirection::Backward, window, cx);
-    }
-
-    fn on_delete_action(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        self.handle_plain_delete_action("Delete", PlainDeleteDirection::Forward, window, cx);
-    }
-
-    fn on_undo_action(
-        &mut self,
-        _: &gpui_component::input::Undo,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current_value = self.input_state.read(cx).value().to_string();
-        let Some(entry) =
-            pop_matching_custom_undo_entry(&mut self.custom_undo_stack, &current_value)
-        else {
-            crate::log::trace_debug(format!(
-                "editor action Undo propagate custom_undo_depth={} current_len={}",
-                self.custom_undo_stack.len(),
-                current_value.len()
-            ));
-            cx.propagate();
-            return;
-        };
-
-        crate::log::trace_debug(format!(
-            "editor action Undo restored custom delete before_len={} after_len={} undo_depth={} redo_depth={}",
-            entry.before_value.len(),
-            entry.after_value.len(),
-            self.custom_undo_stack.len(),
-            self.custom_redo_stack.len() + 1
-        ));
-        self.input_state.update(cx, |state, cx| {
-            state.set_value(entry.before_value.clone(), window, cx);
-            state.set_cursor_position(entry.before_cursor, window, cx);
-        });
-        self.custom_redo_stack.push(entry);
-        cx.stop_propagation();
-    }
-
-    fn on_redo_action(
-        &mut self,
-        _: &gpui_component::input::Redo,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let current_value = self.input_state.read(cx).value().to_string();
-        let Some(entry) =
-            pop_matching_custom_redo_entry(&mut self.custom_redo_stack, &current_value)
-        else {
-            crate::log::trace_debug(format!(
-                "editor action Redo propagate custom_redo_depth={} current_len={}",
-                self.custom_redo_stack.len(),
-                current_value.len()
-            ));
-            cx.propagate();
-            return;
-        };
-
-        crate::log::trace_debug(format!(
-            "editor action Redo restored custom delete before_len={} after_len={} undo_depth={} redo_depth={}",
-            entry.before_value.len(),
-            entry.after_value.len(),
-            self.custom_undo_stack.len() + 1,
-            self.custom_redo_stack.len()
-        ));
-        self.input_state.update(cx, |state, cx| {
-            state.set_value(entry.after_value.clone(), window, cx);
-            state.set_cursor_position(entry.after_cursor, window, cx);
-        });
-        self.custom_undo_stack.push(entry);
-        cx.stop_propagation();
-    }
-
-    fn clear_custom_delete_history(&mut self, reason: &str) {
-        if self.custom_undo_stack.is_empty() && self.custom_redo_stack.is_empty() {
-            return;
-        }
-
-        crate::log::trace_debug(format!(
-            "editor custom delete history cleared reason={} undo_depth={} redo_depth={}",
-            reason,
-            self.custom_undo_stack.len(),
-            self.custom_redo_stack.len()
-        ));
-        self.custom_undo_stack.clear();
-        self.custom_redo_stack.clear();
     }
 
     fn on_move_up_action(
@@ -695,7 +300,6 @@ impl Papyru2Editor {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
 
-        self.clear_custom_delete_history("apply_text_and_cursor");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (apply_text_and_cursor, pending={})",
@@ -762,7 +366,6 @@ impl Papyru2Editor {
         let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
         let anchor_line = rpc_centering_anchor_line(cursor_line, total_lines);
 
-        self.clear_custom_delete_history("open_content_from_rpc");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (open_content_from_rpc, pending={}, target_line={}, anchor_line={}, total_lines={})",
@@ -849,7 +452,6 @@ impl Papyru2Editor {
             .unwrap_or("txt")
             .to_string();
 
-        self.clear_custom_delete_history("open_file");
         self.pending_programmatic_change_events += 1;
         crate::log::trace_debug(format!(
             "editor mark programmatic change (open_file, pending={})",
@@ -928,10 +530,6 @@ impl Render for Papyru2Editor {
             .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
-            .capture_action(cx.listener(Self::on_backspace_action))
-            .capture_action(cx.listener(Self::on_delete_action))
-            .capture_action(cx.listener(Self::on_undo_action))
-            .capture_action(cx.listener(Self::on_redo_action))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(MouseButton::Left, move |_, _, _| {
                 if req_assoc18_editor_input_guard_active {
@@ -1031,191 +629,98 @@ mod tests {
     }
 
     #[test]
-    fn editor_delete_test1_backspace_after_box_deletes_whole_utf8_character() {
+    fn editor_delete_test1_changed_multibyte_backspace_stays_native_only() {
+        let previous_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 3,
+        };
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 2,
+        };
+
+        assert!(!super::should_emit_backspace_at_line_head_on_change(
+            "- □",
+            &previous_cursor,
+            "- ",
+            &cursor,
+        ));
+    }
+
+    #[test]
+    fn editor_delete_test2_changed_emoji_backspace_stays_native_only() {
+        let previous_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 2,
+        };
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 1,
+        };
+
+        assert!(!super::should_emit_backspace_at_line_head_on_change(
+            "a🙂",
+            &previous_cursor,
+            "a",
+            &cursor,
+        ));
+    }
+
+    #[test]
+    fn editor_delete_test3_changed_multiline_selection_stays_native_only() {
+        let previous_cursor = gpui_component::input::Position {
+            line: 2,
+            character: 0,
+        };
+        let cursor = gpui_component::input::Position {
+            line: 1,
+            character: 0,
+        };
+
+        assert!(!super::should_emit_backspace_at_line_head_on_change(
+            "alpha\n- □\nbeta",
+            &previous_cursor,
+            "alpha\nbeta",
+            &cursor,
+        ));
+    }
+
+    #[test]
+    fn editor_delete_test4_line_head_noop_remains_association_trigger() {
+        let previous_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 0,
+        };
+        let cursor = gpui_component::input::Position {
+            line: 0,
+            character: 0,
+        };
+
+        assert!(super::should_emit_backspace_at_line_head_on_change(
+            "abc\nxyz",
+            &previous_cursor,
+            "abc\nxyz",
+            &cursor,
+        ));
+    }
+
+    #[test]
+    fn editor_undo_test1_native_first_has_no_custom_delete_history_unit_path() {
+        let previous_cursor = gpui_component::input::Position {
+            line: 0,
+            character: 4,
+        };
         let cursor = gpui_component::input::Position {
             line: 0,
             character: 3,
         };
 
-        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
-            "- □",
-            &cursor,
-            super::PlainDeleteDirection::Backward,
-        )
-        .expect("delete box character");
-
-        assert_eq!(new_value, "- ");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 2);
-    }
-
-    #[test]
-    fn editor_delete_test2_backspace_after_surrogate_pair_deletes_whole_character() {
-        let cursor = gpui_component::input::Position {
-            line: 0,
-            character: 2,
-        };
-
-        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
-            "a🙂",
-            &cursor,
-            super::PlainDeleteDirection::Backward,
-        )
-        .expect("delete emoji character");
-
-        assert_eq!(new_value, "a");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 1);
-    }
-
-    #[test]
-    fn editor_delete_test3_backspace_after_box_with_trailing_space_deletes_visible_character() {
-        let cursor = gpui_component::input::Position {
-            line: 0,
-            character: 4,
-        };
-
-        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
-            "- □ ",
-            &cursor,
-            super::PlainDeleteDirection::Backward,
-        )
-        .expect("delete box character and trailing space");
-
-        assert_eq!(new_value, "- ");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 2);
-    }
-
-    #[test]
-    fn editor_delete_test4_backspace_after_ascii_with_trailing_space_deletes_visible_character() {
-        let cursor = gpui_component::input::Position {
-            line: 0,
-            character: 4,
-        };
-
-        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
+        assert!(!super::should_emit_backspace_at_line_head_on_change(
             "- a ",
+            &previous_cursor,
+            "- a",
             &cursor,
-            super::PlainDeleteDirection::Backward,
-        )
-        .expect("delete visible ascii character with trailing space");
-
-        assert_eq!(new_value, "- ");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 2);
-    }
-
-    #[test]
-    fn editor_delete_test5_space_inside_line_deletes_only_space() {
-        let cursor = gpui_component::input::Position {
-            line: 0,
-            character: 4,
-        };
-
-        let (new_value, new_cursor) = super::apply_plain_delete_to_text(
-            "- a b",
-            &cursor,
-            super::PlainDeleteDirection::Backward,
-        )
-        .expect("delete space inside line");
-
-        assert_eq!(new_value, "- ab");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 3);
-    }
-
-    #[test]
-    fn editor_delete_test5_forward_delete_removes_whole_utf8_character() {
-        let cursor = gpui_component::input::Position {
-            line: 0,
-            character: 2,
-        };
-
-        let (new_value, new_cursor) =
-            super::apply_plain_delete_to_text("- □", &cursor, super::PlainDeleteDirection::Forward)
-                .expect("forward delete box character");
-
-        assert_eq!(new_value, "- ");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 2);
-    }
-
-    #[test]
-    fn editor_delete_test6_selection_deletes_whole_utf8_range() {
-        let (new_value, new_cursor) = super::apply_delete_utf16_range_to_text("- □ text", 2..3)
-            .expect("delete selected box character");
-
-        assert_eq!(new_value, "-  text");
-        assert_eq!(new_cursor.line, 0);
-        assert_eq!(new_cursor.character, 2);
-    }
-
-    #[test]
-    fn editor_delete_test7_selection_deletes_multiple_lines() {
-        let value = "alpha\n- □\nbeta";
-        let selection_start = "alpha\n".encode_utf16().count();
-        let selection_end = "alpha\n- □\n".encode_utf16().count();
-
-        let (new_value, new_cursor) =
-            super::apply_delete_utf16_range_to_text(value, selection_start..selection_end)
-                .expect("delete selected multiline text");
-
-        assert_eq!(new_value, "alpha\nbeta");
-        assert_eq!(new_cursor.line, 1);
-        assert_eq!(new_cursor.character, 0);
-    }
-
-    #[test]
-    fn editor_undo_test1_custom_delete_undo_pops_only_matching_after_value() {
-        let entry = super::EditorCustomHistoryEntry {
-            before_value: "alpha\nbeta".to_string(),
-            before_cursor: gpui_component::input::Position {
-                line: 1,
-                character: 0,
-            },
-            after_value: "alpha".to_string(),
-            after_cursor: gpui_component::input::Position {
-                line: 0,
-                character: 5,
-            },
-        };
-        let mut history = vec![entry.clone()];
-
-        assert!(super::pop_matching_custom_undo_entry(&mut history, "alpha-x").is_none());
-        assert_eq!(history.len(), 1);
-
-        let popped = super::pop_matching_custom_undo_entry(&mut history, "alpha")
-            .expect("matching custom undo entry");
-        assert_eq!(popped.before_value, "alpha\nbeta");
-        assert_eq!(popped.after_value, "alpha");
-        assert!(history.is_empty());
-    }
-
-    #[test]
-    fn editor_undo_test2_custom_delete_redo_pops_only_matching_before_value() {
-        let entry = super::EditorCustomHistoryEntry {
-            before_value: "alpha\nbeta".to_string(),
-            before_cursor: gpui_component::input::Position {
-                line: 1,
-                character: 0,
-            },
-            after_value: "alpha".to_string(),
-            after_cursor: gpui_component::input::Position {
-                line: 0,
-                character: 5,
-            },
-        };
-        let mut history = vec![entry.clone()];
-
-        assert!(super::pop_matching_custom_redo_entry(&mut history, "alpha").is_none());
-        assert_eq!(history.len(), 1);
-
-        let popped = super::pop_matching_custom_redo_entry(&mut history, "alpha\nbeta")
-            .expect("matching custom redo entry");
-        assert_eq!(popped.before_value, "alpha\nbeta");
-        assert_eq!(popped.after_value, "alpha");
-        assert!(history.is_empty());
+        ));
     }
 
     #[test]
