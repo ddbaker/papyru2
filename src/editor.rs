@@ -229,9 +229,18 @@ impl Papyru2Editor {
         cx: &mut Context<Self>,
     ) -> Self {
         let input_state = cx.new(|cx| {
-            InputState::new(window, cx)
-                .code_editor(editor_config.code_editor.clone())
-                .line_number(editor_config.line_number)
+            let input_state = if editor_config.code_editor {
+                InputState::new(window, cx)
+                    .code_editor(editor_config.code_editor_lang.clone())
+                    .line_number(editor_config.line_number)
+                    .indent_guides(crate::app::req_editor_effective_indent_guides(
+                        &editor_config,
+                    ))
+            } else {
+                InputState::new(window, cx).multi_line(true)
+            };
+
+            input_state
                 .soft_wrap(editor_config.soft_wrap)
                 .searchable(true)
                 .placeholder("File is auto saved")
@@ -341,11 +350,14 @@ impl Papyru2Editor {
             req_editor_editor_font_size_policy()
         ));
         crate::log::trace_debug(format!(
-            "req-editor startup editor_config code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
+            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
             editor_config.code_editor,
+            editor_config.code_editor_lang,
             editor_config.soft_wrap,
             editor_config.line_number,
-            editor_config.show_whitespaces
+            editor_config.show_whitespaces,
+            editor_config.indent_guides,
+            crate::app::req_editor_effective_indent_guides(&editor_config)
         ));
         if editor_config.show_whitespaces {
             crate::log::trace_debug(

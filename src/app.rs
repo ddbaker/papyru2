@@ -49,10 +49,12 @@ where
 pub(crate) const PAPYRU2_CONF_FILE_NAME: &str = "papyru2_conf.toml";
 pub(crate) const REQ_COLR_DEFAULT_BACKGROUND_RGB_HEX: u32 = 0xFDFDE6;
 pub(crate) const REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX: u32 = 0x000000;
-pub(crate) const REQ_EDITOR_DEFAULT_CODE_EDITOR: &str = "text";
+pub(crate) const REQ_EDITOR_DEFAULT_CODE_EDITOR: bool = false;
+pub(crate) const REQ_EDITOR_DEFAULT_CODE_EDITOR_LANG: &str = "text";
 pub(crate) const REQ_EDITOR_DEFAULT_SOFT_WRAP: bool = true;
 pub(crate) const REQ_EDITOR_DEFAULT_LINE_NUMBER: bool = false;
 pub(crate) const REQ_EDITOR_DEFAULT_SHOW_WHITESPACES: bool = false;
+pub(crate) const REQ_EDITOR_DEFAULT_INDENT_GUIDES: bool = false;
 const REQ_COLR_MAX_RGB_HEX: u32 = 0x00FF_FFFF;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,19 +74,23 @@ impl Default for UiColorConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EditorConfig {
-    pub code_editor: String,
+    pub code_editor: bool,
+    pub code_editor_lang: String,
     pub soft_wrap: bool,
     pub line_number: bool,
     pub show_whitespaces: bool,
+    pub indent_guides: bool,
 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
-            code_editor: REQ_EDITOR_DEFAULT_CODE_EDITOR.to_string(),
+            code_editor: REQ_EDITOR_DEFAULT_CODE_EDITOR,
+            code_editor_lang: REQ_EDITOR_DEFAULT_CODE_EDITOR_LANG.to_string(),
             soft_wrap: REQ_EDITOR_DEFAULT_SOFT_WRAP,
             line_number: REQ_EDITOR_DEFAULT_LINE_NUMBER,
             show_whitespaces: REQ_EDITOR_DEFAULT_SHOW_WHITESPACES,
+            indent_guides: REQ_EDITOR_DEFAULT_INDENT_GUIDES,
         }
     }
 }
@@ -114,6 +120,13 @@ struct ReqColrConfigFile {
     file_tree: ReqFileTreeSection,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(untagged)]
+enum ReqEditorCodeEditorValue {
+    Enabled(bool),
+    LegacyLanguage(String),
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReqColrColorSection {
     #[serde(default)]
@@ -125,13 +138,17 @@ struct ReqColrColorSection {
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReqEditorSection {
     #[serde(default)]
-    code_editor: Option<String>,
+    code_editor: Option<ReqEditorCodeEditorValue>,
+    #[serde(default)]
+    code_editor_lang: Option<String>,
     #[serde(default)]
     soft_wrap: Option<bool>,
     #[serde(default)]
     line_number: Option<bool>,
     #[serde(default)]
     show_whitespaces: Option<bool>,
+    #[serde(default)]
+    indent_guides: Option<bool>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -164,19 +181,32 @@ pub(crate) fn req_editor_default_config() -> EditorConfig {
     EditorConfig::default()
 }
 
+fn req_editor_trimmed_non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+pub(crate) fn req_editor_effective_indent_guides(editor: &EditorConfig) -> bool {
+    editor.code_editor && editor.indent_guides
+}
+
 fn req_colr_hex_text(rgb_hex: u32) -> String {
     format!("#{rgb_hex:06x}")
 }
 
 fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) -> String {
     format!(
-        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
         colors.background_rgb_hex,
         colors.foreground_rgb_hex,
         editor.code_editor,
+        editor.code_editor_lang,
         editor.soft_wrap,
         editor.line_number,
         editor.show_whitespaces,
+        editor.indent_guides,
         REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX
     )
 }
@@ -259,6 +289,52 @@ fn load_or_create_ui_color_config_result(path: &std::path::Path) -> std::io::Res
     Ok(resolved)
 }
 
+fn req_editor_config_from_parsed(
+    parsed: &ReqColrConfigFile,
+    defaults: &EditorConfig,
+) -> (EditorConfig, Option<String>) {
+    let explicit_code_editor_lang =
+        req_editor_trimmed_non_empty(parsed.editor.code_editor_lang.as_deref());
+    let mut code_editor = defaults.code_editor;
+    let mut code_editor_lang = explicit_code_editor_lang
+        .clone()
+        .unwrap_or_else(|| defaults.code_editor_lang.clone());
+    let mut legacy_code_editor_lang = None;
+    if let Some(code_editor_value) = parsed.editor.code_editor.as_ref() {
+        match code_editor_value {
+            ReqEditorCodeEditorValue::Enabled(enabled) => {
+                code_editor = *enabled;
+            }
+            ReqEditorCodeEditorValue::LegacyLanguage(language) => {
+                if let Some(language) = req_editor_trimmed_non_empty(Some(language.as_str())) {
+                    code_editor = true;
+                    if explicit_code_editor_lang.is_none() {
+                        code_editor_lang = language.clone();
+                    }
+                    legacy_code_editor_lang = Some(language);
+                }
+            }
+        }
+    }
+
+    let resolved = EditorConfig {
+        code_editor,
+        code_editor_lang,
+        soft_wrap: parsed.editor.soft_wrap.unwrap_or(defaults.soft_wrap),
+        line_number: parsed.editor.line_number.unwrap_or(defaults.line_number),
+        show_whitespaces: parsed
+            .editor
+            .show_whitespaces
+            .unwrap_or(defaults.show_whitespaces),
+        indent_guides: parsed
+            .editor
+            .indent_guides
+            .unwrap_or(defaults.indent_guides),
+    };
+
+    (resolved, legacy_code_editor_lang)
+}
+
 pub(crate) fn load_or_create_ui_color_config(path: &std::path::Path) -> UiColorConfig {
     match load_or_create_ui_color_config_result(path) {
         Ok(colors) => colors,
@@ -290,12 +366,15 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
     let defaults = req_editor_default_config();
     if !path.is_file() {
         trace_debug(format!(
-            "req-editor config missing path={} defaults code_editor={} soft_wrap={} line_number={} show_whitespaces={}",
+            "req-editor config missing path={} defaults code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={}",
             path.display(),
             defaults.code_editor,
+            defaults.code_editor_lang,
             defaults.soft_wrap,
             defaults.line_number,
-            defaults.show_whitespaces
+            defaults.show_whitespaces,
+            defaults.indent_guides,
+            req_editor_effective_indent_guides(&defaults)
         ));
         return Ok(defaults);
     }
@@ -304,29 +383,25 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
     let parsed: ReqColrConfigFile = toml::from_str(&raw)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
 
-    let resolved = EditorConfig {
-        code_editor: parsed
-            .editor
-            .code_editor
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .unwrap_or_else(|| defaults.code_editor.clone()),
-        soft_wrap: parsed.editor.soft_wrap.unwrap_or(defaults.soft_wrap),
-        line_number: parsed.editor.line_number.unwrap_or(defaults.line_number),
-        show_whitespaces: parsed
-            .editor
-            .show_whitespaces
-            .unwrap_or(defaults.show_whitespaces),
-    };
+    let (resolved, legacy_code_editor_lang) = req_editor_config_from_parsed(&parsed, &defaults);
+    if let Some(language) = legacy_code_editor_lang.as_deref() {
+        trace_debug(format!(
+            "req-editor18 deprecated code_editor string alias path={} legacy_language={} resolved_code_editor=true resolved_code_editor_lang={}",
+            path.display(),
+            language,
+            resolved.code_editor_lang
+        ));
+    }
     trace_debug(format!(
-        "req-editor config loaded path={} code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
+        "req-editor config loaded path={} code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
         path.display(),
         resolved.code_editor,
+        resolved.code_editor_lang,
         resolved.soft_wrap,
         resolved.line_number,
-        resolved.show_whitespaces
+        resolved.show_whitespaces,
+        resolved.indent_guides,
+        req_editor_effective_indent_guides(&resolved)
     ));
     Ok(resolved)
 }
@@ -337,13 +412,16 @@ pub(crate) fn load_req_editor_config(path: &std::path::Path) -> EditorConfig {
         Err(error) => {
             let defaults = req_editor_default_config();
             trace_debug(format!(
-                "req-editor config fallback path={} error={} defaults code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
+                "req-editor config fallback path={} error={} defaults code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
                 path.display(),
                 error,
                 defaults.code_editor,
+                defaults.code_editor_lang,
                 defaults.soft_wrap,
                 defaults.line_number,
-                defaults.show_whitespaces
+                defaults.show_whitespaces,
+                defaults.indent_guides,
+                req_editor_effective_indent_guides(&defaults)
             ));
             defaults
         }
@@ -2453,16 +2531,33 @@ mod editor_config_tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
+    fn req_editor_config_from_raw(raw: &str) -> super::EditorConfig {
+        let parsed: super::ReqColrConfigFile =
+            toml::from_str(raw).expect("parse editor config raw");
+        let defaults = super::req_editor_default_config();
+        let (config, _) = super::req_editor_config_from_parsed(&parsed, &defaults);
+        config
+    }
+
     #[test]
     fn editor_test1_req_editor_defaults_match_source_constants() {
         let defaults = super::req_editor_default_config();
         assert_eq!(defaults.code_editor, super::REQ_EDITOR_DEFAULT_CODE_EDITOR);
+        assert_eq!(
+            defaults.code_editor_lang,
+            super::REQ_EDITOR_DEFAULT_CODE_EDITOR_LANG
+        );
         assert_eq!(defaults.soft_wrap, super::REQ_EDITOR_DEFAULT_SOFT_WRAP);
         assert_eq!(defaults.line_number, super::REQ_EDITOR_DEFAULT_LINE_NUMBER);
         assert_eq!(
             defaults.show_whitespaces,
             super::REQ_EDITOR_DEFAULT_SHOW_WHITESPACES
         );
+        assert_eq!(
+            defaults.indent_guides,
+            super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
+        );
+        assert!(!super::req_editor_effective_indent_guides(&defaults));
     }
 
     #[test]
@@ -2489,15 +2584,18 @@ mod editor_config_tests {
         std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
         std::fs::write(
             config_path.as_path(),
-            "[editor]\ncode_editor = \"markdown\"\nsoft_wrap = false\nline_number = true\nshow_whitespaces = true\n",
+            "[editor]\ncode_editor = true\ncode_editor_lang = \"markdown\"\nsoft_wrap = false\nline_number = true\nshow_whitespaces = true\nindent_guides = true\n",
         )
         .expect("write editor config");
 
         let resolved = super::load_req_editor_config(config_path.as_path());
-        assert_eq!(resolved.code_editor, "markdown");
+        assert!(resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "markdown");
         assert!(!resolved.soft_wrap);
         assert!(resolved.line_number);
         assert!(resolved.show_whitespaces);
+        assert!(resolved.indent_guides);
+        assert!(super::req_editor_effective_indent_guides(&resolved));
 
         req_editor_test_cleanup(root.as_path());
     }
@@ -2524,10 +2622,12 @@ mod editor_config_tests {
         let _ = super::load_or_create_ui_color_config(config_path.as_path());
         let raw = std::fs::read_to_string(config_path.as_path()).expect("read created config");
         assert!(raw.contains("[editor]"));
-        assert!(raw.contains("code_editor = \"text\""));
+        assert!(raw.contains("code_editor = false"));
+        assert!(raw.contains("code_editor_lang = \"text\""));
         assert!(raw.contains("soft_wrap = true"));
         assert!(raw.contains("line_number = false"));
         assert!(raw.contains("show_whitespaces = false"));
+        assert!(raw.contains("indent_guides = false"));
 
         req_editor_test_cleanup(root.as_path());
     }
@@ -2544,15 +2644,73 @@ mod editor_config_tests {
         .expect("write partial editor config");
 
         let resolved = super::load_req_editor_config(config_path.as_path());
-        assert_eq!(resolved.code_editor, "markdown");
+        assert!(resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "markdown");
         assert_eq!(resolved.soft_wrap, super::REQ_EDITOR_DEFAULT_SOFT_WRAP);
         assert_eq!(resolved.line_number, super::REQ_EDITOR_DEFAULT_LINE_NUMBER);
         assert_eq!(
             resolved.show_whitespaces,
             super::REQ_EDITOR_DEFAULT_SHOW_WHITESPACES
         );
+        assert_eq!(
+            resolved.indent_guides,
+            super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
+        );
 
         req_editor_test_cleanup(root.as_path());
+    }
+
+    #[test]
+    fn editor17_test1_req_editor17_defaults_disable_code_editor() {
+        let resolved = req_editor_config_from_raw("");
+        assert!(!resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "text");
+        assert!(!resolved.indent_guides);
+        assert!(!super::req_editor_effective_indent_guides(&resolved));
+    }
+
+    #[test]
+    fn editor17_test2_req_editor20_plain_mode_forces_effective_indent_guides_false() {
+        let resolved =
+            req_editor_config_from_raw("[editor]\ncode_editor = false\nindent_guides = true\n");
+        assert!(!resolved.code_editor);
+        assert!(resolved.indent_guides);
+        assert!(!super::req_editor_effective_indent_guides(&resolved));
+    }
+
+    #[test]
+    fn editor17_test3_req_editor18_deprecated_code_editor_string_alias() {
+        let resolved = req_editor_config_from_raw("[editor]\ncode_editor = \"markdown\"\n");
+        assert!(resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "markdown");
+        assert!(!resolved.indent_guides);
+    }
+
+    #[test]
+    fn editor17_test4_req_editor19_explicit_lang_wins_over_legacy_alias() {
+        let resolved = req_editor_config_from_raw(
+            "[editor]\ncode_editor = \"rust\"\ncode_editor_lang = \"markdown\"\n",
+        );
+        assert!(resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "markdown");
+    }
+
+    #[test]
+    fn editor17_test5_req_editor18_empty_legacy_alias_does_not_enable_code_editor() {
+        let resolved = req_editor_config_from_raw("[editor]\ncode_editor = \"   \"\n");
+        assert!(!resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "text");
+    }
+
+    #[test]
+    fn editor17_test6_req_editor20_code_mode_allows_effective_indent_guides() {
+        let resolved = req_editor_config_from_raw(
+            "[editor]\ncode_editor = true\ncode_editor_lang = \"markdown\"\nindent_guides = true\n",
+        );
+        assert!(resolved.code_editor);
+        assert_eq!(resolved.code_editor_lang, "markdown");
+        assert!(resolved.indent_guides);
+        assert!(super::req_editor_effective_indent_guides(&resolved));
     }
 
     #[test]
@@ -2724,12 +2882,15 @@ pub fn run() {
         String::new(),
     );
     trace_debug(format!(
-        "req-editor startup config path={} code_editor={} soft_wrap={} line_number={} show_whitespaces={} searchable=true",
+        "req-editor startup config path={} code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
         color_config_path.display(),
         editor_config.code_editor,
+        editor_config.code_editor_lang,
         editor_config.soft_wrap,
         editor_config.line_number,
-        editor_config.show_whitespaces
+        editor_config.show_whitespaces,
+        editor_config.indent_guides,
+        req_editor_effective_indent_guides(&editor_config)
     ));
 
     let file_tree_config_started = Instant::now();
