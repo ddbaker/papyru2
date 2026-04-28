@@ -1308,6 +1308,23 @@ impl Papyru2App {
                     FileTreeEvent::RecyclebinDeleteRequested(paths) => {
                         this.on_file_tree_delete_requested(paths.clone(), window, cx);
                     }
+                    FileTreeEvent::PriorityDailyLoadCompleted(daily_dir) => {
+                        let startup_position_started = Instant::now();
+                        let prepared = this.apply_req_ftr18_startup_daily_folder_positioning(
+                            daily_dir.clone(),
+                            window,
+                            cx,
+                        );
+                        crate::log::boot_profile_mark_timing(
+                            "startup.file_tree_priority_daily_positioning",
+                            startup_position_started.elapsed(),
+                            format!(
+                                "prepared={} daily_dir={}",
+                                prepared,
+                                daily_dir.display()
+                            ),
+                        );
+                    }
                     FileTreeEvent::InitialLoadCompleted => {
                         this.handle_file_tree_initial_load_completed(window, cx);
                     }
@@ -1532,8 +1549,9 @@ impl Papyru2App {
             );
         }
 
-        this.file_tree
-            .update(cx, |file_tree, cx| file_tree.start_initial_load(cx));
+        this.file_tree.update(cx, |file_tree, cx| {
+            file_tree.start_initial_load(Some(startup_daily_dir.clone()), cx)
+        });
 
         crate::log::boot_profile_mark_timing(
             "startup.papyru2_app_new.exit",

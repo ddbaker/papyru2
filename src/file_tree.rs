@@ -21,6 +21,7 @@ pub enum FileTreeEvent {
     SelectionChanged(PathBuf),
     OpenFile(PathBuf),
     RecyclebinDeleteRequested(Vec<PathBuf>),
+    PriorityDailyLoadCompleted(PathBuf),
     InitialLoadCompleted,
 }
 
@@ -346,7 +347,11 @@ impl FileTreeView {
         this
     }
 
-    pub fn start_initial_load(&mut self, cx: &mut Context<Self>) {
+    pub fn start_initial_load(
+        &mut self,
+        priority_daily_dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
         if self.initial_load_started {
             #[cfg(test)]
             {
@@ -358,11 +363,30 @@ impl FileTreeView {
         self.initial_load_started = true;
         crate::log::boot_profile_mark_detail(
             "startup.file_tree_initial_load_start",
-            format!("root_dir={}", self.tree_root_dir.display()),
+            format!(
+                "root_dir={} priority_daily_dir={}",
+                self.tree_root_dir.display(),
+                priority_daily_dir
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string())
+            ),
         );
 
         #[cfg(test)]
         {
+            if let Some(priority_daily_dir) = priority_daily_dir {
+                let priority_scan_result =
+                    scan_priority_daily_tree_model(&self.tree_root_dir, &priority_daily_dir);
+                self.apply_priority_daily_scan_result(
+                    priority_scan_result,
+                    priority_daily_dir.as_path(),
+                    cx,
+                );
+                cx.emit(FileTreeEvent::PriorityDailyLoadCompleted(
+                    priority_daily_dir,
+                ));
+            }
             self.load_files(cx);
             self.initial_load_completed = true;
             self.apply_req_ftrhsc_launch_horizontal_scroll_offset("start_initial_load_test", cx);
@@ -373,8 +397,54 @@ impl FileTreeView {
         #[cfg(not(test))]
         {
             let tree_root_dir = self.tree_root_dir.clone();
+            let priority_daily_dir = priority_daily_dir.filter(|path| path.is_dir());
             cx.spawn(async move |this, cx| {
                 let load_started = std::time::Instant::now();
+                if let Some(priority_daily_dir) = priority_daily_dir {
+                    let priority_tree_root_dir = tree_root_dir.clone();
+                    let priority_daily_dir_for_scan = priority_daily_dir.clone();
+                    let priority_load_started = std::time::Instant::now();
+                    let priority_scan_result = smol::unblock(move || {
+                        scan_priority_daily_tree_model(
+                            &priority_tree_root_dir,
+                            &priority_daily_dir_for_scan,
+                        )
+                    })
+                    .await;
+
+                    let Some(this) = this.upgrade() else {
+                        return;
+                    };
+
+                    let priority_daily_dir_for_update = priority_daily_dir.clone();
+                    let _ = this.update(cx, move |file_tree, cx| {
+                        file_tree.apply_priority_daily_scan_result(
+                            priority_scan_result,
+                            priority_daily_dir_for_update.as_path(),
+                            cx,
+                        );
+                        cx.emit(FileTreeEvent::PriorityDailyLoadCompleted(
+                            priority_daily_dir_for_update.clone(),
+                        ));
+                        let priority_total_detail = format!(
+                            "daily_dir={} root_items={} visible_item_count={}",
+                            priority_daily_dir_for_update.display(),
+                            file_tree.root_items.len(),
+                            file_tree.visible_item_ids.len()
+                        );
+                        crate::log::boot_profile_mark_timing(
+                            "file_tree.priority_daily_total",
+                            priority_load_started.elapsed(),
+                            priority_total_detail.clone(),
+                        );
+                        crate::log::runtime_profile_mark_timing_lazy(
+                            "file_tree.priority_daily_total",
+                            priority_load_started.elapsed(),
+                            || priority_total_detail.clone(),
+                        );
+                    });
+                }
+
                 let scan_result = smol::unblock(move || scan_file_tree_model(&tree_root_dir)).await;
 
                 let Some(this) = this.upgrade() else {
@@ -402,6 +472,155 @@ impl FileTreeView {
             })
             .detach();
         }
+    }
+
+    fn apply_priority_daily_scan_result(
+        &mut self,
+        scan_result: FileTreeScanResult,
+        daily_dir: &Path,
+        cx: &mut Context<Self>,
+    ) {
+        let apply_started = std::time::Instant::now();
+        crate::log::boot_profile_mark_timing(
+            "file_tree.priority_daily_build_file_items",
+            scan_result.build_duration,
+            format!(
+                "daily_dir={} dir_count={} file_count={} max_depth={} read_dir_calls={} read_dir_errors={}",
+                daily_dir.display(),
+                scan_result.build_stats.directory_count,
+                scan_result.build_stats.file_count,
+                scan_result.build_stats.max_depth,
+                scan_result.build_stats.read_dir_calls,
+                scan_result.build_stats.read_dir_errors
+            ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_build_file_items",
+            scan_result.build_duration,
+            || {
+                format!(
+                    "daily_dir={} dir_count={} file_count={} max_depth={} read_dir_calls={} read_dir_errors={}",
+                    daily_dir.display(),
+                    scan_result.build_stats.directory_count,
+                    scan_result.build_stats.file_count,
+                    scan_result.build_stats.max_depth,
+                    scan_result.build_stats.read_dir_calls,
+                    scan_result.build_stats.read_dir_errors
+                )
+            },
+        );
+        crate::log::boot_profile_mark_timing(
+            "file_tree.priority_daily_collect_directory_item_ids",
+            scan_result.collect_directory_duration,
+            format!(
+                "daily_dir={} directory_item_count={}",
+                daily_dir.display(),
+                scan_result.directory_item_ids.len()
+            ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_collect_directory_item_ids",
+            scan_result.collect_directory_duration,
+            || {
+                format!(
+                    "daily_dir={} directory_item_count={}",
+                    daily_dir.display(),
+                    scan_result.directory_item_ids.len()
+                )
+            },
+        );
+        crate::log::boot_profile_mark_timing(
+            "file_tree.priority_daily_scan",
+            scan_result.total_duration,
+            format!(
+                "daily_dir={} dir_count={} file_count={} directory_item_count={}",
+                daily_dir.display(),
+                scan_result.build_stats.directory_count,
+                scan_result.build_stats.file_count,
+                scan_result.directory_item_ids.len()
+            ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_scan",
+            scan_result.total_duration,
+            || {
+                format!(
+                    "daily_dir={} dir_count={} file_count={} directory_item_count={}",
+                    daily_dir.display(),
+                    scan_result.build_stats.directory_count,
+                    scan_result.build_stats.file_count,
+                    scan_result.directory_item_ids.len()
+                )
+            },
+        );
+
+        let mut refreshed_items = tree_items_from_models(scan_result.item_models);
+        let expanded_folder_item_ids =
+            req_ftr18_daily_folder_chain_item_ids(self.tree_root_dir.as_path(), daily_dir)
+                .unwrap_or_default();
+        let expanded_restored_count =
+            apply_expanded_folder_item_ids(&mut refreshed_items, &expanded_folder_item_ids);
+        self.root_items = refreshed_items;
+        self.directory_item_ids = scan_result.directory_item_ids;
+        self.set_items_from_model(cx);
+
+        let detail = format!(
+            "daily_dir={} root_items={} expanded_chain_count={} expanded_restored_count={} directory_item_count={} visible_item_count={}",
+            daily_dir.display(),
+            self.root_items.len(),
+            expanded_folder_item_ids.len(),
+            expanded_restored_count,
+            self.directory_item_ids.len(),
+            self.visible_item_ids.len()
+        );
+        crate::log::trace_debug(format!("file_tree priority_daily_load {detail}"));
+        crate::log::boot_profile_mark_timing(
+            "file_tree.priority_daily_load_files_total",
+            scan_result.total_duration,
+            detail.clone(),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_load_files_total",
+            scan_result.total_duration,
+            || detail.clone(),
+        );
+        crate::log::boot_profile_mark_timing(
+            "file_tree.priority_daily_apply",
+            apply_started.elapsed(),
+            format!(
+                "daily_dir={} root_items={} visible_item_count={} selected_item_count={}",
+                daily_dir.display(),
+                self.root_items.len(),
+                self.visible_item_ids.len(),
+                self.selected_item_ids.len()
+            ),
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_apply",
+            apply_started.elapsed(),
+            || {
+                format!(
+                    "daily_dir={} root_items={} visible_item_count={} selected_item_count={}",
+                    daily_dir.display(),
+                    self.root_items.len(),
+                    self.visible_item_ids.len(),
+                    self.selected_item_ids.len()
+                )
+            },
+        );
+        crate::log::runtime_profile_mark_timing_lazy(
+            "file_tree.priority_daily_apply_scan_result_total",
+            apply_started.elapsed(),
+            || {
+                format!(
+                    "daily_dir={} root_items={} visible_item_count={} selected_item_count={}",
+                    daily_dir.display(),
+                    self.root_items.len(),
+                    self.visible_item_ids.len(),
+                    self.selected_item_ids.len()
+                )
+            },
+        );
     }
 
     fn apply_file_tree_scan_result(
@@ -1633,6 +1852,94 @@ fn scan_file_tree_model(tree_root_dir: &PathBuf) -> FileTreeScanResult {
     let (item_models, build_stats) = build_file_items_with_stats(tree_root_dir, tree_root_dir);
     let build_duration = build_started.elapsed();
 
+    file_tree_scan_result_from_models(item_models, build_stats, build_duration, scan_started)
+}
+
+fn scan_priority_daily_tree_model(
+    tree_root_dir: &PathBuf,
+    daily_dir: &PathBuf,
+) -> FileTreeScanResult {
+    let scan_started = std::time::Instant::now();
+    let build_started = std::time::Instant::now();
+    let mut build_stats = BuildFileItemsStats::default();
+
+    let item_models = if let Some((year_label, month_label, day_label)) =
+        priority_daily_relative_labels(tree_root_dir.as_path(), daily_dir.as_path())
+    {
+        let year_path = tree_root_dir.join(&year_label);
+        let month_path = year_path.join(&month_label);
+        let day_path = month_path.join(&day_label);
+        build_stats.directory_count += 3;
+        build_stats.max_depth = build_stats.max_depth.max(3);
+        let day_children =
+            build_file_items_recursive(tree_root_dir, &day_path, 3, &mut build_stats);
+        vec![FileTreeItemModel {
+            id: year_path.to_string_lossy().to_string(),
+            label: year_label,
+            is_directory: true,
+            children: vec![FileTreeItemModel {
+                id: month_path.to_string_lossy().to_string(),
+                label: month_label,
+                is_directory: true,
+                children: vec![FileTreeItemModel {
+                    id: day_path.to_string_lossy().to_string(),
+                    label: day_label,
+                    is_directory: true,
+                    children: day_children,
+                }],
+            }],
+        }]
+    } else {
+        Vec::new()
+    };
+
+    let build_duration = build_started.elapsed();
+    file_tree_scan_result_from_models(item_models, build_stats, build_duration, scan_started)
+}
+
+fn priority_daily_relative_labels(
+    tree_root_dir: &Path,
+    daily_dir: &Path,
+) -> Option<(String, String, String)> {
+    if !daily_dir.is_dir() {
+        return None;
+    }
+
+    let relative_daily_dir = daily_dir.strip_prefix(tree_root_dir).ok()?;
+    let mut components = relative_daily_dir.components();
+    let year = priority_daily_normal_component(components.next()?)?;
+    let month = priority_daily_normal_component(components.next()?)?;
+    let day = priority_daily_normal_component(components.next()?)?;
+    if components.next().is_some() {
+        return None;
+    }
+    if !priority_daily_fixed_ascii_digits(&year, 4)
+        || !priority_daily_fixed_ascii_digits(&month, 2)
+        || !priority_daily_fixed_ascii_digits(&day, 2)
+    {
+        return None;
+    }
+
+    Some((year, month, day))
+}
+
+fn priority_daily_normal_component(component: std::path::Component<'_>) -> Option<String> {
+    match component {
+        std::path::Component::Normal(value) => value.to_str().map(ToString::to_string),
+        _ => None,
+    }
+}
+
+fn priority_daily_fixed_ascii_digits(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn file_tree_scan_result_from_models(
+    item_models: Vec<FileTreeItemModel>,
+    build_stats: BuildFileItemsStats,
+    build_duration: std::time::Duration,
+    scan_started: std::time::Instant,
+) -> FileTreeScanResult {
     let collect_started = std::time::Instant::now();
     let mut directory_item_ids = HashSet::new();
     collect_directory_item_ids_from_models(&item_models, &mut directory_item_ids);
@@ -1986,9 +2293,22 @@ fn req_ftr18_expand_and_resolve_top_index(
 }
 
 fn find_visible_index(visible_item_ids: &[String], item_id: &str) -> Option<usize> {
-    visible_item_ids
+    if let Some(index) = visible_item_ids
         .iter()
         .position(|visible_item_id| visible_item_id == item_id)
+    {
+        return Some(index);
+    }
+
+    let comparable_item_id = comparable_path(Path::new(item_id))
+        .to_string_lossy()
+        .to_string();
+    visible_item_ids.iter().position(|visible_item_id| {
+        comparable_path(Path::new(visible_item_id))
+            .to_string_lossy()
+            .as_ref()
+            == comparable_item_id.as_str()
+    })
 }
 
 fn req_ftr20_selected_paths_in_visible_order(
@@ -2155,7 +2475,14 @@ fn comparable_path(path: &Path) -> PathBuf {
     if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
         return PathBuf::from(stripped);
     }
-    path.to_path_buf()
+    #[cfg(windows)]
+    {
+        return PathBuf::from(path_str.replace('/', r"\"));
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
 }
 
 fn is_path_within(path: &Path, base: &Path) -> bool {
@@ -3194,20 +3521,21 @@ impl crate::app::Papyru2App {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileTreeWatcherRefreshCompletionDecision, FileTreeWatcherRefreshRequestDecision,
-        FileTreeWatcherRefreshState, ReqFtr17PostDeleteDecision, ReqFtr23DailyDirPlan, TreeItem,
-        apply_expanded_folder_item_ids, build_file_items, collect_tree_item_ids,
-        collect_visible_item_ids, delete_entries_for_file_tree, expanded_folder_item_ids,
-        find_visible_index, is_delete_protected_path, move_entries_to_recyclebin,
-        replace_single_selection,
+        FileTreeItemModel, FileTreeWatcherRefreshCompletionDecision,
+        FileTreeWatcherRefreshRequestDecision, FileTreeWatcherRefreshState,
+        ReqFtr17PostDeleteDecision, ReqFtr23DailyDirPlan, TreeItem, apply_expanded_folder_item_ids,
+        build_file_items, collect_tree_item_ids, collect_visible_item_ids,
+        delete_entries_for_file_tree, expanded_folder_item_ids, find_visible_index,
+        is_delete_protected_path, move_entries_to_recyclebin, replace_single_selection,
         req_boot_pending_startup_daily_dir_after_initial_position_attempt,
         req_boot_should_skip_watcher_refresh_until_initial_load_complete,
         req_boot_take_pending_startup_daily_dir_for_initial_load_completion,
         req_ftr17_post_delete_decision_from_filesystem,
         req_ftr17_post_delete_decision_from_remaining_files, req_ftr17_sort_key,
-        req_ftr23_daily_dir_plan, retain_existing_selections, select_range_items,
-        selected_row_highlight_color, should_restore_selection_after_watcher_refresh,
-        toggle_item_selection, use_checkbox_selection_markers,
+        req_ftr23_daily_dir_plan, retain_existing_selections, scan_file_tree_model,
+        scan_priority_daily_tree_model, select_range_items, selected_row_highlight_color,
+        should_restore_selection_after_watcher_refresh, toggle_item_selection,
+        tree_items_from_models, use_checkbox_selection_markers,
     };
     use gpui::hsla;
     use std::{
@@ -3394,6 +3722,230 @@ mod tests {
         ));
         fs::create_dir_all(&path).expect("create temp root");
         path
+    }
+
+    fn new_boot_priority_temp_root_no_cleanup(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        path.push(format!(
+            "gpui_papyru2_boot_priority_{name}_{}_{}",
+            std::process::id(),
+            stamp
+        ));
+        fs::create_dir_all(&path).expect("create boot priority temp root");
+        path
+    }
+
+    fn collect_file_tree_model_ids(models: &[FileTreeItemModel], ids: &mut HashSet<String>) {
+        for model in models {
+            ids.insert(model.id.clone());
+            collect_file_tree_model_ids(&model.children, ids);
+        }
+    }
+
+    #[test]
+    fn boot_priority_test1_priority_model_existing_daily_dir_with_files() {
+        let root = new_boot_priority_temp_root_no_cleanup("test1_existing_daily");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(&daily_dir).expect("create daily dir");
+        fs::write(daily_dir.join("b.md"), "b").expect("write b");
+        fs::write(daily_dir.join("a.md"), "a").expect("write a");
+        fs::create_dir_all(root.join("2025").join("12").join("31")).expect("create other day");
+        fs::write(root.join("outside.md"), "outside").expect("write outside");
+
+        let scan = scan_priority_daily_tree_model(&root, &daily_dir);
+
+        assert_eq!(scan.item_models.len(), 1);
+        let year = &scan.item_models[0];
+        assert_eq!(year.label, "2026");
+        assert_eq!(year.children.len(), 1);
+        let month = &year.children[0];
+        assert_eq!(month.label, "04");
+        assert_eq!(month.children.len(), 1);
+        let day = &month.children[0];
+        assert_eq!(day.label, "28");
+        let file_labels: Vec<&str> = day
+            .children
+            .iter()
+            .map(|model| model.label.as_str())
+            .collect();
+        assert_eq!(file_labels, vec!["a.md", "b.md"]);
+        assert_eq!(scan.build_stats.directory_count, 3);
+        assert_eq!(scan.build_stats.file_count, 2);
+        assert!(
+            scan.directory_item_ids
+                .contains(root.join("2026").to_string_lossy().as_ref())
+        );
+        assert!(
+            scan.directory_item_ids
+                .contains(root.join("2026").join("04").to_string_lossy().as_ref())
+        );
+        assert!(
+            scan.directory_item_ids.contains(
+                root.join("2026")
+                    .join("04")
+                    .join("28")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(
+            !scan
+                .directory_item_ids
+                .contains(root.join("2025").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn boot_priority_test2_priority_model_empty_daily_dir_keeps_dd_row() {
+        let root = new_boot_priority_temp_root_no_cleanup("test2_empty_daily");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(&daily_dir).expect("create daily dir");
+
+        let scan = scan_priority_daily_tree_model(&root, &daily_dir);
+
+        let day = &scan.item_models[0].children[0].children[0];
+        assert_eq!(day.label, "28");
+        assert!(day.children.is_empty());
+        assert_eq!(scan.build_stats.directory_count, 3);
+        assert_eq!(scan.build_stats.file_count, 0);
+        assert_eq!(scan.build_stats.read_dir_calls, 1);
+    }
+
+    #[test]
+    fn boot_priority_test3_priority_model_missing_or_outside_daily_dir_is_empty() {
+        let root = new_boot_priority_temp_root_no_cleanup("test3_root");
+        let missing_daily_dir = root.join("2026").join("04").join("28");
+
+        let missing_scan = scan_priority_daily_tree_model(&root, &missing_daily_dir);
+
+        assert!(missing_scan.item_models.is_empty());
+        assert!(missing_scan.directory_item_ids.is_empty());
+
+        let outside_root = new_boot_priority_temp_root_no_cleanup("test3_outside");
+        let outside_daily_dir = outside_root.join("2026").join("04").join("28");
+        fs::create_dir_all(&outside_daily_dir).expect("create outside daily dir");
+
+        let outside_scan = scan_priority_daily_tree_model(&root, &outside_daily_dir);
+
+        assert!(outside_scan.item_models.is_empty());
+        assert!(outside_scan.directory_item_ids.is_empty());
+    }
+
+    #[test]
+    fn boot_priority_test4_priority_model_excludes_git_and_sorts_dirs_first() {
+        let root = new_boot_priority_temp_root_no_cleanup("test4_sort_git");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(daily_dir.join(".git")).expect("create git dir");
+        fs::create_dir_all(daily_dir.join("z_dir")).expect("create z dir");
+        fs::create_dir_all(daily_dir.join("a_dir")).expect("create a dir");
+        fs::write(daily_dir.join("b.md"), "b").expect("write b");
+        fs::write(daily_dir.join("a.md"), "a").expect("write a");
+
+        let scan = scan_priority_daily_tree_model(&root, &daily_dir);
+
+        let day_children = &scan.item_models[0].children[0].children[0].children;
+        let labels: Vec<&str> = day_children
+            .iter()
+            .map(|model| model.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["a_dir", "z_dir", "a.md", "b.md"]);
+        assert!(labels.iter().all(|label| *label != ".git"));
+    }
+
+    #[test]
+    fn boot_priority_test5_priority_item_ids_are_subset_of_full_scanner() {
+        let root = new_boot_priority_temp_root_no_cleanup("test5_subset");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(daily_dir.join("nested")).expect("create nested dir");
+        fs::write(daily_dir.join("today.md"), "today").expect("write today");
+        fs::write(daily_dir.join("nested").join("child.md"), "child").expect("write child");
+        fs::create_dir_all(root.join("2026").join("04").join("27")).expect("create yesterday");
+        fs::write(
+            root.join("2026").join("04").join("27").join("old.md"),
+            "old",
+        )
+        .expect("write old");
+
+        let priority_scan = scan_priority_daily_tree_model(&root, &daily_dir);
+        let full_scan = scan_file_tree_model(&root);
+
+        let mut priority_ids = HashSet::new();
+        let mut full_ids = HashSet::new();
+        collect_file_tree_model_ids(&priority_scan.item_models, &mut priority_ids);
+        collect_file_tree_model_ids(&full_scan.item_models, &mut full_ids);
+
+        for id in &priority_ids {
+            assert!(
+                full_ids.contains(id),
+                "priority id missing from full scan: {id}"
+            );
+        }
+        assert!(priority_ids.contains(daily_dir.join("today.md").to_string_lossy().as_ref()));
+        assert!(
+            !priority_ids.contains(
+                root.join("2026")
+                    .join("04")
+                    .join("27")
+                    .join("old.md")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+    }
+
+    #[test]
+    fn boot_priority_test6_priority_fingerprint_is_stable() {
+        let root = new_boot_priority_temp_root_no_cleanup("test6_stable");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(&daily_dir).expect("create daily dir");
+        fs::write(daily_dir.join("note.md"), "note").expect("write note");
+
+        let first = scan_priority_daily_tree_model(&root, &daily_dir);
+        let second = scan_priority_daily_tree_model(&root, &daily_dir);
+
+        assert_eq!(first.structural_fingerprint, second.structural_fingerprint);
+        assert_eq!(first.directory_item_ids, second.directory_item_ids);
+    }
+
+    #[test]
+    fn boot_priority_mixed_separator_test1_daily_chain_expands_on_windows_style_paths() {
+        let root = new_boot_priority_temp_root_no_cleanup("mixed_separator_test1");
+        let daily_dir = root.join("2026").join("04").join("28");
+        fs::create_dir_all(&daily_dir).expect("create daily dir");
+        let mixed_daily_dir = PathBuf::from(format!("{}/2026/04/28", root.to_string_lossy()));
+
+        let scan = scan_priority_daily_tree_model(&root, &mixed_daily_dir);
+        let mut items = tree_items_from_models(scan.item_models);
+        let expanded_ids =
+            super::req_ftr18_daily_folder_chain_item_ids(root.as_path(), mixed_daily_dir.as_path())
+                .expect("daily chain ids");
+        let expanded_count = apply_expanded_folder_item_ids(&mut items, &expanded_ids);
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+
+        assert_eq!(expanded_count, 2);
+        assert!(visible_ids.contains(&root.join("2026").to_string_lossy().to_string()));
+        assert!(visible_ids.contains(&root.join("2026").join("04").to_string_lossy().to_string()));
+        assert!(visible_ids.contains(&daily_dir.to_string_lossy().to_string()));
+
+        let scan = scan_priority_daily_tree_model(&root, &mixed_daily_dir);
+        let mut items = tree_items_from_models(scan.item_models);
+        let (_, target_index, _) = super::req_ftr18_expand_and_resolve_top_index(
+            &mut items,
+            root.as_path(),
+            mixed_daily_dir.as_path(),
+        )
+        .expect("mixed separator daily dir should resolve visible target");
+        let mut visible_ids = Vec::new();
+        collect_visible_item_ids(&items, &mut visible_ids);
+        assert_eq!(
+            visible_ids.get(target_index),
+            Some(&daily_dir.to_string_lossy().to_string())
+        );
     }
 
     fn remove_temp_root(path: &Path) {
