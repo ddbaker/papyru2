@@ -928,6 +928,8 @@ pub struct Papyru2App {
     pub(crate) app_paths: crate::path_resolver::AppPaths,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
     pub(crate) file_tree_watcher_refresh_state: FileTreeWatcherRefreshState,
+    pub(crate) pending_req_ftr32_post_refresh_action:
+        Option<crate::file_tree::ReqFtr17PostDeleteDecision>,
     pub(crate) selection_focus_reassert_pending: bool,
     pub(crate) rpc_highlight_active: bool,
     pub(crate) rpc_highlight_line_1_based: Option<u32>,
@@ -1517,6 +1519,7 @@ impl Papyru2App {
             app_paths,
             _file_tree_watcher: file_tree_watcher,
             file_tree_watcher_refresh_state: FileTreeWatcherRefreshState::default(),
+            pending_req_ftr32_post_refresh_action: None,
             selection_focus_reassert_pending: false,
             rpc_highlight_active: false,
             rpc_highlight_line_1_based: None,
@@ -1564,10 +1567,13 @@ impl Papyru2App {
 }
 
 impl Render for Papyru2App {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.boot_profile_first_render_marked {
             self.boot_profile_first_render_marked = true;
             crate::log::boot_profile_mark("startup.app_render.first");
+        }
+        if let Some(action) = self.pending_req_ftr32_post_refresh_action.take() {
+            self.apply_req_ftr32_pending_post_refresh_action(action, window, cx);
         }
 
         v_flex()

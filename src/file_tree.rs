@@ -2760,6 +2760,30 @@ fn req_ftr17_deleted_paths_contain_current_edit(
         .any(|source| is_same_path(source.as_path(), current_edit_path))
 }
 
+fn req_ftr32_external_delete_decision_from_filesystem(
+    current_edit_path: Option<&Path>,
+) -> io::Result<Option<ReqFtr17PostDeleteDecision>> {
+    let Some(current_edit_path) = current_edit_path else {
+        return Ok(None);
+    };
+
+    if current_edit_path.is_file() {
+        return Ok(None);
+    }
+
+    Ok(Some(req_ftr17_post_delete_decision_from_filesystem(
+        current_edit_path,
+    )?))
+}
+
+fn req_ftr32_decision_label(decision: &ReqFtr17PostDeleteDecision) -> &'static str {
+    match decision {
+        ReqFtr17PostDeleteDecision::SelectNext(_) => "case1_next",
+        ReqFtr17PostDeleteDecision::SelectPrevious(_) => "case2_prev",
+        ReqFtr17PostDeleteDecision::ResetToNeutral => "case3_reset_neutral",
+    }
+}
+
 impl crate::app::Papyru2App {
     pub(crate) fn handle_file_tree_selection_changed(
         &mut self,
@@ -2891,6 +2915,46 @@ impl crate::app::Papyru2App {
                 editor_focused
             ));
         });
+    }
+
+    pub(crate) fn apply_req_ftr32_pending_post_refresh_action(
+        &mut self,
+        decision: ReqFtr17PostDeleteDecision,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let decision_label = req_ftr32_decision_label(&decision);
+        match decision {
+            ReqFtr17PostDeleteDecision::SelectNext(path) => {
+                let transitioned = self.file_workflow.transition_edit_to_neutral();
+                self.sync_current_editing_path_to_components(None, cx);
+                crate::log::trace_debug(format!(
+                    "file_tree req-ftr32 applied decision={} target={} transition_to_neutral={}",
+                    decision_label,
+                    path.display(),
+                    transitioned
+                ));
+                self.handle_file_tree_selection_changed(path, window, cx);
+            }
+            ReqFtr17PostDeleteDecision::SelectPrevious(path) => {
+                let transitioned = self.file_workflow.transition_edit_to_neutral();
+                self.sync_current_editing_path_to_components(None, cx);
+                crate::log::trace_debug(format!(
+                    "file_tree req-ftr32 applied decision={} target={} transition_to_neutral={}",
+                    decision_label,
+                    path.display(),
+                    transitioned
+                ));
+                self.handle_file_tree_selection_changed(path, window, cx);
+            }
+            ReqFtr17PostDeleteDecision::ResetToNeutral => {
+                crate::log::trace_debug(format!(
+                    "file_tree req-ftr32 applied decision={} target=<none>",
+                    decision_label
+                ));
+                self.apply_req_ftr17_case3_reset_to_neutral(window, cx);
+            }
+        }
     }
 
     pub(crate) fn apply_file_tree_watcher_refresh(&mut self, cx: &mut Context<Self>) {
@@ -3039,20 +3103,55 @@ impl crate::app::Papyru2App {
     ) {
         let apply_started = std::time::Instant::now();
         let scan_fingerprint = scan_result.structural_fingerprint;
+        let current_edit_path = self.file_workflow.current_edit_path();
+        let current_edit_path_exists = current_edit_path.as_deref().is_some_and(Path::is_file);
+        let req_ftr32_decision = match req_ftr32_external_delete_decision_from_filesystem(
+            current_edit_path.as_deref(),
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                crate::log::trace_debug(format!(
+                    "file_tree req-ftr32 decision failed generation={} current_edit_path={} error={error}",
+                    generation,
+                    current_edit_path
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string())
+                ));
+                None
+            }
+        };
+        if let Some(path) = current_edit_path.as_deref() {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr32 pre_apply generation={} current_edit_path={} exists={} trigger={}",
+                generation,
+                path.display(),
+                current_edit_path_exists,
+                req_ftr32_decision.is_some()
+            ));
+            if current_edit_path_exists {
+                crate::log::trace_debug(format!(
+                    "file_tree req-ftr32 skipped current_edit_path_exists=true generation={} current_edit_path={}",
+                    generation,
+                    path.display()
+                ));
+            }
+        }
+
         let (
             current_fingerprint,
             root_items_before,
             visible_item_count_before,
             directory_item_count_before,
         ) = self.file_tree.read(cx).read_with_current_tree_fingerprint();
-        if current_fingerprint == Some(scan_fingerprint) {
+        if current_fingerprint == Some(scan_fingerprint) && req_ftr32_decision.is_none() {
             let apply_elapsed = apply_started.elapsed();
             crate::log::runtime_profile_mark_timing_lazy(
                 "file_tree.watcher_refresh_apply",
                 apply_elapsed,
                 || {
                     format!(
-                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} root_items={} visible_item_count={} directory_item_count={}",
+                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} root_items={} visible_item_count={} directory_item_count={} req-ftr32_trigger=false",
                         generation,
                         scan_fingerprint,
                         root_items_before,
@@ -3066,7 +3165,7 @@ impl crate::app::Papyru2App {
                 background_scan_elapsed.saturating_add(apply_elapsed),
                 || {
                     format!(
-                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                        "generation={} apply_skipped=true reason=unchanged_structure fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={} req-ftr32_trigger=false",
                         generation,
                         scan_fingerprint,
                         background_scan_elapsed.as_millis(),
@@ -3075,7 +3174,7 @@ impl crate::app::Papyru2App {
                 },
             );
             crate::log::trace_debug(format!(
-                "file_tree watcher refresh async skipped unchanged generation={} fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                "file_tree watcher refresh async skipped unchanged generation={} fingerprint={} background_scan_elapsed_ms={} apply_elapsed_ms={} req-ftr32_trigger=false",
                 generation,
                 scan_fingerprint,
                 background_scan_elapsed.as_millis(),
@@ -3084,7 +3183,6 @@ impl crate::app::Papyru2App {
             return;
         }
 
-        let current_edit_path = self.file_workflow.current_edit_path();
         let current_edit_daily_dir = current_edit_path
             .as_deref()
             .and_then(Path::parent)
@@ -3095,7 +3193,9 @@ impl crate::app::Papyru2App {
             current_edit_daily_dir.as_deref(),
             retained_req_frt27_daily_dir.as_deref(),
         );
+        let req_ftr32_decision_for_tree = req_ftr32_decision.clone();
         let mut restored_selection = false;
+        let mut req_ftr32_restored_selection = false;
         let mut req_frt27_padding_rows = None;
         let mut root_items = 0usize;
         let mut visible_item_count = 0usize;
@@ -3120,7 +3220,17 @@ impl crate::app::Papyru2App {
                 req_frt27_padding_rows = Some(padding_rows);
             }
 
-            if should_restore_selection_after_watcher_refresh(
+            if let Some(decision) = req_ftr32_decision_for_tree.as_ref() {
+                match decision {
+                    ReqFtr17PostDeleteDecision::SelectNext(path)
+                    | ReqFtr17PostDeleteDecision::SelectPrevious(path) => {
+                        restored_selection =
+                            file_tree.restore_selection_for_path(path.as_path(), cx);
+                        req_ftr32_restored_selection = restored_selection;
+                    }
+                    ReqFtr17PostDeleteDecision::ResetToNeutral => {}
+                }
+            } else if should_restore_selection_after_watcher_refresh(
                 file_tree.selection_count(),
                 current_edit_path.as_deref(),
             ) && let Some(path) = current_edit_path.as_deref()
@@ -3128,13 +3238,24 @@ impl crate::app::Papyru2App {
                 restored_selection = file_tree.restore_selection_for_path(path, cx);
             }
         });
+
+        if let Some(decision) = req_ftr32_decision.clone() {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr32 queued decision={} restored_selection={}",
+                req_ftr32_decision_label(&decision),
+                req_ftr32_restored_selection
+            ));
+            self.pending_req_ftr32_post_refresh_action = Some(decision);
+            cx.notify();
+        }
+
         let apply_elapsed = apply_started.elapsed();
         crate::log::runtime_profile_mark_timing_lazy(
             "file_tree.watcher_refresh_apply",
             apply_elapsed,
             || {
                 format!(
-                    "generation={} apply_skipped=false fingerprint={} previous_fingerprint={:?} root_items={} visible_item_count={} directory_item_count={} restored_selection={} req-frt27_padding_rows={:?}",
+                    "generation={} apply_skipped=false fingerprint={} previous_fingerprint={:?} root_items={} visible_item_count={} directory_item_count={} restored_selection={} req-frt27_padding_rows={:?} req-ftr32_trigger={}",
                     generation,
                     scan_fingerprint,
                     current_fingerprint,
@@ -3142,7 +3263,8 @@ impl crate::app::Papyru2App {
                     visible_item_count,
                     directory_item_count,
                     restored_selection,
-                    req_frt27_padding_rows
+                    req_frt27_padding_rows,
+                    req_ftr32_decision_for_tree.is_some()
                 )
             },
         );
@@ -3151,7 +3273,7 @@ impl crate::app::Papyru2App {
             background_scan_elapsed.saturating_add(apply_elapsed),
             || {
                 format!(
-                    "generation={} apply_skipped=false current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+                    "generation={} apply_skipped=false current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} req-ftr32_trigger={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
                     generation,
                     current_edit_path.is_some(),
                     restored_selection,
@@ -3159,13 +3281,14 @@ impl crate::app::Papyru2App {
                     retained_req_frt27_daily_dir.is_some(),
                     req_frt27_daily_dir.is_some(),
                     req_frt27_padding_rows,
+                    req_ftr32_decision_for_tree.is_some(),
                     background_scan_elapsed.as_millis(),
                     apply_elapsed.as_millis()
                 )
             },
         );
         crate::log::trace_debug(format!(
-            "file_tree watcher refresh async applied generation={} current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} background_scan_elapsed_ms={} apply_elapsed_ms={}",
+            "file_tree watcher refresh async applied generation={} current_edit_path_present={} restored_selection={} req-frt27_current_daily_dir_present={} req-frt27_retained_daily_dir_present={} req-frt27_daily_dir_present={} req-frt27_padding_rows={:?} req-ftr32_trigger={} background_scan_elapsed_ms={} apply_elapsed_ms={}",
             generation,
             current_edit_path.is_some(),
             restored_selection,
@@ -3173,6 +3296,7 @@ impl crate::app::Papyru2App {
             retained_req_frt27_daily_dir.is_some(),
             req_frt27_daily_dir.is_some(),
             req_frt27_padding_rows,
+            req_ftr32_decision_for_tree.is_some(),
             background_scan_elapsed.as_millis(),
             apply_elapsed.as_millis()
         ));
@@ -6005,6 +6129,77 @@ mod tests {
             Some(current_edit_daily_dir.to_path_buf())
         );
         assert_eq!(super::req_frt27_watcher_padding_daily_dir(None, None), None);
+    }
+
+    #[test]
+    fn ftr_test128_req_ftr32_external_current_edit_delete_middle_reselects_next_file() {
+        let root = new_temp_root("ftr_test128");
+        let dir = root.join("2026").join("04").join("30");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_c, "C").expect("seed C");
+
+        let decision =
+            super::req_ftr32_external_delete_decision_from_filesystem(Some(file_b.as_path()))
+                .expect("resolve req-ftr32 external delete decision");
+
+        assert_eq!(
+            decision,
+            Some(ReqFtr17PostDeleteDecision::SelectNext(file_c))
+        );
+    }
+
+    #[test]
+    fn ftr_test129_req_ftr32_external_current_edit_delete_bottom_reselects_previous_file() {
+        let root = new_temp_root("ftr_test129");
+        let dir = root.join("2026").join("04").join("30");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+        let file_b = dir.join("fileB.txt");
+        let file_c = dir.join("fileC.txt");
+        fs::write(&file_a, "A").expect("seed A");
+        fs::write(&file_b, "B").expect("seed B");
+
+        let decision =
+            super::req_ftr32_external_delete_decision_from_filesystem(Some(file_c.as_path()))
+                .expect("resolve req-ftr32 external delete decision");
+
+        assert_eq!(
+            decision,
+            Some(ReqFtr17PostDeleteDecision::SelectPrevious(file_b))
+        );
+    }
+
+    #[test]
+    fn ftr_test130_req_ftr32_external_current_edit_delete_only_file_resets_to_neutral() {
+        let root = new_temp_root("ftr_test130");
+        let dir = root.join("2026").join("04").join("30");
+        fs::create_dir_all(&dir).expect("create dir");
+        let file_a = dir.join("fileA.txt");
+
+        let decision =
+            super::req_ftr32_external_delete_decision_from_filesystem(Some(file_a.as_path()))
+                .expect("resolve req-ftr32 external delete decision");
+
+        assert_eq!(decision, Some(ReqFtr17PostDeleteDecision::ResetToNeutral));
+    }
+
+    #[test]
+    fn ftr_test131_req_ftr32_external_non_current_delete_keeps_current_edit_behavior() {
+        let root = new_temp_root("ftr_test131");
+        let dir = root.join("2026").join("04").join("30");
+        fs::create_dir_all(&dir).expect("create dir");
+        let current_file = dir.join("fileA.txt");
+        fs::write(&current_file, "A").expect("seed current file");
+
+        let decision =
+            super::req_ftr32_external_delete_decision_from_filesystem(Some(current_file.as_path()))
+                .expect("resolve req-ftr32 external delete decision");
+
+        assert_eq!(decision, None);
     }
 
     #[test]
