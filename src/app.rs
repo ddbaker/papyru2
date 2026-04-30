@@ -1113,6 +1113,7 @@ impl Papyru2App {
         ui_color_config: UiColorConfig,
         editor_config: EditorConfig,
         file_tree_config: FileTreeConfig,
+        single_instance_server: Option<crate::single_instance::SingleInstanceServer>,
         cx: &mut Context<Self>,
     ) -> Self {
         let app_new_started = Instant::now();
@@ -1284,6 +1285,57 @@ impl Papyru2App {
             trace_debug("quic_rpc ui bridge loop detached");
         })
         .detach();
+
+        if let Some(single_instance_server) = single_instance_server {
+            let (single_instance_ui_tx, single_instance_ui_rx) =
+                smol::channel::unbounded::<crate::single_instance::SingleInstanceUiCommand>();
+            let pending_activation =
+                single_instance_server.register_activation_sender(single_instance_ui_tx);
+            crate::log::boot_profile_mark_detail(
+                "startup.single_instance_activation_registered",
+                format!(
+                    "endpoint={} pending_activation={pending_activation}",
+                    single_instance_server.endpoint()
+                ),
+            );
+            trace_debug(format!(
+                "req-sinst activation bridge registered endpoint={} pending_activation={pending_activation}",
+                single_instance_server.endpoint()
+            ));
+
+            let single_instance_window_handle = Window::window_handle(window);
+            cx.spawn(async move |this, cx| {
+                let _single_instance_server = single_instance_server;
+                while let Ok(command) = single_instance_ui_rx.recv().await {
+                    match command {
+                        crate::single_instance::SingleInstanceUiCommand::ActivateWindow => {
+                            let Some(this) = this.upgrade() else {
+                                break;
+                            };
+                            let window_handle = single_instance_window_handle.clone();
+                            let _ = this.update(cx, move |_app, cx| {
+                                if let Err(error) =
+                                    cx.update_window(window_handle, |_, window, cx| {
+                                        trace_debug(
+                                            "req-sinst activation dispatch to existing window",
+                                        );
+                                        cx.activate(true);
+                                        window.activate_window();
+                                    })
+                                {
+                                    trace_debug(format!(
+                                        "req-sinst activation skipped error={error}"
+                                    ));
+                                }
+                            });
+                        }
+                    }
+                }
+                trace_debug("req-sinst activation bridge loop detached");
+            })
+            .detach();
+        }
+
         cx.spawn(async move |this, cx| {
             while file_tree_refresh_rx.recv().await.is_ok() {
                 let Some(this) = this.upgrade() else {
@@ -2884,6 +2936,55 @@ pub fn run() {
         log_file.display()
     ));
 
+    let single_instance_started = Instant::now();
+    let single_instance_server = match crate::single_instance::single_instance_startup() {
+        crate::single_instance::SingleInstanceStartup::Primary(server) => {
+            crate::log::boot_profile_mark_timing(
+                "startup.single_instance_ipc",
+                single_instance_started.elapsed(),
+                format!("primary=true endpoint={}", server.endpoint()),
+            );
+            trace_debug(format!(
+                "req-sinst startup primary=true endpoint={}",
+                server.endpoint()
+            ));
+            Some(server)
+        }
+        crate::single_instance::SingleInstanceStartup::ActivatedExisting => {
+            crate::log::boot_profile_mark_timing(
+                "startup.single_instance_ipc",
+                single_instance_started.elapsed(),
+                "activated_existing=true".to_string(),
+            );
+            trace_debug("req-sinst startup activated_existing=true");
+            crate::log::flush_boot_profile("single_instance_activated_existing");
+            eprintln!("papyru2 is already running; activated the existing window.");
+            return;
+        }
+        crate::single_instance::SingleInstanceStartup::Collision(error) => {
+            crate::log::boot_profile_mark_timing(
+                "startup.single_instance_ipc",
+                single_instance_started.elapsed(),
+                format!("collision=true error={error}"),
+            );
+            trace_debug(format!("req-sinst startup collision=true error={error}"));
+            crate::log::flush_boot_profile("single_instance_collision");
+            eprintln!("papyru2 single-instance IPC collision: {error}");
+            return;
+        }
+        crate::single_instance::SingleInstanceStartup::Error(error) => {
+            crate::log::boot_profile_mark_timing(
+                "startup.single_instance_ipc",
+                single_instance_started.elapsed(),
+                format!("ok=false error={error}"),
+            );
+            trace_debug(format!("req-sinst startup error={error}"));
+            crate::log::flush_boot_profile("single_instance_error");
+            eprintln!("papyru2 single-instance startup failed: {error}");
+            return;
+        }
+    };
+
     let ui_color_started = Instant::now();
     let ui_color_config = load_or_create_ui_color_config(color_config_path.as_path());
     crate::log::boot_profile_mark_timing(
@@ -3104,6 +3205,7 @@ pub fn run() {
         let ui_color_config = ui_color_config;
         let editor_config = editor_config;
         let file_tree_config = file_tree_config;
+        let single_instance_server = single_instance_server.clone();
         crate::log::boot_profile_mark("startup.open_window_spawn_scheduled");
         cx.spawn(async move |cx| {
             crate::log::boot_profile_mark("startup.open_window_async_enter");
@@ -3127,6 +3229,7 @@ pub fn run() {
                 }
 
                 let app_paths = app_paths.clone();
+                let single_instance_server = single_instance_server.clone();
                 let app_startup_window_position_guard = startup_window_position_guard.clone();
                 let view = cx.new(|cx| {
                     Papyru2App::new(
@@ -3137,6 +3240,7 @@ pub fn run() {
                         ui_color_config,
                         editor_config,
                         file_tree_config,
+                        single_instance_server,
                         cx,
                     )
                 });

@@ -9,6 +9,7 @@ mod file_tree_watcher;
 mod file_update_handler;
 mod log;
 mod quic_rpc;
+mod single_instance;
 mod singleline_input;
 mod sl_editor_association;
 mod top_bars;
