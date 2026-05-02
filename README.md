@@ -8,12 +8,6 @@ A simple desktop note taking application built with Rust, `gpui`, and `gpui-comp
 > [!NOTE]
 > the code in this repository is authored with the help of AI coding agents and reviewed through the project's phased planning and verification process.
 
-## Project policies
-
-- [Code signing policy](docs/signing.md)
-- [Privacy policy](docs/privacy.md)
-
-
 ## Portable version prebuilt binaries
 
 It is highly recommended to use portable version prebuilt binaries.
@@ -65,3 +59,8 @@ See [docs/release_packaging_with_icons.md](docs/release_packaging_with_icons.md)
 ```bash
 cargo run --bin papyru2
 ```
+
+## Project policies
+
+- [Code signing policy](docs/signing.md)
+- [Privacy policy](docs/privacy.md)
