@@ -2,7 +2,7 @@
 A simple desktop note taking application built with Rust, `gpui`, and `gpui-component`.
 
 <div align="center">
-<img alt="main window" src="./doc/images/papyru2-main-window.png" width=480>
+<img alt="main window" src="./docs/images/papyru2-main-window.png" width=480>
 </div>
 
 > [!NOTE]
@@ -50,7 +50,7 @@ papyru2
 cargo release-win
 ```
 
-See [doc/release_packaging_with_icons.md](doc/release_packaging_with_icons.md) for Linux/MacOS build.
+See [docs/release_packaging_with_icons.md](docs/release_packaging_with_icons.md) for Linux/MacOS build.
 
 > [!NOTE]
 > Windows icon embedding is wired in `build.rs` and uses `assets/icons/windows/papyru2_app_icon.ico`.
