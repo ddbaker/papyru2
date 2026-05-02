@@ -8,6 +8,11 @@ A simple desktop note taking application built with Rust, `gpui`, and `gpui-comp
 > [!NOTE]
 > the code in this repository is authored with the help of AI coding agents and reviewed through the project's phased planning and verification process.
 
+## Project policies
+
+- [Code signing policy](docs/signing.md)
+- [Privacy policy](docs/privacy.md)
+
 
 ## Portable version prebuilt binaries
 
