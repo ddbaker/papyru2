@@ -1,46 +1,58 @@
-# Text Search Tool Integration
+# Integrating External Text Search Tools
 
-`papyru2` does not include a built-in full-text search tool. To search notes,
-use an external text search tool and configure it to call the
-`papyru2_pin_file` helper command.
+`papyru2` does not provide a built-in full-text search interface. To search
+notes, use an external text search tool and configure that tool to run the
+`papyru2_pin_file` helper command for the selected result.
 
-## Note Storage Model
+The helper command opens the selected note in `papyru2` and moves it into
+today's note folder.
 
-`papyru2` saves notes as text files (`.txt`) under a date-based directory
-structure. The directory path uses the note creation date in `YYYY/MM/DD`
-format.
+## Note Storage
 
-For example, if a note is created on May 2, 2026, it is saved under:
+`papyru2` stores notes as `.txt` files in a date-based directory structure
+under `data/user_document`. The directory path uses the note date in
+`YYYY/MM/DD` format.
 
-`data/user_document/2026/05/02/`
+For example, a note created on May 2, 2026 is stored under:
 
-When a note is updated, the corresponding text file is moved to the directory
-for the update date. An update means either changing the note content or
+```text
+data/user_document/2026/05/02/
+```
+
+When a note is updated, `papyru2` moves the corresponding text file to the
+directory for the update date. Updating a note includes changing its content or
 touching the note so that its last modified timestamp is refreshed.
 
-This date-based movement is the basic note management model in `papyru2`.
-Information that becomes active again is moved into the current date folder so
-it appears together with the notes being used today.
+This date-based movement is the standard note management model in `papyru2`.
+When older information becomes active again, it is moved into the current date
+folder so it appears with the notes being used today.
 
-`papyru2_pin_file` (`papyru2_pin_file.exe` on Windows) is a standalone helper
-command. It receives a note path from an external text search tool and requests
-`papyru2` to move that note into today's `YYYY/MM/DD` folder.
+## Helper Command
 
-## Using papyru2_pin_file
+`papyru2_pin_file` (`papyru2_pin_file.exe` on Windows) is a standalone command.
+It receives a note path from an external text search tool and asks a running
+`papyru2` application to move that note into today's `YYYY/MM/DD` folder.
 
-This section shows a Windows example. On Linux or macOS, adjust executable
-names and path separators as needed.
+> [!NOTE]
+> The examples in this document use Windows paths. On Linux or macOS, adjust
+> executable names and path separators as needed.
 
-In this example, the `papyru2` portable package is installed at:
+## Example Directory Layout
 
-`C:\ddbwork\app\papyru2`
+This example assumes that the `papyru2` portable package is installed at:
 
-Assume that the current date is May 2, 2026. When `papyru2.exe` creates
-`fileA.txt`, the file is stored at:
+```text
+C:\ddbwork\app\papyru2
+```
 
-`C:\ddbwork\app\papyru2\data\user_document\2026\05\02\fileA.txt`
+If the current date is May 2, 2026 and `papyru2.exe` creates `fileA.txt`, the
+file is stored at:
 
-```filesystem_tree
+```text
+C:\ddbwork\app\papyru2\data\user_document\2026\05\02\fileA.txt
+```
+
+```text
 C:\ddbwork\app\papyru2
    │ papyru2.portable
    │
@@ -67,27 +79,32 @@ C:\ddbwork\app\papyru2
           papyru2_pin_file.log
 ```
 
+## Pin a Search Result
+
 To move `fileM.txt`, which was created on October 21, 2025, into the current
-date folder, run `papyru2_pin_file.exe` with the note path and line number:
+date folder, run `papyru2_pin_file.exe` with the note path and line number.
+The path must be relative to `data/user_document`.
 
 ```powershell
 C:\ddbwork\app\papyru2\bin\papyru2_pin_file.exe "2025\10\21\fileM.txt:1"
 ```
 
-If `papyru2` is running and the request is processed successfully, the
-`papyru2_pin_file` log contains entries similar to the following:
+If `papyru2` is running and the request succeeds, `papyru2_pin_file.log`
+contains entries similar to the following:
 
 ```log
 [1777735612763] request start target='2025\10\21\fileM.txt:1' server=127.0.0.1:47473
-[1777735612764] request send file_path='2025\10\21\fileM.txt:1' linenum=9 platform='windows'
+[1777735612764] request send file_path='2025\10\21\fileM.txt:1' linenum=1 platform='windows'
 [1777735612789] request done ok=true code=ok resolved_path=\\?\C:\ddbwork\app\papyru2\data\user_document\2026\05\02\fileM.txt
 ```
 
-After the request completes, `fileM.txt` is moved to:
+After the request completes, `fileM.txt` is located at:
 
-`C:\ddbwork\app\papyru2\data\user_document\2026\05\02\fileM.txt`
+```text
+C:\ddbwork\app\papyru2\data\user_document\2026\05\02\fileM.txt
+```
 
-```filesystem_tree
+```text
 C:\ddbwork\app\papyru2
    │ papyru2.portable
    │
@@ -115,22 +132,22 @@ C:\ddbwork\app\papyru2
            papyru2_pin_file.log
 ```
 
-## Search Tool Integration
+## Integration Requirements
 
-An external text search tool can integrate with `papyru2_pin_file` when it
-supports the following capabilities:
+An external text search tool can integrate with `papyru2_pin_file` if it
+supports both of the following capabilities:
 
-- It can call an external command. For Windows integration, the command is
-  `papyru2_pin_file.exe`.
-- It can pass the target note path and line number as a command-line argument.
+- It can run an external command.
+- It can pass the selected note path and line number as a command-line
+  argument.
 
 The command-line argument format is:
 
-```command_format
+```text
 papyru2_pin_file.exe "YYYY\MM\DD\filename:<linenum>"
 ```
 
-Example:
+For example:
 
 ```powershell
 C:\ddbwork\app\papyru2\bin\papyru2_pin_file.exe "2025\10\21\fileM.txt:1"
@@ -138,4 +155,4 @@ C:\ddbwork\app\papyru2\bin\papyru2_pin_file.exe "2025\10\21\fileM.txt:1"
 
 For an integration example using
 [Television (tv)](https://github.com/alexpasmantier/television), see
-[Television Integration Example](search_tv_integration.md).
+[Television Integration Example](./text_search_tv_integration.md).
