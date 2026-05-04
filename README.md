@@ -24,9 +24,8 @@ papyru2
    │      papyru2_pin_file.exe
    │      papyru2_textfile_import.exe
    │
-   ├─conf
-   │      papyru2_conf.toml
-   └─icons
+   └─conf
+          papyru2_conf.toml
 ```
 
 - `papyru2.portable`: Empty marker file, do not remove
@@ -40,7 +39,6 @@ papyru2
 
 > [!NOTE]
 > GitHub portable releases are built by [.github/workflows/release-portable.yml](.github/workflows/release-portable.yml) and upload Windows/Linux/macOS zip assets to the matching GitHub Release for an existing `v*` tag.
-
 
 ## Build from source code
 
@@ -60,6 +58,22 @@ See [docs/release_packaging_with_icons.md](docs/release_packaging_with_icons.md)
 ```bash
 cargo run --bin papyru2
 ```
+
+## Integrating External Text Search Tools
+
+> ![IMPORTANT]
+> `papyru2` does not provide a built-in full-text search interface. To search
+> notes, use an external text search tool and configure that tool to run the
+> `papyru2_pin_file` helper command for the selected result.
+
+`papyru2_pin_file` opens the selected note in `papyru2` and moves it into
+today's note folder.
+
+Refer two documents below:
+
+Ref-1: [Integration Overview](./docs/text_search_tool_integration.md)
+
+Ref-2: ["Television" search tool integration hands-on](./docs/text_search_tv_integration.md)
 
 ## Project policies
 
