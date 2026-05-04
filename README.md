@@ -61,7 +61,7 @@ cargo run --bin papyru2
 
 ## Integrating External Text Search Tools
 
-> ![IMPORTANT]
+> [!IMPORTANT]
 > `papyru2` does not provide a built-in full-text search interface. To search
 > notes, use an external text search tool and configure that tool to run the
 > `papyru2_pin_file` helper command for the selected result.
