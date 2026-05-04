@@ -43,9 +43,9 @@ papyru2-<platform>-x_y_z/
     papyru2_conf.toml
 ```
 
-Platform-specific icon metadata is also staged:
+Platform-specific icon handling differs by OS:
 
-- Windows archives include `icons/windows/*.ico` sidecars; executable icons are embedded in the `.exe` resources at build time.
+- Windows archives do not include `icons/windows/*.ico` sidecars; executable icons are embedded in the `.exe` resources at build time.
 - Linux archives include `share/applications/*.desktop` and `share/icons/hicolor/<size>x<size>/apps/*.png`.
 - macOS archives include `apps/*.app/Contents/Info.plist`, `apps/*.app/Contents/Resources/*.icns`, and app-local executable copies in `apps/*.app/Contents/MacOS/`.
 
@@ -55,7 +55,7 @@ Platform-specific icon metadata is also staged:
 - `papyru2_pin_file[.exe]`: `assets/icons/source/pin-ok-red.svg`
 - `papyru2_textfile_import[.exe]`: `assets/icons/source/import-2-yg.svg`
 
-## generated icon assets used by packaging
+## generated icon assets used by build and packaging
 
 - Windows: `assets/icons/windows/papyru2_app_icon.ico`
 - Windows: `assets/icons/windows/papyru2_pin_file_app_icon.ico`
@@ -152,6 +152,6 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 3. If stale icon is shown, clear OS icon cache or remove/re-pin old shortcuts and re-test.
 4. Confirm the portable zip contains `papyru2.portable`, `bin/papyru2[.exe]`, `bin/papyru2_pin_file[.exe]`, `bin/papyru2_textfile_import[.exe]`, and `conf/papyru2_conf.toml`.
 5. Confirm the portable zip does not contain `release_portable_packager[.exe]`; it is only the archive assembly helper.
-6. Confirm Windows `.exe` resources use the per-binary `.ico` files; sidecar copies are also present under `icons/windows/`.
+6. Confirm Windows `.exe` resources use the per-binary `.ico` files; sidecar copies are not present under `icons/windows/`.
 7. Confirm Linux `.desktop` entries reference matching hicolor icon names under `share/icons/hicolor/`.
 8. Confirm macOS `.app` bundles contain `Info.plist`, `Contents/MacOS/<binary>`, and matching `Contents/Resources/*.icns`.

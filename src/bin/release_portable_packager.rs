@@ -25,7 +25,6 @@ struct PortableIcon {
     binary_name: &'static str,
     display_name: &'static str,
     bundle_identifier: &'static str,
-    windows_ico: &'static str,
     macos_icns: &'static str,
     linux_png_prefix: &'static str,
 }
@@ -35,7 +34,6 @@ const PORTABLE_ICONS: [PortableIcon; 3] = [
         binary_name: APP_BINARY_NAME,
         display_name: "papyru2",
         bundle_identifier: "com.papyru2.app",
-        windows_ico: "assets/icons/windows/papyru2_app_icon.ico",
         macos_icns: "assets/icons/macos/papyru2_app_icon.icns",
         linux_png_prefix: "assets/icons/linux/papyru2",
     },
@@ -43,7 +41,6 @@ const PORTABLE_ICONS: [PortableIcon; 3] = [
         binary_name: PIN_BINARY_NAME,
         display_name: "papyru2 Pin File",
         bundle_identifier: "com.papyru2.pin-file",
-        windows_ico: "assets/icons/windows/papyru2_pin_file_app_icon.ico",
         macos_icns: "assets/icons/macos/papyru2_pin_file_app_icon.icns",
         linux_png_prefix: "assets/icons/linux/papyru2_pin_file",
     },
@@ -51,7 +48,6 @@ const PORTABLE_ICONS: [PortableIcon; 3] = [
         binary_name: TEXTFILE_IMPORT_BINARY_NAME,
         display_name: "papyru2 Text File Import",
         bundle_identifier: "com.papyru2.textfile-import",
-        windows_ico: "assets/icons/windows/papyru2_textfile_import_app_icon.ico",
         macos_icns: "assets/icons/macos/papyru2_textfile_import_app_icon.icns",
         linux_png_prefix: "assets/icons/linux/papyru2_textfile_import",
     },
@@ -264,32 +260,10 @@ fn stage_platform_icon_metadata(
     staged_root: &Path,
 ) -> Result<()> {
     match platform {
-        Platform::Windows => stage_windows_icons(staged_root),
+        Platform::Windows => Ok(()),
         Platform::Linux => stage_linux_icons(staged_root),
         Platform::Macos => stage_macos_app_bundles(version, staged_root),
     }
-}
-
-fn stage_windows_icons(staged_root: &Path) -> Result<()> {
-    let staged_icon_dir = staged_root.join("icons").join("windows");
-    fs::create_dir_all(&staged_icon_dir)
-        .with_context(|| format!("failed to create {}", staged_icon_dir.display()))?;
-
-    for icon in PORTABLE_ICONS {
-        let source = Path::new(icon.windows_ico);
-        ensure_path_exists(source, "Windows icon")?;
-        let destination =
-            staged_icon_dir.join(source.file_name().context("icon file name missing")?);
-        fs::copy(source, &destination).with_context(|| {
-            format!(
-                "failed to copy Windows icon from {} to {}",
-                source.display(),
-                destination.display()
-            )
-        })?;
-    }
-
-    Ok(())
 }
 
 fn stage_linux_icons(staged_root: &Path) -> Result<()> {
@@ -762,21 +736,21 @@ mod tests {
                 assert!(
                     archive
                         .by_name(&format!("{root_name}/icons/windows/papyru2_app_icon.ico"))
-                        .is_ok()
+                        .is_err()
                 );
                 assert!(
                     archive
                         .by_name(&format!(
                             "{root_name}/icons/windows/papyru2_pin_file_app_icon.ico"
                         ))
-                        .is_ok()
+                        .is_err()
                 );
                 assert!(
                     archive
                         .by_name(&format!(
                             "{root_name}/icons/windows/papyru2_textfile_import_app_icon.ico"
                         ))
-                        .is_ok()
+                        .is_err()
                 );
             }
             Platform::Linux => {
