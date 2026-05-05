@@ -2,7 +2,7 @@
 A simple desktop note taking application built with Rust, `gpui`, and `gpui-component`.
 
 <div align="center">
-<img alt="main window" src="./docs/images/papyru2-main-window.png" width=480>
+<img alt="main window" src="./docs/images/papyru2_main_window_with_shadow.png" width=480>
 </div>
 
 > [!NOTE]
