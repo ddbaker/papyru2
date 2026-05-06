@@ -5480,7 +5480,7 @@ dependencies = [
 
 [[package]]
 name = "papyru2"
-version = "0.34.1"
+version = "0.35.0"
 dependencies = [
  "anyhow",
  "autocorrect",
