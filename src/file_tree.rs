@@ -1277,6 +1277,15 @@ impl FileTreeView {
             return;
         }
 
+        let click_policy = req_ftr33_row_click_policy(&self.directory_item_ids, item);
+        if click_policy == ReqFtr33RowClickPolicy::EmptyFolderNoOp {
+            crate::log::trace_debug(format!(
+                "file_tree req-ftr33 row click empty_folder_noop item={} index={}",
+                item.id, row_index
+            ));
+            return;
+        }
+
         self.focus(window);
         self.rebuild_visible_item_ids();
 
@@ -1301,7 +1310,7 @@ impl FileTreeView {
             return;
         }
 
-        if modifiers.secondary() && !item.is_folder() {
+        if modifiers.secondary() && click_policy.allows_secondary_file_toggle() {
             let selected_now = toggle_item_selection(&mut self.selected_item_ids, item.id.as_ref());
             self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
             self.selection_anchor_item_id = Some(item.id.to_string());
@@ -1321,15 +1330,21 @@ impl FileTreeView {
             return;
         }
 
-        self.apply_single_selection_by_id(item.id.as_ref(), "row_click", cx);
+        if click_policy.applies_row_selection_state() {
+            self.apply_single_selection_by_id(item.id.as_ref(), "row_click", cx);
+        }
         crate::log::trace_debug(format!(
             "file_tree row click select item={} folder={} index={} focused={}",
             item.id,
-            item.is_folder(),
+            click_policy.is_folder(),
             row_index,
             self.is_focused(window, cx)
         ));
-        if item.is_folder() {
+        if click_policy.is_folder() {
+            return;
+        }
+
+        if !click_policy.emits_file_selection_changed() {
             return;
         }
 
@@ -2356,6 +2371,53 @@ const REQ_FTR26_VIEWPORT_EPSILON_PX: f32 = 0.5;
 
 fn is_req_ftr18_scroll_padding_item_id(item_id: &str) -> bool {
     item_id.starts_with(REQ_FTR18_SCROLL_PADDING_ID_PREFIX)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReqFtr33RowClickPolicy {
+    EmptyFolderNoOp,
+    ExistingFolderBehavior,
+    FileSelection,
+}
+
+impl ReqFtr33RowClickPolicy {
+    fn is_folder(self) -> bool {
+        matches!(
+            self,
+            ReqFtr33RowClickPolicy::EmptyFolderNoOp
+                | ReqFtr33RowClickPolicy::ExistingFolderBehavior
+        )
+    }
+
+    fn applies_row_selection_state(self) -> bool {
+        !matches!(self, ReqFtr33RowClickPolicy::EmptyFolderNoOp)
+    }
+
+    fn allows_secondary_file_toggle(self) -> bool {
+        matches!(self, ReqFtr33RowClickPolicy::FileSelection)
+    }
+
+    fn emits_file_selection_changed(self) -> bool {
+        matches!(self, ReqFtr33RowClickPolicy::FileSelection)
+    }
+}
+
+fn req_ftr33_row_click_policy(
+    directory_item_ids: &HashSet<String>,
+    item: &TreeItem,
+) -> ReqFtr33RowClickPolicy {
+    let has_directory_metadata = directory_item_ids.contains(item.id.as_ref());
+    if has_directory_metadata {
+        if item.children.is_empty() {
+            ReqFtr33RowClickPolicy::EmptyFolderNoOp
+        } else {
+            ReqFtr33RowClickPolicy::ExistingFolderBehavior
+        }
+    } else if item.is_folder() {
+        ReqFtr33RowClickPolicy::ExistingFolderBehavior
+    } else {
+        ReqFtr33RowClickPolicy::FileSelection
+    }
 }
 
 fn req_ftr18_strip_scroll_padding_items(items: &mut Vec<TreeItem>) -> usize {
@@ -6200,6 +6262,142 @@ mod tests {
                 .expect("resolve req-ftr32 external delete decision");
 
         assert_eq!(decision, None);
+    }
+
+    #[test]
+    fn ftr_test135_req_ftr33_empty_directory_uses_scanner_metadata() {
+        let empty_folder_id = "/root/empty";
+        let item = super::tree_item_from_model(FileTreeItemModel {
+            id: empty_folder_id.to_string(),
+            label: "empty".to_string(),
+            is_directory: true,
+            children: Vec::new(),
+        });
+        let directory_item_ids = HashSet::from([empty_folder_id.to_string()]);
+
+        assert!(
+            item.children.is_empty(),
+            "scanner-created empty directory should have no child rows"
+        );
+        let policy = super::req_ftr33_row_click_policy(&directory_item_ids, &item);
+
+        assert_eq!(policy, super::ReqFtr33RowClickPolicy::EmptyFolderNoOp);
+        assert!(policy.is_folder());
+    }
+
+    #[test]
+    fn ftr_test136_req_ftr33_empty_folder_click_is_file_selection_noop() {
+        let empty_folder_id = "/root/empty";
+        let item = super::tree_item_from_model(FileTreeItemModel {
+            id: empty_folder_id.to_string(),
+            label: "empty".to_string(),
+            is_directory: true,
+            children: Vec::new(),
+        });
+        let directory_item_ids = HashSet::from([empty_folder_id.to_string()]);
+        let policy = super::req_ftr33_row_click_policy(&directory_item_ids, &item);
+        let mut selected_item_ids = HashSet::from(["/root/fileA.txt".to_string()]);
+        let mut delete_shortcut_armed = true;
+        let selection_anchor_item_id = Some("/root/fileA.txt".to_string());
+        let mut emitted_selection_changed = false;
+
+        if policy.applies_row_selection_state() {
+            replace_single_selection(&mut selected_item_ids, empty_folder_id);
+            delete_shortcut_armed = true;
+        }
+        if policy.emits_file_selection_changed() {
+            emitted_selection_changed = true;
+        }
+
+        assert_eq!(policy, super::ReqFtr33RowClickPolicy::EmptyFolderNoOp);
+        assert_eq!(
+            selected_item_ids,
+            HashSet::from(["/root/fileA.txt".to_string()])
+        );
+        assert!(delete_shortcut_armed);
+        assert_eq!(
+            selection_anchor_item_id,
+            Some("/root/fileA.txt".to_string())
+        );
+        assert!(!emitted_selection_changed);
+    }
+
+    #[test]
+    fn ftr_test137_req_ftr33_regular_file_click_policy_is_unchanged() {
+        let file_id = "/root/fileA.txt";
+        let item = TreeItem::new(file_id, "fileA.txt");
+        let directory_item_ids = HashSet::new();
+        let policy = super::req_ftr33_row_click_policy(&directory_item_ids, &item);
+        let mut selected_item_ids = HashSet::new();
+        let mut emitted_selection_changed = false;
+
+        if policy.applies_row_selection_state() {
+            replace_single_selection(&mut selected_item_ids, file_id);
+        }
+        if policy.emits_file_selection_changed() {
+            emitted_selection_changed = true;
+        }
+
+        assert_eq!(policy, super::ReqFtr33RowClickPolicy::FileSelection);
+        assert_eq!(selected_item_ids, HashSet::from([file_id.to_string()]));
+        assert!(policy.allows_secondary_file_toggle());
+        assert!(emitted_selection_changed);
+    }
+
+    #[test]
+    fn ftr_test138_req_ftr33_non_empty_folder_click_policy_is_unchanged() {
+        let folder_id = "/root/folder";
+        let item = TreeItem::new(folder_id, "folder")
+            .child(TreeItem::new("/root/folder/fileA.txt", "fileA.txt"));
+        let directory_item_ids = HashSet::from([folder_id.to_string()]);
+        let policy = super::req_ftr33_row_click_policy(&directory_item_ids, &item);
+        let mut selected_item_ids = HashSet::new();
+        let mut emitted_selection_changed = false;
+
+        if policy.applies_row_selection_state() {
+            replace_single_selection(&mut selected_item_ids, folder_id);
+        }
+        if policy.emits_file_selection_changed() {
+            emitted_selection_changed = true;
+        }
+
+        assert_eq!(
+            policy,
+            super::ReqFtr33RowClickPolicy::ExistingFolderBehavior
+        );
+        assert!(policy.is_folder());
+        assert_eq!(selected_item_ids, HashSet::from([folder_id.to_string()]));
+        assert!(!policy.allows_secondary_file_toggle());
+        assert!(!emitted_selection_changed);
+    }
+
+    #[test]
+    fn ftr_test139_req_ftr33_modified_click_on_empty_folder_cannot_select_file() {
+        let empty_folder_id = "/root/empty";
+        let item = super::tree_item_from_model(FileTreeItemModel {
+            id: empty_folder_id.to_string(),
+            label: "empty".to_string(),
+            is_directory: true,
+            children: Vec::new(),
+        });
+        let directory_item_ids = HashSet::from([empty_folder_id.to_string()]);
+        let policy = super::req_ftr33_row_click_policy(&directory_item_ids, &item);
+        let mut selected_item_ids = HashSet::from(["/root/fileA.txt".to_string()]);
+        let mut secondary_toggle_applied = false;
+
+        if policy.allows_secondary_file_toggle() {
+            secondary_toggle_applied = true;
+            toggle_item_selection(&mut selected_item_ids, empty_folder_id);
+        }
+
+        assert_eq!(policy, super::ReqFtr33RowClickPolicy::EmptyFolderNoOp);
+        assert!(!policy.applies_row_selection_state());
+        assert!(!secondary_toggle_applied);
+        assert_eq!(
+            selected_item_ids,
+            HashSet::from(["/root/fileA.txt".to_string()])
+        );
+        assert!(!policy.emits_file_selection_changed());
     }
 
     #[test]
