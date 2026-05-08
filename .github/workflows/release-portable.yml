@@ -181,6 +181,33 @@ jobs:
       - name: Create portable zip
         run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml
 
+      - name: Verify Harper language server in portable zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -LiteralPath dist -Filter '*.zip' | Select-Object -First 1
+          if (-not $zip) {
+            throw 'No portable zip was produced.'
+          }
+
+          $platform = '${{ matrix.platform }}'
+          $harperEntry = if ($platform -eq 'windows') {
+            'bin/harper-ls.exe'
+          } else {
+            'bin/harper-ls'
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            $matched = $archive.Entries | Where-Object { $_.FullName -like "*/$harperEntry" }
+            if (-not $matched) {
+              throw "Portable zip $($zip.Name) does not contain $harperEntry."
+            }
+            Write-Output "Verified $harperEntry in $($zip.Name)."
+          } finally {
+            $archive.Dispose()
+          }
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:

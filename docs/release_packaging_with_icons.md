@@ -9,7 +9,7 @@ The repository currently builds four release binaries:
 - `papyru2_textfile_import[.exe]`
 - `release_portable_packager[.exe]`
 
-The portable release archive ships the three runtime/user-facing binaries in `bin/`. `release_portable_packager[.exe]` is a build-time helper used to assemble the archive and is not copied into the portable zip.
+The portable release archive ships the three runtime/user-facing papyru2 binaries and the platform-specific Harper language-server binary in `bin/`. `release_portable_packager[.exe]` is a build-time helper used to assemble the archive and is not copied into the portable zip.
 
 - Dedicated Windows executable icons (`.ico`) are embedded per binary by `build.rs` with per-bin resource linker arguments.
 - Linux release packages include `.desktop` entries bound to hicolor PNG icons.
@@ -39,6 +39,7 @@ papyru2-<platform>-x_y_z/
     papyru2[.exe]
     papyru2_pin_file[.exe]
     papyru2_textfile_import[.exe]
+    harper-ls[.exe]
   conf/
     papyru2_conf.toml
 ```
@@ -150,7 +151,7 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 1. Launch packaged app on target OS.
 2. Confirm `papyru2`, `papyru2_pin_file`, and `papyru2_textfile_import` show their assigned icons in launcher/dock/taskbar/window switcher where that platform exposes those binaries as applications.
 3. If stale icon is shown, clear OS icon cache or remove/re-pin old shortcuts and re-test.
-4. Confirm the portable zip contains `papyru2.portable`, `bin/papyru2[.exe]`, `bin/papyru2_pin_file[.exe]`, `bin/papyru2_textfile_import[.exe]`, and `conf/papyru2_conf.toml`.
+4. Confirm the portable zip contains `papyru2.portable`, `bin/papyru2[.exe]`, `bin/papyru2_pin_file[.exe]`, `bin/papyru2_textfile_import[.exe]`, `bin/harper-ls[.exe]`, and `conf/papyru2_conf.toml`.
 5. Confirm the portable zip does not contain `release_portable_packager[.exe]`; it is only the archive assembly helper.
 6. Confirm Windows `.exe` resources use the per-binary `.ico` files; sidecar copies are not present under `icons/windows/`.
 7. Confirm Linux `.desktop` entries reference matching hicolor icon names under `share/icons/hicolor/`.

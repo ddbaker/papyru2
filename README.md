@@ -20,6 +20,7 @@ papyru2
    │ papyru2.portable
    │
    ├─bin
+   │      harper-ls.exe
    │      papyru2.exe
    │      papyru2_pin_file.exe
    │      papyru2_textfile_import.exe
@@ -28,10 +29,11 @@ papyru2
           papyru2_conf.toml
 ```
 
+- `harper-ls.exe`: [The Free Grammar Checker That Respects Your Privacy](https://writewithharper.com/) (Apache-2.0 Licensed)
 - `papyru2.portable`: Empty marker file, do not remove
 - `papyru2.exe`: Application binary
-- `papyru2_pin_file.exe`: standalone helper CLI for 3rd party text search program integration [manual](./docs/papyru2_pin_file.md)
-- `papyru2_textfile_import.exe`: standalone helper CLI for existing text file import [manual](./docs/papyru2_textfile_import.md)
+- `papyru2_pin_file.exe`: standalone helper CLI for 3rd party text search program integration ([manual](./docs/papyru2_pin_file.md))
+- `papyru2_textfile_import.exe`: standalone helper CLI for existing text file import ([manual](./docs/papyru2_textfile_import.md))
 - `papyru2_conf.toml`: config file
 
 > [!IMPORTANT]
