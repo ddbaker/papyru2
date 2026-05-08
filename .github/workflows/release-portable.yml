@@ -178,6 +178,46 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 
+      - name: Extract Harper language server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $platform = '${{ matrix.platform }}'
+          $assetRoot = Join-Path 'assets' 'harper-ls'
+          $targetDir = Join-Path 'target' 'release'
+          $extractDir = Join-Path $env:RUNNER_TEMP "harper-ls-$platform-$([guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+          if ($platform -eq 'windows') {
+            $archivePath = Join-Path $assetRoot 'harper-ls-x86_64-pc-windows-msvc.zip'
+            $binaryName = 'harper-ls.exe'
+            Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+          } elseif ($platform -eq 'linux') {
+            $archivePath = Join-Path $assetRoot 'harper-ls-x86_64-unknown-linux-gnu.tar.gz'
+            $binaryName = 'harper-ls'
+            tar -xzf $archivePath -C $extractDir
+          } elseif ($platform -eq 'macos') {
+            $archivePath = Join-Path $assetRoot 'harper-ls-x86_64-apple-darwin.tar.gz'
+            $binaryName = 'harper-ls'
+            tar -xzf $archivePath -C $extractDir
+          } else {
+            throw "Unsupported platform: $platform"
+          }
+
+          $binary = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter $binaryName | Select-Object -First 1
+          if (-not $binary) {
+            throw "Harper archive $archivePath does not contain $binaryName."
+          }
+
+          $destination = Join-Path $targetDir $binaryName
+          Copy-Item -LiteralPath $binary.FullName -Destination $destination -Force
+          if ($platform -ne 'windows') {
+            chmod +x $destination
+          }
+
+          Write-Output "Extracted $binaryName from $archivePath to $destination."
+
       - name: Create portable zip
         run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml
 

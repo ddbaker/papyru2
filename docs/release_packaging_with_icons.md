@@ -11,6 +11,14 @@ The repository currently builds four release binaries:
 
 The portable release archive ships the three runtime/user-facing papyru2 binaries and the platform-specific Harper language-server binary in `bin/`. `release_portable_packager[.exe]` is a build-time helper used to assemble the archive and is not copied into the portable zip.
 
+The source tree stores Harper language-server assets as compressed upstream release archives under `assets/harper-ls/` to avoid committing large bare executable files. Before running `release_portable_packager`, extract the matching archive and place the executable directly in the `--bin-dir` directory:
+
+- Windows: `assets/harper-ls/harper-ls-x86_64-pc-windows-msvc.zip` -> `target/release/harper-ls.exe`
+- Linux: `assets/harper-ls/harper-ls-x86_64-unknown-linux-gnu.tar.gz` -> `target/release/harper-ls`
+- macOS: `assets/harper-ls/harper-ls-x86_64-apple-darwin.tar.gz` -> `target/release/harper-ls`
+
+Do not copy these compressed archives into the portable release root. The final portable zip must contain `bin/harper-ls[.exe]` as a direct executable file.
+
 - Dedicated Windows executable icons (`.ico`) are embedded per binary by `build.rs` with per-bin resource linker arguments.
 - Linux release packages include `.desktop` entries bound to hicolor PNG icons.
 - macOS release packages include `.app` bundles with `Info.plist` icon metadata and `.icns` resources.
@@ -24,6 +32,7 @@ GitHub Actions workflow file: `.github/workflows/release-portable.yml`
 - Manual release: run the workflow with `workflow_dispatch` and provide an existing git tag in `release_tag`.
 - Icon generation step: `cargo run --release --manifest-path tools/generate_app_icons/Cargo.toml`
 - Build step: `cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager`
+- Harper extraction step: expand `assets/harper-ls/harper-ls-<target>.zip` or `.tar.gz` and copy `harper-ls[.exe]` into `target/release/`.
 - Packaging step: `cargo run --release --bin release_portable_packager -- --platform <windows|linux|macos> --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml`
 - Published assets: one `.zip` per platform attached to the matching GitHub Release:
   - `papyru2-windows-x_y_z.zip`
@@ -142,6 +151,15 @@ Build the release binaries and the packaging helper:
 cargo run --release --manifest-path tools/generate_app_icons/Cargo.toml
 cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 ```
+
+Extract the matching Harper archive into `target/release/` before packaging:
+
+```powershell
+Expand-Archive -LiteralPath assets/harper-ls/harper-ls-x86_64-pc-windows-msvc.zip -DestinationPath target/release/harper-ls-extract -Force
+Copy-Item -LiteralPath target/release/harper-ls-extract/harper-ls.exe -Destination target/release/harper-ls.exe -Force
+```
+
+On Linux or macOS, extract the matching `.tar.gz` and copy `harper-ls` into `target/release/harper-ls`, then ensure it is executable with `chmod +x target/release/harper-ls`.
 
 Create a portable release zip for the current host platform by passing the matching platform token:
 
