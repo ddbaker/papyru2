@@ -6,8 +6,7 @@ use std::{
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
-    highlighter::{Diagnostic, DiagnosticSeverity},
-    input::{Backspace, Input, InputState, Position, RopeExt, ToggleCodeActions},
+    input::{Backspace, Input, InputState, Position},
 };
 
 use gpui_component::input::InputEvent;
@@ -35,7 +34,7 @@ struct NarrowBoxBackspaceGuard {
 }
 
 pub struct Papyru2Editor {
-    input_state: Entity<InputState>,
+    pub(crate) input_state: Entity<InputState>,
     last_value: String,
     last_cursor: gpui_component::input::Position,
     pending_programmatic_change_events: usize,
@@ -43,8 +42,8 @@ pub struct Papyru2Editor {
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
     ui_color_config: crate::app::UiColorConfig,
-    req_assoc18_editor_input_guard_active: bool,
-    spellchecker_store: crate::spellchecker::SpellCheckerEditorStore,
+    pub(crate) req_assoc18_editor_input_guard_active: bool,
+    pub(crate) spellchecker_store: crate::spellcheker::EditorStore,
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
@@ -230,8 +229,9 @@ impl Papyru2Editor {
         editor_config: crate::app::EditorConfig,
         cx: &mut Context<Self>,
     ) -> Self {
-        let spellchecker_store = crate::spellchecker::SpellCheckerEditorStore::new();
-        let spellchecker_provider = spellchecker_store.provider();
+        let spellchecker_store = crate::spellcheker::new_editor_store();
+        let spellchecker_provider =
+            crate::spellcheker::editor_code_action_provider(&spellchecker_store);
         let input_state = cx.new(|cx| {
             let input_state = if editor_config.code_editor {
                 InputState::new(window, cx)
@@ -244,15 +244,14 @@ impl Papyru2Editor {
                 InputState::new(window, cx).multi_line(true)
             };
 
-            let mut input_state = input_state
+            let input_state = input_state
                 .soft_wrap(editor_config.soft_wrap)
                 .searchable(true)
                 .placeholder("File is auto saved");
-            input_state
-                .lsp
-                .code_action_providers
-                .push(spellchecker_provider);
-            input_state
+            crate::spellcheker::attach_editor_code_action_provider(
+                input_state,
+                spellchecker_provider,
+            )
         });
 
         let (last_value, last_cursor) = {
@@ -504,41 +503,6 @@ impl Papyru2Editor {
         }
     }
 
-    fn on_editor_mouse_down(&mut self, _: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.req_assoc18_editor_input_guard_active {
-            crate::log::trace_debug("assoc req-assoc18 editor_click_ignored state=NEUTRAL");
-        }
-
-        cx.propagate();
-    }
-
-    fn on_editor_mouse_up(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.req_assoc18_editor_input_guard_active {
-            cx.propagate();
-            return;
-        }
-
-        cx.on_next_frame(window, move |this, window, cx| {
-            if this.req_assoc18_editor_input_guard_active {
-                return;
-            }
-
-            let cursor = this.input_state.read(cx).cursor_position();
-            crate::log::trace_debug(format!(
-                "spellchecker code_action toggle requested source=editor_left_click cursor=({}, {})",
-                cursor.line, cursor.character
-            ));
-            window.dispatch_action(Box::new(ToggleCodeActions), cx);
-        });
-
-        cx.propagate();
-    }
-
     pub fn snapshot(&self, cx: &App) -> EditorSnapshot {
         let state = self.input_state.read(cx);
         let cursor = state.cursor_position();
@@ -763,83 +727,6 @@ impl Papyru2Editor {
     pub fn current_editing_file_path(&self) -> Option<PathBuf> {
         self.current_editing_file_path.clone()
     }
-
-    pub fn apply_spellchecker_diagnostics(
-        &mut self,
-        diagnostics: Vec<crate::spellchecker::SpellCheckDiagnostic>,
-        cx: &mut Context<Self>,
-    ) {
-        let store = self.spellchecker_store.clone();
-        self.input_state.update(cx, move |state, cx| {
-            let text = state.text().clone();
-            let text_value = state.value().to_string();
-            let mut editor_diagnostics = Vec::new();
-            let mut code_actions = Vec::new();
-            let mut latest_version = 0;
-
-            for diagnostic in diagnostics {
-                latest_version = latest_version.max(diagnostic.version);
-                let start =
-                    crate::spellchecker_ranges::input_position_from_lsp(diagnostic.range.start);
-                let end = crate::spellchecker_ranges::input_position_from_lsp(diagnostic.range.end);
-                let severity = spellchecker_diagnostic_severity(diagnostic.severity);
-                editor_diagnostics.push(
-                    Diagnostic::new(start..end, diagnostic.message.clone()).with_severity(severity),
-                );
-
-                let action_range = crate::spellchecker_ranges::lsp_range_to_byte_range(
-                    text_value.as_str(),
-                    &diagnostic.range,
-                )
-                .unwrap_or_else(|| text.position_to_offset(&start)..text.position_to_offset(&end));
-                for suggestion in &diagnostic.suggestions {
-                    code_actions.push((
-                        action_range.clone(),
-                        crate::spellchecker::code_action_for_suggestion(suggestion),
-                    ));
-                }
-            }
-
-            let diagnostic_count = editor_diagnostics.len();
-            state.diagnostics_mut().map(|set| {
-                set.clear();
-                set.extend(editor_diagnostics);
-            });
-            store.update_code_actions(code_actions);
-            crate::log::trace_debug(format!(
-                "spellchecker editor diagnostics applied version={} count={}",
-                latest_version, diagnostic_count
-            ));
-            cx.notify();
-        });
-    }
-
-    pub fn clear_spellchecker_diagnostics(&mut self, cx: &mut Context<Self>) {
-        let store = self.spellchecker_store.clone();
-        self.input_state.update(cx, move |state, cx| {
-            state.diagnostics_mut().map(|set| set.clear());
-            store.update_code_actions(Vec::new());
-            crate::log::trace_debug("spellchecker editor diagnostics cleared");
-            cx.notify();
-        });
-    }
-}
-
-fn spellchecker_diagnostic_severity(
-    severity: Option<lsp_types::DiagnosticSeverity>,
-) -> DiagnosticSeverity {
-    match severity {
-        Some(severity) if severity == lsp_types::DiagnosticSeverity::ERROR => {
-            DiagnosticSeverity::Warning
-        }
-        Some(severity) if severity == lsp_types::DiagnosticSeverity::WARNING => {
-            DiagnosticSeverity::Warning
-        }
-        Some(severity) if severity == lsp_types::DiagnosticSeverity::INFORMATION => {
-            DiagnosticSeverity::Info
-        }
-        _ => DiagnosticSeverity::Hint,
-    }
 }
 
 impl Render for Papyru2Editor {
@@ -869,8 +756,14 @@ impl Render for Papyru2Editor {
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_action(cx.listener(Self::on_backspace_action))
             .capture_action(cx.listener(Self::on_move_up_action))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_editor_mouse_down))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_editor_mouse_up))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(Self::on_spellchecker_editor_mouse_down),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(Self::on_spellchecker_editor_mouse_up),
+            )
             .child(
                 crate::app::apply_req_editor_shared_text_size(
                     Input::new(&self.input_state)

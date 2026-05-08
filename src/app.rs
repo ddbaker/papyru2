@@ -926,7 +926,7 @@ pub struct Papyru2App {
     pub(crate) editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) app_paths: crate::path_resolver::AppPaths,
-    pub(crate) spellchecker: crate::spellchecker::SpellCheckerController,
+    pub(crate) spellchecker: crate::spellcheker::SpellCheckerController,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
     pub(crate) file_tree_watcher_refresh_state: FileTreeWatcherRefreshState,
     pub(crate) pending_req_ftr32_post_refresh_action:
@@ -1348,22 +1348,7 @@ impl Papyru2App {
         })
         .detach();
 
-        let (spellchecker_event_tx, spellchecker_event_rx) =
-            smol::channel::unbounded::<crate::spellchecker::SpellCheckEvent>();
-        let spellchecker = crate::spellchecker::SpellCheckerController::new(
-            app_paths.clone(),
-            spellchecker_event_tx,
-        );
-        cx.spawn(async move |this, cx| {
-            while let Ok(event) = spellchecker_event_rx.recv().await {
-                let Some(this) = this.upgrade() else {
-                    break;
-                };
-                let _ = this.update(cx, move |app, cx| app.apply_spellchecker_event(event, cx));
-            }
-            trace_debug("spellchecker ui bridge loop detached");
-        })
-        .detach();
+        let spellchecker = crate::spellcheker::spawn_app_spellchecker(app_paths.clone(), cx);
 
         let mut subscriptions = vec![
             cx.subscribe_in(

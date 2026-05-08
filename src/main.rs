@@ -16,6 +16,7 @@ mod spellchecker;
 mod spellchecker_lsp;
 mod spellchecker_ranges;
 mod spellchecker_ui;
+mod spellcheker;
 mod top_bars;
 mod window_position;
 
