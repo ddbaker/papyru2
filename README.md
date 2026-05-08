@@ -25,8 +25,15 @@ papyru2
    │      papyru2_pin_file.exe
    │      papyru2_textfile_import.exe
    │
-   └─conf
-          papyru2_conf.toml
+   ├─conf
+   │      papyru2_conf.toml
+   │
+   └─licenses
+      │   LICENSE
+      │   THIRD_PARTY_NOTICES.md
+      │
+      └─harper
+              LICENSE-Apache-2.0.txt
 ```
 
 - `harper-ls.exe`: [The Free Grammar Checker That Respects Your Privacy](https://writewithharper.com/) (Apache-2.0 Licensed)
@@ -35,6 +42,9 @@ papyru2
 - `papyru2_pin_file.exe`: standalone helper CLI for 3rd party text search program integration ([manual](./docs/papyru2_pin_file.md))
 - `papyru2_textfile_import.exe`: standalone helper CLI for existing text file import ([manual](./docs/papyru2_textfile_import.md))
 - `papyru2_conf.toml`: config file
+- `licenses/LICENSE`: papyru2 GPL-3.0 license text
+- `licenses/THIRD_PARTY_NOTICES.md`: third-party redistribution notices
+- `licenses/harper/LICENSE-Apache-2.0.txt`: Harper Apache-2.0 license text
 
 > [!IMPORTANT]
 > Keep this "portable" folder structure

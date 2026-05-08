@@ -42,6 +42,11 @@ papyru2-<platform>-x_y_z/
     harper-ls[.exe]
   conf/
     papyru2_conf.toml
+  licenses/
+    LICENSE
+    THIRD_PARTY_NOTICES.md
+    harper/
+      LICENSE-Apache-2.0.txt
 ```
 
 Platform-specific icon handling differs by OS:
@@ -151,7 +156,7 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 1. Launch packaged app on target OS.
 2. Confirm `papyru2`, `papyru2_pin_file`, and `papyru2_textfile_import` show their assigned icons in launcher/dock/taskbar/window switcher where that platform exposes those binaries as applications.
 3. If stale icon is shown, clear OS icon cache or remove/re-pin old shortcuts and re-test.
-4. Confirm the portable zip contains `papyru2.portable`, `bin/papyru2[.exe]`, `bin/papyru2_pin_file[.exe]`, `bin/papyru2_textfile_import[.exe]`, `bin/harper-ls[.exe]`, and `conf/papyru2_conf.toml`.
+4. Confirm the portable zip contains `papyru2.portable`, `bin/papyru2[.exe]`, `bin/papyru2_pin_file[.exe]`, `bin/papyru2_textfile_import[.exe]`, `bin/harper-ls[.exe]`, `conf/papyru2_conf.toml`, `licenses/LICENSE`, `licenses/THIRD_PARTY_NOTICES.md`, and `licenses/harper/LICENSE-Apache-2.0.txt`.
 5. Confirm the portable zip does not contain `release_portable_packager[.exe]`; it is only the archive assembly helper.
 6. Confirm Windows `.exe` resources use the per-binary `.ico` files; sidecar copies are not present under `icons/windows/`.
 7. Confirm Linux `.desktop` entries reference matching hicolor icon names under `share/icons/hicolor/`.

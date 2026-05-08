@@ -14,6 +14,11 @@ const PIN_BINARY_NAME: &str = "papyru2_pin_file";
 const TEXTFILE_IMPORT_BINARY_NAME: &str = "papyru2_textfile_import";
 const PORTABLE_MARKER_FILE: &str = "papyru2.portable";
 const CONFIG_FILE_NAME: &str = "papyru2_conf.toml";
+const LICENSE_FILE_NAME: &str = "LICENSE";
+const THIRD_PARTY_NOTICES_FILE_NAME: &str = "THIRD_PARTY_NOTICES.md";
+const LICENSES_DIR_NAME: &str = "licenses";
+const HARPER_LICENSE_SOURCE: &str = "licenses/harper/LICENSE-Apache-2.0.txt";
+const HARPER_LICENSE_ARCHIVE_PATH: &str = "harper/LICENSE-Apache-2.0.txt";
 const HARPER_LS_ASSET_ROOT: &str = "assets/harper-ls";
 const HARPER_LS_WINDOWS_ASSET_DIR: &str = "harper-ls-x86_64-pc-windows-msvc";
 const HARPER_LS_LINUX_ASSET_DIR: &str = "harper-ls-x86_64-unknown-linux-gnu";
@@ -233,10 +238,14 @@ fn package_portable_release(
 
     let staged_bin_dir = staged_root.join("bin");
     let staged_conf_dir = staged_root.join("conf");
+    let staged_licenses_dir = staged_root.join(LICENSES_DIR_NAME);
+    let staged_harper_licenses_dir = staged_licenses_dir.join("harper");
     fs::create_dir_all(&staged_bin_dir)
         .with_context(|| format!("failed to create {}", staged_bin_dir.display()))?;
     fs::create_dir_all(&staged_conf_dir)
         .with_context(|| format!("failed to create {}", staged_conf_dir.display()))?;
+    fs::create_dir_all(&staged_harper_licenses_dir)
+        .with_context(|| format!("failed to create {}", staged_harper_licenses_dir.display()))?;
 
     let marker_path = staged_root.join(PORTABLE_MARKER_FILE);
     File::create(&marker_path)
@@ -275,6 +284,19 @@ fn package_portable_release(
             staged_config_path.display()
         )
     })?;
+
+    copy_license_file(
+        Path::new(LICENSE_FILE_NAME),
+        &staged_licenses_dir.join(LICENSE_FILE_NAME),
+    )?;
+    copy_license_file(
+        Path::new(THIRD_PARTY_NOTICES_FILE_NAME),
+        &staged_licenses_dir.join(THIRD_PARTY_NOTICES_FILE_NAME),
+    )?;
+    copy_license_file(
+        Path::new(HARPER_LICENSE_SOURCE),
+        &staged_licenses_dir.join(HARPER_LICENSE_ARCHIVE_PATH),
+    )?;
 
     stage_platform_icon_metadata(platform, version, &staged_root)?;
 
@@ -466,6 +488,18 @@ fn ensure_path_exists(path: &Path, label: &str) -> Result<()> {
     } else {
         bail!("{label} does not exist: {}", path.display())
     }
+}
+
+fn copy_license_file(source: &Path, destination: &Path) -> Result<()> {
+    ensure_path_exists(source, "license file")?;
+    fs::copy(source, destination).with_context(|| {
+        format!(
+            "failed to copy license file from {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn prepare_output_root(output_dir: &Path) -> Result<()> {
@@ -760,6 +794,27 @@ mod tests {
         assert!(
             archive
                 .by_name(&format!("{root_name}/conf/{CONFIG_FILE_NAME}"))
+                .is_ok()
+        );
+        assert!(
+            archive
+                .by_name(&format!(
+                    "{root_name}/{LICENSES_DIR_NAME}/{LICENSE_FILE_NAME}"
+                ))
+                .is_ok()
+        );
+        assert!(
+            archive
+                .by_name(&format!(
+                    "{root_name}/{LICENSES_DIR_NAME}/{THIRD_PARTY_NOTICES_FILE_NAME}"
+                ))
+                .is_ok()
+        );
+        assert!(
+            archive
+                .by_name(&format!(
+                    "{root_name}/{LICENSES_DIR_NAME}/{HARPER_LICENSE_ARCHIVE_PATH}"
+                ))
                 .is_ok()
         );
         assert_platform_icon_metadata(&mut archive, platform, &root_name)?;

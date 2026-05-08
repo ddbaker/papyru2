@@ -181,7 +181,7 @@ jobs:
       - name: Create portable zip
         run: cargo run --release --bin release_portable_packager -- --platform ${{ matrix.platform }} --bin-dir target/release --output-dir dist --config-path conf/papyru2_conf.toml
 
-      - name: Verify Harper language server in portable zip
+      - name: Verify Harper and license files in portable zip
         shell: pwsh
         run: |
           $zip = Get-ChildItem -LiteralPath dist -Filter '*.zip' | Select-Object -First 1
@@ -195,15 +195,23 @@ jobs:
           } else {
             'bin/harper-ls'
           }
+          $requiredEntries = @(
+            $harperEntry,
+            'licenses/LICENSE',
+            'licenses/THIRD_PARTY_NOTICES.md',
+            'licenses/harper/LICENSE-Apache-2.0.txt'
+          )
 
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
           try {
-            $matched = $archive.Entries | Where-Object { $_.FullName -like "*/$harperEntry" }
-            if (-not $matched) {
-              throw "Portable zip $($zip.Name) does not contain $harperEntry."
+            foreach ($entry in $requiredEntries) {
+              $matched = $archive.Entries | Where-Object { $_.FullName -like "*/$entry" }
+              if (-not $matched) {
+                throw "Portable zip $($zip.Name) does not contain $entry."
+              }
+              Write-Output "Verified $entry in $($zip.Name)."
             }
-            Write-Output "Verified $harperEntry in $($zip.Name)."
           } finally {
             $archive.Dispose()
           }
