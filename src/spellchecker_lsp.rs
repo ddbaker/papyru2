@@ -12,6 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde_json::{Value, json};
 
 use crate::spellchecker::{
@@ -20,6 +23,8 @@ use crate::spellchecker::{
 
 const HARPER_LS_WINDOWS_EXE: &str = "harper-ls.exe";
 const HARPER_LS_UNIX_EXE: &str = "harper-ls";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug)]
 pub(crate) enum SpellCheckerWorkerCommand {
@@ -241,13 +246,7 @@ fn worker_loop(
         executable_path.display()
     ));
 
-    let mut child = match Command::new(&executable_path)
-        .arg("--stdio")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let mut child = match harper_stdio_command(&executable_path).spawn() {
         Ok(child) => child,
         Err(error) => {
             send_event(
@@ -424,6 +423,20 @@ fn worker_loop(
     wait_or_kill_child(&mut child, Duration::from_millis(500));
     crate::log::trace_debug("spellchecker stopped");
     send_event(&event_tx, SpellCheckEvent::Stopped { generation });
+}
+
+fn harper_stdio_command(executable_path: &Path) -> Command {
+    let mut command = Command::new(executable_path);
+    command
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    command
 }
 
 fn wait_or_kill_child(child: &mut Child, timeout: Duration) {
