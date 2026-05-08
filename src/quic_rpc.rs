@@ -212,6 +212,12 @@ impl crate::app::Papyru2App {
                 cx,
             );
         });
+        if self.spellchecker.is_enabled() {
+            let snapshot = self.editor.read(app).snapshot(app);
+            let current_path = self.editor.read(app).current_editing_file_path();
+            self.spellchecker
+                .update_document(current_path, snapshot.value);
+        }
 
         self.file_tree.update(app, |file_tree, cx| {
             file_tree.clear_selection_for_req_ftr17_case3(cx);

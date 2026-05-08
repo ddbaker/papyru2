@@ -14,6 +14,10 @@ const PIN_BINARY_NAME: &str = "papyru2_pin_file";
 const TEXTFILE_IMPORT_BINARY_NAME: &str = "papyru2_textfile_import";
 const PORTABLE_MARKER_FILE: &str = "papyru2.portable";
 const CONFIG_FILE_NAME: &str = "papyru2_conf.toml";
+const HARPER_LS_ASSET_ROOT: &str = "assets/harper-ls";
+const HARPER_LS_WINDOWS_ASSET_DIR: &str = "harper-ls-x86_64-pc-windows-msvc";
+const HARPER_LS_LINUX_ASSET_DIR: &str = "harper-ls-x86_64-unknown-linux-gnu";
+const HARPER_LS_MACOS_ASSET_DIR: &str = "harper-ls-x86_64-apple-darwin";
 const PORTABLE_BINARY_NAMES: [&str; 3] = [
     APP_BINARY_NAME,
     PIN_BINARY_NAME,
@@ -107,6 +111,24 @@ impl Platform {
             Self::Windows => format!("{binary_name}.exe"),
             Self::Linux | Self::Macos => binary_name.to_owned(),
         }
+    }
+
+    fn harper_executable_name(self) -> &'static str {
+        match self {
+            Self::Windows => "harper-ls.exe",
+            Self::Linux | Self::Macos => "harper-ls",
+        }
+    }
+
+    fn harper_asset_relative_path(self) -> PathBuf {
+        let asset_dir = match self {
+            Self::Windows => HARPER_LS_WINDOWS_ASSET_DIR,
+            Self::Linux => HARPER_LS_LINUX_ASSET_DIR,
+            Self::Macos => HARPER_LS_MACOS_ASSET_DIR,
+        };
+        Path::new(HARPER_LS_ASSET_ROOT)
+            .join(asset_dir)
+            .join(self.harper_executable_name())
     }
 }
 
@@ -233,6 +255,17 @@ fn package_portable_release(
             )
         })?;
     }
+
+    let harper_source = platform.harper_asset_relative_path();
+    ensure_path_exists(&harper_source, "harper-ls release binary")?;
+    let harper_destination = staged_bin_dir.join(platform.harper_executable_name());
+    fs::copy(&harper_source, &harper_destination).with_context(|| {
+        format!(
+            "failed to copy harper-ls binary from {} to {}",
+            harper_source.display(),
+            harper_destination.display()
+        )
+    })?;
 
     let staged_config_path = staged_conf_dir.join(CONFIG_FILE_NAME);
     fs::copy(config_path, &staged_config_path).with_context(|| {
@@ -609,9 +642,12 @@ fn is_executable_zip_entry(platform: Platform, relative_path: &Path) -> bool {
         .collect::<Vec<_>>();
 
     match components.as_slice() {
-        ["bin", file_name] => PORTABLE_BINARY_NAMES
-            .iter()
-            .any(|binary_name| platform.executable_name(binary_name) == *file_name),
+        ["bin", file_name] => {
+            PORTABLE_BINARY_NAMES
+                .iter()
+                .any(|binary_name| platform.executable_name(binary_name) == *file_name)
+                || platform.harper_executable_name() == *file_name
+        }
         ["apps", _, "Contents", "MacOS", file_name] => PORTABLE_BINARY_NAMES
             .iter()
             .any(|binary_name| platform.executable_name(binary_name) == *file_name),
@@ -677,6 +713,7 @@ mod tests {
         let app_binary = platform.executable_name(APP_BINARY_NAME);
         let pin_binary = platform.executable_name(PIN_BINARY_NAME);
         let import_binary = platform.executable_name(TEXTFILE_IMPORT_BINARY_NAME);
+        let harper_binary = platform.harper_executable_name();
         fs::write(bin_dir.join(&app_binary), b"main-binary")?;
         fs::write(bin_dir.join(&pin_binary), b"pin-binary")?;
         fs::write(bin_dir.join(&import_binary), b"import-binary")?;
@@ -717,6 +754,11 @@ mod tests {
         );
         assert!(
             archive
+                .by_name(&format!("{root_name}/bin/{harper_binary}"))
+                .is_ok()
+        );
+        assert!(
+            archive
                 .by_name(&format!("{root_name}/conf/{CONFIG_FILE_NAME}"))
                 .is_ok()
         );
@@ -724,6 +766,52 @@ mod tests {
 
         fs::remove_dir_all(&temp_root)?;
         Ok(())
+    }
+
+    #[test]
+    fn spchk_pack_test1_windows_harper_asset_maps_to_windows_binary_only() {
+        assert_eq!(
+            Platform::Windows.harper_asset_relative_path(),
+            Path::new(HARPER_LS_ASSET_ROOT)
+                .join(HARPER_LS_WINDOWS_ASSET_DIR)
+                .join("harper-ls.exe")
+        );
+    }
+
+    #[test]
+    fn spchk_pack_test2_linux_harper_asset_maps_to_linux_binary_only() {
+        assert_eq!(
+            Platform::Linux.harper_asset_relative_path(),
+            Path::new(HARPER_LS_ASSET_ROOT)
+                .join(HARPER_LS_LINUX_ASSET_DIR)
+                .join("harper-ls")
+        );
+    }
+
+    #[test]
+    fn spchk_pack_test3_macos_harper_asset_maps_to_macos_binary_only() {
+        assert_eq!(
+            Platform::Macos.harper_asset_relative_path(),
+            Path::new(HARPER_LS_ASSET_ROOT)
+                .join(HARPER_LS_MACOS_ASSET_DIR)
+                .join("harper-ls")
+        );
+    }
+
+    #[test]
+    fn spchk_pack_test4_harper_zip_entries_are_executable() {
+        assert!(is_executable_zip_entry(
+            Platform::Windows,
+            Path::new("bin/harper-ls.exe")
+        ));
+        assert!(is_executable_zip_entry(
+            Platform::Linux,
+            Path::new("bin/harper-ls")
+        ));
+        assert!(is_executable_zip_entry(
+            Platform::Macos,
+            Path::new("bin/harper-ls")
+        ));
     }
 
     fn assert_platform_icon_metadata(

@@ -12,6 +12,10 @@ mod quic_rpc;
 mod single_instance;
 mod singleline_input;
 mod sl_editor_association;
+mod spellchecker;
+mod spellchecker_lsp;
+mod spellchecker_ranges;
+mod spellchecker_ui;
 mod top_bars;
 mod window_position;
 

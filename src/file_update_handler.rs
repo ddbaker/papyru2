@@ -1522,6 +1522,10 @@ impl crate::app::Papyru2App {
             editor.set_req_assoc18_editor_input_guard_active(editor_input_guard_active, cx);
         });
         self.editor_autosave.on_edit_path_changed(autosave_path);
+        if self.editor.read(cx).current_editing_file_path().is_none() {
+            self.editor
+                .update(cx, |editor, cx| editor.clear_spellchecker_diagnostics(cx));
+        }
 
         let sl_path = self.singleline.read(cx).current_editing_file_path();
         let ed_path = self.editor.read(cx).current_editing_file_path();
@@ -1630,6 +1634,7 @@ impl crate::app::Papyru2App {
                 self.editor.update(cx, |editor, cx| {
                     let _ = editor.open_file(path.clone(), window, cx);
                 });
+                self.on_spellchecker_document_replaced(cx);
 
                 let restored_selection = if should_select_created_path {
                     self.select_created_file_in_tree_after_new_file(path.as_path(), cx)

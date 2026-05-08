@@ -3700,6 +3700,7 @@ impl crate::app::Papyru2App {
 
         self.file_workflow.set_edit_from_open_file(path.clone());
         self.sync_current_editing_path_to_components(Some(path), cx);
+        self.on_spellchecker_document_replaced(cx);
         true
     }
 }

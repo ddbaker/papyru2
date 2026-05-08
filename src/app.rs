@@ -926,6 +926,7 @@ pub struct Papyru2App {
     pub(crate) editor_autosave: crate::file_update_handler::EditorAutoSaveCoordinator,
     pub(crate) _subscriptions: Vec<Subscription>,
     pub(crate) app_paths: crate::path_resolver::AppPaths,
+    pub(crate) spellchecker: crate::spellchecker::SpellCheckerController,
     pub(crate) _file_tree_watcher: crate::file_tree_watcher::FileTreeWatcher,
     pub(crate) file_tree_watcher_refresh_state: FileTreeWatcherRefreshState,
     pub(crate) pending_req_ftr32_post_refresh_action:
@@ -1347,6 +1348,23 @@ impl Papyru2App {
         })
         .detach();
 
+        let (spellchecker_event_tx, spellchecker_event_rx) =
+            smol::channel::unbounded::<crate::spellchecker::SpellCheckEvent>();
+        let spellchecker = crate::spellchecker::SpellCheckerController::new(
+            app_paths.clone(),
+            spellchecker_event_tx,
+        );
+        cx.spawn(async move |this, cx| {
+            while let Ok(event) = spellchecker_event_rx.recv().await {
+                let Some(this) = this.upgrade() else {
+                    break;
+                };
+                let _ = this.update(cx, move |app, cx| app.apply_spellchecker_event(event, cx));
+            }
+            trace_debug("spellchecker ui bridge loop detached");
+        })
+        .detach();
+
         let mut subscriptions = vec![
             cx.subscribe_in(
                 &file_tree,
@@ -1470,6 +1488,7 @@ impl Papyru2App {
                     crate::editor::EditorEvent::UserBufferChanged { value } => {
                         this.clear_rpc_highlight_on_editor_interaction();
                         this.on_editor_user_buffer_changed(value, cx);
+                        this.on_spellchecker_editor_changed(value.clone(), cx);
                     }
                 },
             ),
@@ -1569,6 +1588,7 @@ impl Papyru2App {
             editor_autosave,
             _subscriptions: subscriptions,
             app_paths,
+            spellchecker,
             _file_tree_watcher: file_tree_watcher,
             file_tree_watcher_refresh_state: FileTreeWatcherRefreshState::default(),
             pending_req_ftr32_post_refresh_action: None,
@@ -1654,6 +1674,7 @@ impl Render for Papyru2App {
                         ),
                 ),
             )
+            .child(self.render_spellchecker_bar(window, cx))
     }
 }
 
@@ -3256,6 +3277,10 @@ pub fn run() {
                         trace_debug("autosave pre-close aborted close");
                         return false;
                     }
+
+                    cx.update_entity(&close_view, |app, _cx| {
+                        app.stop_spellchecker_for_shutdown();
+                    });
 
                     let state = cx.update_entity(&close_view, |app, cx| {
                         app.capture_window_position_state(window, cx)
