@@ -47,6 +47,8 @@ where
 }
 
 pub(crate) const PAPYRU2_CONF_FILE_NAME: &str = "papyru2_conf.toml";
+pub(crate) const REQ_EDITOR_DEFAULT_CONTEXT_MENU_GO_TO_DEFINITION: bool = false;
+pub(crate) const REQ_EDITOR_DEFAULT_CONTEXT_MENU_SHOW_CODE_ACTIONS: bool = false;
 pub(crate) const REQ_COLR_DEFAULT_BACKGROUND_RGB_HEX: u32 = 0xFDFDE6;
 pub(crate) const REQ_COLR_DEFAULT_FOREGROUND_RGB_HEX: u32 = 0x000000;
 pub(crate) const REQ_EDITOR_DEFAULT_CODE_EDITOR: bool = false;
@@ -72,6 +74,21 @@ impl Default for UiColorConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EditorContextMenuConfig {
+    pub go_to_definition: bool,
+    pub show_code_actions: bool,
+}
+
+impl Default for EditorContextMenuConfig {
+    fn default() -> Self {
+        Self {
+            go_to_definition: REQ_EDITOR_DEFAULT_CONTEXT_MENU_GO_TO_DEFINITION,
+            show_code_actions: REQ_EDITOR_DEFAULT_CONTEXT_MENU_SHOW_CODE_ACTIONS,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EditorConfig {
     pub code_editor: bool,
@@ -80,6 +97,7 @@ pub(crate) struct EditorConfig {
     pub line_number: bool,
     pub show_whitespaces: bool,
     pub indent_guides: bool,
+    pub context_menu: EditorContextMenuConfig,
 }
 
 impl Default for EditorConfig {
@@ -91,6 +109,7 @@ impl Default for EditorConfig {
             line_number: REQ_EDITOR_DEFAULT_LINE_NUMBER,
             show_whitespaces: REQ_EDITOR_DEFAULT_SHOW_WHITESPACES,
             indent_guides: REQ_EDITOR_DEFAULT_INDENT_GUIDES,
+            context_menu: EditorContextMenuConfig::default(),
         }
     }
 }
@@ -135,6 +154,60 @@ struct ReqColrColorSection {
     foreground: Option<u32>,
 }
 
+#[derive(Debug, Default)]
+struct ReqEditorContextMenuSection {
+    go_to_definition: Option<bool>,
+    show_code_actions: Option<bool>,
+}
+
+impl<'de> serde::Deserialize<'de> for ReqEditorContextMenuSection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ReqEditorContextMenuSectionVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ReqEditorContextMenuSectionVisitor {
+            type Value = ReqEditorContextMenuSection;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an editor context_menu table")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut go_to_definition = None;
+                let mut show_code_actions = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    if key.eq_ignore_ascii_case("Go_to_Definition") {
+                        if go_to_definition.is_some() {
+                            return Err(serde::de::Error::duplicate_field("Go_to_Definition"));
+                        }
+                        go_to_definition = Some(map.next_value::<bool>()?);
+                    } else if key.eq_ignore_ascii_case("Show_Code_Actions") {
+                        if show_code_actions.is_some() {
+                            return Err(serde::de::Error::duplicate_field("Show_Code_Actions"));
+                        }
+                        show_code_actions = Some(map.next_value::<bool>()?);
+                    } else {
+                        let _ = map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+
+                Ok(ReqEditorContextMenuSection {
+                    go_to_definition,
+                    show_code_actions,
+                })
+            }
+        }
+
+        deserializer.deserialize_map(ReqEditorContextMenuSectionVisitor)
+    }
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct ReqEditorSection {
     #[serde(default)]
@@ -149,6 +222,8 @@ struct ReqEditorSection {
     show_whitespaces: Option<bool>,
     #[serde(default)]
     indent_guides: Option<bool>,
+    #[serde(default)]
+    context_menu: ReqEditorContextMenuSection,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -198,7 +273,7 @@ fn req_colr_hex_text(rgb_hex: u32) -> String {
 
 fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) -> String {
     format!(
-        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\n\n[editor.context_menu]\nGo_to_Definition = {}\nShow_Code_Actions = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
         colors.background_rgb_hex,
         colors.foreground_rgb_hex,
         editor.code_editor,
@@ -207,6 +282,8 @@ fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) ->
         editor.line_number,
         editor.show_whitespaces,
         editor.indent_guides,
+        editor.context_menu.go_to_definition,
+        editor.context_menu.show_code_actions,
         REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX
     )
 }
@@ -330,6 +407,18 @@ fn req_editor_config_from_parsed(
             .editor
             .indent_guides
             .unwrap_or(defaults.indent_guides),
+        context_menu: EditorContextMenuConfig {
+            go_to_definition: parsed
+                .editor
+                .context_menu
+                .go_to_definition
+                .unwrap_or(defaults.context_menu.go_to_definition),
+            show_code_actions: parsed
+                .editor
+                .context_menu
+                .show_code_actions
+                .unwrap_or(defaults.context_menu.show_code_actions),
+        },
     };
 
     (resolved, legacy_code_editor_lang)
@@ -366,7 +455,7 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
     let defaults = req_editor_default_config();
     if !path.is_file() {
         trace_debug(format!(
-            "req-editor config missing path={} defaults code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={}",
+            "req-editor config missing path={} defaults code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} context_menu_go_to_definition={} context_menu_show_code_actions={}",
             path.display(),
             defaults.code_editor,
             defaults.code_editor_lang,
@@ -374,7 +463,9 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
             defaults.line_number,
             defaults.show_whitespaces,
             defaults.indent_guides,
-            req_editor_effective_indent_guides(&defaults)
+            req_editor_effective_indent_guides(&defaults),
+            defaults.context_menu.go_to_definition,
+            defaults.context_menu.show_code_actions
         ));
         return Ok(defaults);
     }
@@ -393,7 +484,7 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
         ));
     }
     trace_debug(format!(
-        "req-editor config loaded path={} code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
+        "req-editor config loaded path={} code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
         path.display(),
         resolved.code_editor,
         resolved.code_editor_lang,
@@ -401,7 +492,9 @@ fn load_req_editor_config_result(path: &std::path::Path) -> std::io::Result<Edit
         resolved.line_number,
         resolved.show_whitespaces,
         resolved.indent_guides,
-        req_editor_effective_indent_guides(&resolved)
+        req_editor_effective_indent_guides(&resolved),
+        resolved.context_menu.go_to_definition,
+        resolved.context_menu.show_code_actions
     ));
     Ok(resolved)
 }
@@ -2639,6 +2732,14 @@ mod editor_config_tests {
             defaults.indent_guides,
             super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
         );
+        assert_eq!(
+            defaults.context_menu.go_to_definition,
+            super::REQ_EDITOR_DEFAULT_CONTEXT_MENU_GO_TO_DEFINITION
+        );
+        assert_eq!(
+            defaults.context_menu.show_code_actions,
+            super::REQ_EDITOR_DEFAULT_CONTEXT_MENU_SHOW_CODE_ACTIONS
+        );
         assert!(!super::req_editor_effective_indent_guides(&defaults));
     }
 
@@ -2710,6 +2811,9 @@ mod editor_config_tests {
         assert!(raw.contains("line_number = false"));
         assert!(raw.contains("show_whitespaces = false"));
         assert!(raw.contains("indent_guides = false"));
+        assert!(raw.contains("[editor.context_menu]"));
+        assert!(raw.contains("Go_to_Definition = false"));
+        assert!(raw.contains("Show_Code_Actions = false"));
 
         req_editor_test_cleanup(root.as_path());
     }
@@ -2737,6 +2841,10 @@ mod editor_config_tests {
         assert_eq!(
             resolved.indent_guides,
             super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
+        );
+        assert_eq!(
+            resolved.context_menu,
+            super::EditorContextMenuConfig::default()
         );
 
         req_editor_test_cleanup(root.as_path());
@@ -2793,6 +2901,96 @@ mod editor_config_tests {
         assert_eq!(resolved.code_editor_lang, "markdown");
         assert!(resolved.indent_guides);
         assert!(super::req_editor_effective_indent_guides(&resolved));
+    }
+
+    #[test]
+    fn editor21_test1_req_editor22_context_menu_defaults_off() {
+        for raw in ["", "[editor]\n", "[editor.context_menu]\n"] {
+            let resolved = req_editor_config_from_raw(raw);
+            assert!(!resolved.context_menu.go_to_definition, "raw={raw:?}");
+            assert!(!resolved.context_menu.show_code_actions, "raw={raw:?}");
+        }
+    }
+
+    #[test]
+    fn editor21_test2_req_editor21_context_menu_switch_combinations_parse() {
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\nGo_to_Definition = true\nShow_Code_Actions = false\n",
+        );
+        assert!(resolved.context_menu.go_to_definition);
+        assert!(!resolved.context_menu.show_code_actions);
+
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\nGo_to_Definition = false\nShow_Code_Actions = true\n",
+        );
+        assert!(!resolved.context_menu.go_to_definition);
+        assert!(resolved.context_menu.show_code_actions);
+
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\nGo_to_Definition = true\nShow_Code_Actions = true\n",
+        );
+        assert!(resolved.context_menu.go_to_definition);
+        assert!(resolved.context_menu.show_code_actions);
+    }
+
+    #[test]
+    fn editor21_test6_req_editor21_context_menu_keys_are_case_insensitive() {
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\ngo_to_definition = true\nshow_code_actions = true\n",
+        );
+        assert!(resolved.context_menu.go_to_definition);
+        assert!(resolved.context_menu.show_code_actions);
+
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\nGO_TO_DEFINITION = true\nSHOW_CODE_ACTIONS = false\n",
+        );
+        assert!(resolved.context_menu.go_to_definition);
+        assert!(!resolved.context_menu.show_code_actions);
+
+        let resolved = req_editor_config_from_raw(
+            "[editor.context_menu]\ngO_tO_dEfInItIoN = false\nsHoW_cOdE_aCtIoNs = true\n",
+        );
+        assert!(!resolved.context_menu.go_to_definition);
+        assert!(resolved.context_menu.show_code_actions);
+    }
+
+    #[test]
+    fn editor21_test3_req_editor22_partial_context_menu_keys_default_false() {
+        let resolved =
+            req_editor_config_from_raw("[editor.context_menu]\nGo_to_Definition = true\n");
+        assert!(resolved.context_menu.go_to_definition);
+        assert!(!resolved.context_menu.show_code_actions);
+
+        let resolved =
+            req_editor_config_from_raw("[editor.context_menu]\nShow_Code_Actions = true\n");
+        assert!(!resolved.context_menu.go_to_definition);
+        assert!(resolved.context_menu.show_code_actions);
+    }
+
+    #[test]
+    fn editor21_test4_req_editor22_invalid_context_menu_toml_defaults_off() {
+        let raw = "[editor.context_menu]\nGo_to_Definition = \"yes\"\nShow_Code_Actions = true\n";
+        let resolved = toml::from_str::<super::ReqColrConfigFile>(raw)
+            .map(|parsed| {
+                let defaults = super::req_editor_default_config();
+                super::req_editor_config_from_parsed(&parsed, &defaults).0
+            })
+            .unwrap_or_else(|_| super::req_editor_default_config());
+
+        assert!(!resolved.context_menu.go_to_definition);
+        assert!(!resolved.context_menu.show_code_actions);
+    }
+
+    #[test]
+    fn editor21_test5_req_editor22_default_config_contains_context_menu_keys() {
+        let raw = super::req_colr_default_config_toml(
+            super::UiColorConfig::default(),
+            &super::EditorConfig::default(),
+        );
+
+        assert!(raw.contains("[editor.context_menu]"));
+        assert!(raw.contains("Go_to_Definition = false"));
+        assert!(raw.contains("Show_Code_Actions = false"));
     }
 
     #[test]

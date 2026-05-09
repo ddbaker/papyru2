@@ -6,7 +6,11 @@ use std::{
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
-    input::{Backspace, Input, InputState, Position},
+    input::{
+        Backspace, Copy, Cut, GoToDefinition, Input, InputState, Paste, Position, SelectAll,
+        ToggleCodeActions,
+    },
+    menu::PopupMenu,
 };
 
 use gpui_component::input::InputEvent;
@@ -33,6 +37,52 @@ struct NarrowBoxBackspaceGuard {
     new_cursor: Position,
 }
 
+#[cfg(test)]
+pub(crate) fn req_editor_context_menu_labels(
+    config: &crate::app::EditorContextMenuConfig,
+) -> Vec<&'static str> {
+    let mut labels = Vec::new();
+    if config.go_to_definition {
+        labels.push("Go to Definition");
+    }
+    if config.show_code_actions {
+        labels.push("Show Code Actions");
+    }
+    labels.extend(["Cut", "Copy", "Paste", "Select All"]);
+    labels
+}
+
+fn build_editor_context_menu(
+    menu: PopupMenu,
+    action_context: FocusHandle,
+    config: crate::app::EditorContextMenuConfig,
+    has_paste: bool,
+) -> PopupMenu {
+    let has_optional_items = config.go_to_definition || config.show_code_actions;
+    let menu = menu.action_context(action_context);
+    let menu = if config.go_to_definition {
+        menu.menu("Go to Definition", Box::new(GoToDefinition))
+    } else {
+        menu
+    };
+    let menu = if config.show_code_actions {
+        menu.menu("Show Code Actions", Box::new(ToggleCodeActions))
+    } else {
+        menu
+    };
+    let menu = if has_optional_items {
+        menu.separator()
+    } else {
+        menu
+    };
+
+    menu.menu("Cut", Box::new(Cut))
+        .menu("Copy", Box::new(Copy))
+        .menu_with_enable("Paste", Box::new(Paste), has_paste)
+        .separator()
+        .menu("Select All", Box::new(SelectAll))
+}
+
 pub struct Papyru2Editor {
     pub(crate) input_state: Entity<InputState>,
     last_value: String,
@@ -42,6 +92,10 @@ pub struct Papyru2Editor {
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
     ui_color_config: crate::app::UiColorConfig,
+    context_menu_config: crate::app::EditorContextMenuConfig,
+    context_menu: Option<Entity<PopupMenu>>,
+    context_menu_position: Point<Pixels>,
+    context_menu_subscription: Option<Subscription>,
     pub(crate) req_assoc18_editor_input_guard_active: bool,
     pub(crate) spellchecker_store: crate::spellcheker::EditorStore,
 }
@@ -259,6 +313,7 @@ impl Papyru2Editor {
             (initial.value().to_string(), initial.cursor_position())
         };
 
+        let context_menu_config = editor_config.context_menu;
         let _subscriptions = vec![cx.subscribe_in(&input_state, window, {
             move |this, state, event: &InputEvent, _window, cx| match event {
                 InputEvent::Change => {
@@ -358,14 +413,16 @@ impl Papyru2Editor {
             req_editor_editor_font_size_policy()
         ));
         crate::log::trace_debug(format!(
-            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true",
+            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
             editor_config.code_editor,
             editor_config.code_editor_lang,
             editor_config.soft_wrap,
             editor_config.line_number,
             editor_config.show_whitespaces,
             editor_config.indent_guides,
-            crate::app::req_editor_effective_indent_guides(&editor_config)
+            crate::app::req_editor_effective_indent_guides(&editor_config),
+            context_menu_config.go_to_definition,
+            context_menu_config.show_code_actions
         ));
         if editor_config.show_whitespaces {
             crate::log::trace_debug(
@@ -382,6 +439,10 @@ impl Papyru2Editor {
             _subscriptions,
             font_size_logged_once: false,
             ui_color_config,
+            context_menu_config,
+            context_menu: None,
+            context_menu_position: Point::default(),
+            context_menu_subscription: None,
             req_assoc18_editor_input_guard_active: true,
             spellchecker_store,
         }
@@ -649,6 +710,53 @@ impl Papyru2Editor {
             .is_focused(window)
     }
 
+    fn on_context_menu_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button != MouseButton::Right {
+            cx.propagate();
+            return;
+        }
+
+        if self.req_assoc18_editor_input_guard_active {
+            cx.propagate();
+            return;
+        }
+
+        let action_context = self.input_state.read(cx).focus_handle(cx);
+        let context_menu_config = self.context_menu_config;
+        let has_paste = cx.read_from_clipboard().is_some();
+        let menu = PopupMenu::build(window, cx, move |menu, _window, _cx| {
+            build_editor_context_menu(menu, action_context, context_menu_config, has_paste)
+        });
+        let subscription = cx.subscribe_in(&menu, window, {
+            move |this, _, _: &DismissEvent, window, cx| {
+                this.close_context_menu(window, cx);
+            }
+        });
+
+        self.context_menu = Some(menu);
+        self.context_menu_position = event.position;
+        self.context_menu_subscription = Some(subscription);
+        crate::log::trace_debug(format!(
+            "req-editor21 custom editor context menu opened go_to_definition={} show_code_actions={}",
+            self.context_menu_config.go_to_definition, self.context_menu_config.show_code_actions
+        ));
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn close_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        self.context_menu_subscription = None;
+        self.input_state
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
     pub fn open_file(
         &mut self,
         path: PathBuf,
@@ -730,10 +838,30 @@ impl Papyru2Editor {
 }
 
 impl Render for Papyru2Editor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
         let background_rgb_hex = self.ui_color_config.background_rgb_hex;
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
+        let context_menu_element = self.context_menu.clone().map(|menu| {
+            let focus_handle = menu.focus_handle(cx);
+            if !focus_handle.contains_focused(window, cx) {
+                focus_handle.focus(window);
+            }
+
+            deferred(
+                anchored()
+                    .snap_to_window_with_margin(px(8.))
+                    .anchor(Corner::TopLeft)
+                    .position(self.context_menu_position)
+                    .child(
+                        div()
+                            .font_family(cx.theme().font_family.clone())
+                            .cursor_default()
+                            .child(menu),
+                    ),
+            )
+            .into_any_element()
+        });
 
         if !self.font_size_logged_once {
             crate::log::trace_debug(format!(
@@ -754,6 +882,7 @@ impl Render for Papyru2Editor {
             .bg(crate::app::req_colr_rgb_hex_to_hsla(background_rgb_hex))
             .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
             .capture_key_down(cx.listener(Self::on_key_down))
+            .capture_any_mouse_down(cx.listener(Self::on_context_menu_mouse_down))
             .capture_action(cx.listener(Self::on_backspace_action))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(
@@ -775,6 +904,7 @@ impl Render for Papyru2Editor {
                 )
                 .text_size(experimental_text_size_px),
             )
+            .children(context_menu_element)
     }
 }
 
@@ -1210,5 +1340,50 @@ mod tests {
             "\n",
             &origin_cursor,
         ));
+    }
+
+    #[test]
+    fn editor21_test6_context_menu_labels_default_to_base_items_only() {
+        let labels =
+            super::req_editor_context_menu_labels(&crate::app::EditorContextMenuConfig::default());
+
+        assert_eq!(labels, vec!["Cut", "Copy", "Paste", "Select All"]);
+    }
+
+    #[test]
+    fn editor21_test7_context_menu_labels_follow_optional_switches() {
+        let labels = super::req_editor_context_menu_labels(&crate::app::EditorContextMenuConfig {
+            go_to_definition: true,
+            show_code_actions: false,
+        });
+        assert_eq!(
+            labels,
+            vec!["Go to Definition", "Cut", "Copy", "Paste", "Select All"]
+        );
+
+        let labels = super::req_editor_context_menu_labels(&crate::app::EditorContextMenuConfig {
+            go_to_definition: false,
+            show_code_actions: true,
+        });
+        assert_eq!(
+            labels,
+            vec!["Show Code Actions", "Cut", "Copy", "Paste", "Select All"]
+        );
+
+        let labels = super::req_editor_context_menu_labels(&crate::app::EditorContextMenuConfig {
+            go_to_definition: true,
+            show_code_actions: true,
+        });
+        assert_eq!(
+            labels,
+            vec![
+                "Go to Definition",
+                "Show Code Actions",
+                "Cut",
+                "Copy",
+                "Paste",
+                "Select All"
+            ]
+        );
     }
 }
