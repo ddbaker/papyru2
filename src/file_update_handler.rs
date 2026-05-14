@@ -3130,6 +3130,97 @@ mod tests {
     }
 
     #[test]
+    fn aus_test14_req_aus9_singleline_rename_flushes_pending_editor_text_before_path_switch() {
+        use std::sync::{Arc, Mutex};
+
+        let root = PathBuf::from("C:/tmp/papyru2_req_aus9");
+        let path_a = root.join("2026").join("05").join("14").join("fileA.txt");
+        let path_notitle = root
+            .join("2026")
+            .join("05")
+            .join("14")
+            .join("notitle-20260514224013878.txt");
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let saved_texts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let processor_events = events.clone();
+        let processor_saved_texts = saved_texts.clone();
+        let processor_path_notitle = path_notitle.clone();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| match event {
+            FileWorkflowEvent::AutoSave(request) => {
+                processor_events
+                    .lock()
+                    .expect("lock event log")
+                    .push(format!(
+                        "autosave:{}",
+                        request.payload.current_path.display()
+                    ));
+                processor_saved_texts
+                    .lock()
+                    .expect("lock saved text log")
+                    .push(request.payload.editor_text.clone());
+                Ok(FileWorkflowEventResult::AutoSaved {
+                    path: request.payload.current_path,
+                })
+            }
+            FileWorkflowEvent::Rename(request) => {
+                processor_events
+                    .lock()
+                    .expect("lock event log")
+                    .push(format!("rename:{}", request.current_path.display()));
+                Ok(FileWorkflowEventResult::Renamed {
+                    path: processor_path_notitle.clone(),
+                })
+            }
+            event => panic!("unexpected event in req-aus9 regression: {event:?}"),
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
+        let autosave = EditorAutoSaveCoordinator::new();
+        workflow.set_edit_from_open_file(path_a.clone());
+        autosave.mark_user_edit(
+            EditorAutoSavePayload {
+                user_document_dir: root.clone(),
+                current_path: path_a.clone(),
+                editor_text: "fileA editor text".to_string(),
+            },
+            Instant::now(),
+        );
+
+        assert!(should_flush_pre_switch_editor_content(
+            "req-aus9-singleline-rename",
+            path_a.as_path(),
+            &autosave
+        ));
+        let flushed = workflow
+            .flush_editor_content_in_edit("fileA editor text", root.as_path())
+            .expect("flush pending editor text before rename");
+        assert!(flushed);
+        autosave.reset_cycle();
+
+        let renamed = workflow
+            .try_rename_in_edit("", root.as_path(), fixed_now())
+            .expect("rename after pre-rename flush")
+            .expect("rename should return notitle path");
+        autosave.on_edit_path_changed(Some(renamed.clone()));
+
+        assert_eq!(renamed, path_notitle.clone());
+        assert_eq!(workflow.current_edit_path(), Some(path_notitle));
+        assert!(!autosave.has_pending_payload());
+        assert_eq!(
+            saved_texts.lock().expect("lock saved text log").as_slice(),
+            ["fileA editor text"]
+        );
+        assert_eq!(
+            events.lock().expect("lock event log").as_slice(),
+            [
+                format!("autosave:{}", path_a.display()),
+                format!("rename:{}", path_a.display()),
+            ]
+        );
+
+        dispatcher.shutdown();
+    }
+
+    #[test]
     fn ftr_test95_req_ftr24_selection_switch_without_pending_edit_does_not_move_previous_file() {
         let root = new_temp_root("ftr_test95");
         let old_daily = daily_directory(root.as_path(), fixed_now());

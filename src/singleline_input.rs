@@ -306,6 +306,16 @@ impl crate::app::Papyru2App {
                 self.ensure_new_file_flow("singleline_value_changed", window, cx);
             }
             crate::file_update_handler::SinglelineFileState::Edit => {
+                if !self
+                    .flush_editor_content_before_context_switch("req-aus9-singleline-rename", cx)
+                {
+                    crate::log::trace_debug(format!(
+                        "rename_flow aborted value='{}' reason=pre-rename-autosave-failed",
+                        crate::app::compact_text(value)
+                    ));
+                    return;
+                }
+
                 let now_local = Local::now();
                 let previous_path = self.file_workflow.current_edit_path();
                 match self.file_workflow.try_rename_in_edit(
