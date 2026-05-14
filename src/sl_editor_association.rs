@@ -846,6 +846,18 @@ mod tests {
     }
 
     #[test]
+    fn assoc_test50_req_assoc18_enter_empty_singleline_moves_focus_to_editor_head() {
+        let result = transfer_on_enter("", 0, "").expect("expected empty Enter transfer");
+
+        assert_eq!(result.new_singleline_text, "");
+        assert_eq!(result.new_singleline_cursor_char, 0);
+        assert_eq!(result.new_editor_text, "");
+        assert_eq!(result.new_editor_cursor_line, 0);
+        assert_eq!(result.new_editor_cursor_char, 0);
+        assert_eq!(result.focus_target, FocusTarget::Editor);
+    }
+
+    #[test]
     fn assoc_test21_req_assoc14_backspace_blank_line1_head_moves_to_singleline_tail() {
         let result = transfer_on_backspace("abcdefg", 2, "").expect("expected transfer");
 

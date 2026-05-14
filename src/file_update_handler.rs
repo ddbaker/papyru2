@@ -2711,6 +2711,76 @@ mod tests {
     }
 
     #[test]
+    fn assoc_test49_req_assoc18_enter_empty_singleline_creates_notitle_and_enters_edit() {
+        let root = PathBuf::from("C:/tmp/papyru2_assoc18_enter_empty");
+        let created_path = root
+            .join("2026")
+            .join("05")
+            .join("14")
+            .join("notitle-20260514224013878.txt");
+        let dispatcher_created_path = created_path.clone();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| match event {
+            FileWorkflowEvent::Create(request) => {
+                assert_eq!(request.singleline_value, "");
+                Ok(FileWorkflowEventResult::Created {
+                    path: dispatcher_created_path.clone(),
+                })
+            }
+            event => panic!("unexpected event for assoc18 empty Enter create: {event:?}"),
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
+
+        let created = workflow
+            .try_create_from_neutral("", root.as_path(), Instant::now(), fixed_now())
+            .expect("empty Enter create should succeed")
+            .expect("empty Enter should create notitle path");
+
+        assert_eq!(created, created_path.clone());
+        assert!(
+            created
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.starts_with("notitle-"))
+        );
+        assert_eq!(workflow.state(), SinglelineFileState::Edit);
+        assert_eq!(workflow.current_edit_path(), Some(created_path));
+
+        dispatcher.shutdown();
+    }
+
+    #[test]
+    fn assoc_test52_req_assoc18_enter_nonempty_singleline_still_creates_from_neutral() {
+        let root = PathBuf::from("C:/tmp/papyru2_assoc18_enter_nonempty");
+        let created_path = root
+            .join("2026")
+            .join("05")
+            .join("14")
+            .join("typed-title.txt");
+        let dispatcher_created_path = created_path.clone();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| match event {
+            FileWorkflowEvent::Create(request) => {
+                assert_eq!(request.singleline_value, "typed-title");
+                Ok(FileWorkflowEventResult::Created {
+                    path: dispatcher_created_path.clone(),
+                })
+            }
+            event => panic!("unexpected event for assoc18 nonempty key create: {event:?}"),
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher.clone());
+
+        let created = workflow
+            .try_create_from_neutral("typed-title", root.as_path(), Instant::now(), fixed_now())
+            .expect("nonempty key create should succeed")
+            .expect("nonempty key input should create file");
+
+        assert_eq!(created, created_path.clone());
+        assert_eq!(workflow.state(), SinglelineFileState::Edit);
+        assert_eq!(workflow.current_edit_path(), Some(created_path));
+
+        dispatcher.shutdown();
+    }
+
+    #[test]
     fn aus_test1_autosave_event_writes_latest_editor_text() {
         let root = new_temp_root("aus_test1");
         let workflow = SinglelineCreateFileWorkflow::new();

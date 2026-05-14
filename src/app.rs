@@ -708,6 +708,15 @@ pub(crate) fn req_assoc18_editor_focus_decision(
     }
 }
 
+pub(crate) fn req_assoc18_enter_should_start_new_file_flow(
+    file_state: crate::file_update_handler::SinglelineFileState,
+) -> bool {
+    matches!(
+        file_state,
+        crate::file_update_handler::SinglelineFileState::Neutral
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct FocusReassertTickTransition {
     pub run_focus_reassert: bool,
@@ -1501,6 +1510,14 @@ impl Papyru2App {
                     match event {
                         crate::singleline_input::SingleLineEvent::PressEnter => {
                             trace_debug("app received SingleLineEvent::PressEnter");
+                            if req_assoc18_enter_should_start_new_file_flow(
+                                this.file_workflow.state(),
+                            ) {
+                                trace_debug(
+                                    "assoc req-assoc18-enter singleline_enter_allowed state=NEUTRAL",
+                                );
+                                this.ensure_new_file_flow("singleline_enter", window, cx);
+                            }
                             this.transfer_singleline_enter(window, cx);
                         }
                         crate::singleline_input::SingleLineEvent::PressDown => {
@@ -1914,6 +1931,32 @@ mod tests {
             assert!(decision.should_continue_editor_focus_flow());
             assert!(!decision.should_restore_singleline_focus());
         }
+    }
+
+    #[test]
+    fn assoc_test51_req_assoc18_enter_followup_editor_click_guard_remains_neutral() {
+        let decision = super::req_assoc18_editor_focus_decision(
+            crate::file_update_handler::SinglelineFileState::Neutral,
+        );
+
+        assert_eq!(
+            decision,
+            super::ReqAssoc18EditorFocusDecision::IgnoreAndRestoreSinglelineFocus
+        );
+        assert!(decision.should_restore_singleline_focus());
+        assert!(!decision.should_continue_editor_focus_flow());
+        assert!(super::req_assoc18_editor_input_guard_active(
+            crate::file_update_handler::SinglelineFileState::Neutral
+        ));
+        assert!(super::req_assoc18_enter_should_start_new_file_flow(
+            crate::file_update_handler::SinglelineFileState::Neutral
+        ));
+        assert!(!super::req_assoc18_enter_should_start_new_file_flow(
+            crate::file_update_handler::SinglelineFileState::New
+        ));
+        assert!(!super::req_assoc18_enter_should_start_new_file_flow(
+            crate::file_update_handler::SinglelineFileState::Edit
+        ));
     }
 
     #[test]
