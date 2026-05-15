@@ -86,8 +86,3 @@ Refer two documents below:
 Ref-1: [Integration Overview](./docs/text_search_tool_integration.md)
 
 Ref-2: ["Television" search tool integration hands-on](./docs/text_search_tv_integration.md)
-
-## Project policies
-
-- [Code signing policy](docs/signing.md)
-- [Privacy policy](docs/privacy.md)

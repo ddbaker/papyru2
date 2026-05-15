@@ -62,8 +62,11 @@ Edit `papyru2.toml` and add:
 - A key binding that maps `Alt+I` to `actions:pinfile`.
 - An `[actions.pinfile]` section that runs `papyru2_pin_file.exe`.
 
-This example assumes that the `papyru2` portable package is installed at
-`C:\ddbwork\app\papyru2`, so the helper command is located at:
+> [!NOTE]
+> This example assumes that the `papyru2` portable package is installed at
+> `C:\ddbwork\app\papyru2`,
+
+so the helper command is located at:
 
 ```text
 C:\ddbwork\app\papyru2\bin\papyru2_pin_file.exe
@@ -98,6 +101,9 @@ description = "Pin file"
 command = "C:\\ddbwork\\app\\papyru2\\bin\\papyru2_pin_file.exe \"{split:\\::..2}\""
 mode = "fork"
 ```
+
+> [!IMPORTANT]
+> Replace the full-path of `papyru2_pin_file.exe` with the one appropriate for your environment.
 
 ## Verify Placeholder Expansion
 
@@ -200,6 +206,9 @@ description = "Pin file"
 command = "C:\\ddbwork\\app\\papyru2\\bin\\papyru2_pin_file.exe \"{split:\\::..2}:1\""
 mode = "fork"
 ```
+
+> [!IMPORTANT]
+> Replace the full-path of `papyru2_pin_file.exe` with the one appropriate for your environment.
 
 Run the file channel from the `user_document` directory:
 
