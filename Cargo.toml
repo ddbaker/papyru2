@@ -27,12 +27,12 @@ gpui-component = { version = "*", features = ["tree-sitter-languages"] }
 gpui-component-assets = { version = "*" } 
 raw-window-handle = "=0.6.2"
 reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
-windows = { version = "=0.57.0", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
 iroh = { version = "*" }
 irpc = { version = "*", features = ["rpc", "derive", "noq_endpoint_setup"] }
-tokio = { version = "1.51.1", features = ["rt-multi-thread", "sync"] }
-filetime = "0.2.27"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync"] }
+filetime = "0.2.29"
 
 anyhow = "1.0.102"
 lsp-types = "0.97.0"
@@ -42,11 +42,11 @@ chrono = "0.4.44"
 smol = "2.0.2"
 color-lsp = "0.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = "1.0.150"
 toml = "1.1.2"
 tracing-subscriber = "0.3.23"
 notify = "8.2.0"
-zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
