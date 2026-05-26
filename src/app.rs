@@ -1798,8 +1798,7 @@ mod tests {
     use gpui::DisplayId;
 
     fn display_id_for_test(id: u32) -> DisplayId {
-        // SAFETY: In gpui 0.2.2, DisplayId is defined as `pub struct DisplayId(pub(crate) u32)`.
-        unsafe { std::mem::transmute::<u32, DisplayId>(id) }
+        DisplayId::new(u64::from(id))
     }
 
     fn autosave_payload(
@@ -3313,7 +3312,7 @@ pub fn run() {
     ));
 
     let application_new_started = Instant::now();
-    let app = Application::new().with_assets(AppAssets);
+    let app = gpui_platform::application().with_assets(AppAssets);
     crate::log::boot_profile_mark_timing(
         "startup.application_new",
         application_new_started.elapsed(),
@@ -3341,7 +3340,7 @@ pub fn run() {
 
         let window_options_started = Instant::now();
         let primary_display = cx.primary_display();
-        let primary_monitor_id = primary_display.as_ref().map(|display| u32::from(display.id()));
+        let primary_monitor_id = primary_display.as_ref().map(|display| u64::from(display.id()));
 
         let mut startup_displays: Vec<(DisplayId, crate::window_position::StartupDisplaySnapshot)> =
             cx.displays()
@@ -3351,7 +3350,7 @@ pub fn run() {
                     (
                         display_id,
                         crate::window_position::StartupDisplaySnapshot {
-                            monitor_id: u32::from(display_id),
+                            monitor_id: u64::from(display_id),
                             monitor_uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
                             bounds: display.bounds(),
                         },
@@ -3365,7 +3364,7 @@ pub fn run() {
                 startup_displays.push((
                     display_id,
                     crate::window_position::StartupDisplaySnapshot {
-                        monitor_id: u32::from(display_id),
+                        monitor_id: u64::from(display_id),
                         monitor_uuid: primary_display.uuid().ok().map(|uuid| uuid.to_string()),
                         bounds: primary_display.bounds(),
                     },

@@ -984,8 +984,8 @@ impl FileTreeView {
         self.selected_item_ids.len()
     }
 
-    pub fn focus(&self, window: &mut Window) {
-        self.focus_handle.focus(window);
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.focus_handle.focus(window, cx);
     }
 
     pub fn is_focused(&self, window: &Window, cx: &App) -> bool {
@@ -1279,7 +1279,7 @@ impl FileTreeView {
 
         let click_policy = req_ftr33_row_click_policy(&self.directory_item_ids, item);
 
-        self.focus(window);
+        self.focus(window, cx);
         self.rebuild_visible_item_ids();
 
         let modifiers = event.modifiers();
@@ -2895,8 +2895,8 @@ impl crate::app::Papyru2App {
                     crate::log::trace_debug("file_tree selection focus_reassert skipped pending=false");
                     return;
                 }
-                this.file_tree.update(cx, |file_tree, _| {
-                    file_tree.focus(window);
+                this.file_tree.update(cx, |file_tree, cx| {
+                    file_tree.focus(window, cx);
                 });
                 let file_tree_focused = this.file_tree.read(cx).is_focused(window, cx);
                 let editor_focused = this.editor.read(cx).is_focused(window, cx);

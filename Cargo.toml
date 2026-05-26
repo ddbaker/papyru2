@@ -21,10 +21,10 @@ icon = [
 ]
 
 [dependencies]
-gpui = { version = "*" }
-gpui-macros  = { version = "*" }
-gpui-component = { version = "*", features = ["tree-sitter-languages"] }
-gpui-component-assets = { version = "*" } 
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component.git", features = ["tree-sitter-languages"] }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component.git" }
 raw-window-handle = "=0.6.2"
 reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
@@ -35,7 +35,7 @@ filetime = "0.2.29"
 
 anyhow = "1.0.102"
 lsp-types = "0.97.0"
-tree-sitter-navi = "0.2.2"
+tree-sitter-navi = "0.2.3"
 autocorrect = "2.14.2"
 chrono = "0.4.44"
 smol = "2.0.2"

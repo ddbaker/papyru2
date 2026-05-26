@@ -393,7 +393,7 @@ impl Papyru2Editor {
                     this.last_value = value;
                     this.last_cursor = cursor;
                 }
-                InputEvent::PressEnter { secondary } => {
+                InputEvent::PressEnter { secondary, .. } => {
                     crate::log::trace_debug(format!(
                         "editor InputEvent::PressEnter secondary={secondary}"
                     ));
@@ -845,13 +845,13 @@ impl Render for Papyru2Editor {
         let context_menu_element = self.context_menu.clone().map(|menu| {
             let focus_handle = menu.focus_handle(cx);
             if !focus_handle.contains_focused(window, cx) {
-                focus_handle.focus(window);
+                focus_handle.focus(window, cx);
             }
 
             deferred(
                 anchored()
                     .snap_to_window_with_margin(px(8.))
-                    .anchor(Corner::TopLeft)
+                    .anchor(Anchor::TopLeft)
                     .position(self.context_menu_position)
                     .child(
                         div()

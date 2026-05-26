@@ -25,7 +25,7 @@ pub struct WindowPositionState {
     pub width: f32,
     pub height: f32,
     pub window_mode: PersistedWindowMode,
-    pub monitor_id: Option<u32>,
+    pub monitor_id: Option<u64>,
     pub monitor_uuid: Option<String>,
     pub dpi_scale: Option<f32>,
     #[serde(default)]
@@ -35,7 +35,7 @@ pub struct WindowPositionState {
 impl WindowPositionState {
     pub fn from_window(window: &Window, cx: &App) -> Self {
         let display = window.display(cx);
-        let monitor_id = display.as_ref().map(|display| u32::from(display.id()));
+        let monitor_id = display.as_ref().map(|display| u64::from(display.id()));
         let monitor_uuid = display
             .as_ref()
             .and_then(|display| display.uuid().ok())
@@ -51,7 +51,7 @@ impl WindowPositionState {
 
     pub fn from_window_bounds(
         window_bounds: WindowBounds,
-        monitor_id: Option<u32>,
+        monitor_id: Option<u64>,
         monitor_uuid: Option<String>,
         dpi_scale: Option<f32>,
     ) -> Self {
@@ -101,7 +101,7 @@ impl WindowPositionState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartupDisplaySnapshot {
-    pub monitor_id: u32,
+    pub monitor_id: u64,
     pub monitor_uuid: Option<String>,
     pub bounds: Bounds<Pixels>,
 }
@@ -117,7 +117,7 @@ pub enum StartupDisplayResolutionSource {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartupDisplayResolution {
-    pub monitor_id: Option<u32>,
+    pub monitor_id: Option<u64>,
     pub display_bounds: Option<Bounds<Pixels>>,
     pub source: StartupDisplayResolutionSource,
 }
@@ -125,9 +125,9 @@ pub struct StartupDisplayResolution {
 pub fn resolve_startup_display_resolution(
     persisted: Option<&WindowPositionState>,
     available_displays: &[StartupDisplaySnapshot],
-    primary_monitor_id: Option<u32>,
+    primary_monitor_id: Option<u64>,
 ) -> StartupDisplayResolution {
-    let lookup_by_monitor_id = |monitor_id: u32| {
+    let lookup_by_monitor_id = |monitor_id: u64| {
         available_displays
             .iter()
             .find(|display| display.monitor_id == monitor_id)
@@ -549,7 +549,7 @@ mod tests {
     }
 
     fn startup_display_snapshot(
-        monitor_id: u32,
+        monitor_id: u64,
         monitor_uuid: Option<&str>,
         bounds: Bounds<Pixels>,
     ) -> StartupDisplaySnapshot {
