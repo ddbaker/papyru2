@@ -272,6 +272,10 @@ pub(crate) fn req_editor_effective_indent_guides(editor: &EditorConfig) -> bool 
     editor.code_editor && editor.indent_guides
 }
 
+pub(crate) fn req_editor_compensate_empty_code_gutter(editor: &EditorConfig) -> bool {
+    editor.code_editor && !editor.line_number && !editor.folding
+}
+
 fn req_colr_hex_text(rgb_hex: u32) -> String {
     format!("#{rgb_hex:06x}")
 }
@@ -2791,6 +2795,7 @@ mod editor_config_tests {
             super::REQ_EDITOR_DEFAULT_CONTEXT_MENU_SHOW_CODE_ACTIONS
         );
         assert!(!super::req_editor_effective_indent_guides(&defaults));
+        assert!(!super::req_editor_compensate_empty_code_gutter(&defaults));
     }
 
     #[test]
@@ -2830,6 +2835,7 @@ mod editor_config_tests {
         assert!(resolved.indent_guides);
         assert!(resolved.folding);
         assert!(super::req_editor_effective_indent_guides(&resolved));
+        assert!(!super::req_editor_compensate_empty_code_gutter(&resolved));
 
         req_editor_test_cleanup(root.as_path());
     }
@@ -2960,13 +2966,26 @@ mod editor_config_tests {
     fn editor23_test1_folding_defaults_off_and_parses_switch() {
         let resolved = req_editor_config_from_raw("[editor]\ncode_editor = true\n");
         assert!(!resolved.folding);
+        assert!(super::req_editor_compensate_empty_code_gutter(&resolved));
 
         let resolved = req_editor_config_from_raw("[editor]\ncode_editor = true\nfolding = true\n");
         assert!(resolved.folding);
+        assert!(!super::req_editor_compensate_empty_code_gutter(&resolved));
 
         let resolved =
             req_editor_config_from_raw("[editor]\ncode_editor = true\nfolding = false\n");
         assert!(!resolved.folding);
+        assert!(super::req_editor_compensate_empty_code_gutter(&resolved));
+    }
+
+    #[test]
+    fn editor23_test2_line_numbers_keep_code_gutter() {
+        let resolved = req_editor_config_from_raw(
+            "[editor]\ncode_editor = true\nline_number = true\nfolding = false\n",
+        );
+        assert!(resolved.line_number);
+        assert!(!resolved.folding);
+        assert!(!super::req_editor_compensate_empty_code_gutter(&resolved));
     }
 
     #[test]

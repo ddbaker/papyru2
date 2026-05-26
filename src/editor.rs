@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 use gpui_component::{
     ActiveTheme,
@@ -98,6 +99,7 @@ pub struct Papyru2Editor {
     context_menu_subscription: Option<Subscription>,
     pub(crate) req_assoc18_editor_input_guard_active: bool,
     pub(crate) spellchecker_store: crate::spellcheker::EditorStore,
+    compensate_empty_code_gutter: bool,
 }
 
 impl EventEmitter<EditorEvent> for Papyru2Editor {}
@@ -315,6 +317,8 @@ impl Papyru2Editor {
         };
 
         let context_menu_config = editor_config.context_menu;
+        let compensate_empty_code_gutter =
+            crate::app::req_editor_compensate_empty_code_gutter(&editor_config);
         let _subscriptions = vec![cx.subscribe_in(&input_state, window, {
             move |this, state, event: &InputEvent, _window, cx| match event {
                 InputEvent::Change => {
@@ -414,7 +418,7 @@ impl Papyru2Editor {
             req_editor_editor_font_size_policy()
         ));
         crate::log::trace_debug(format!(
-            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} folding={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
+            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} folding={} compensate_empty_code_gutter={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
             editor_config.code_editor,
             editor_config.code_editor_lang,
             editor_config.soft_wrap,
@@ -423,6 +427,7 @@ impl Papyru2Editor {
             editor_config.indent_guides,
             crate::app::req_editor_effective_indent_guides(&editor_config),
             editor_config.folding,
+            compensate_empty_code_gutter,
             context_menu_config.go_to_definition,
             context_menu_config.show_code_actions
         ));
@@ -447,6 +452,7 @@ impl Papyru2Editor {
             context_menu_subscription: None,
             req_assoc18_editor_input_guard_active: true,
             spellchecker_store,
+            compensate_empty_code_gutter,
         }
     }
 
@@ -902,7 +908,10 @@ impl Render for Papyru2Editor {
                         .appearance(false)
                         .size_full()
                         .font_family(cx.theme().mono_font_family.clone())
-                        .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex)),
+                        .text_color(crate::app::req_colr_rgb_hex_to_hsla(foreground_rgb_hex))
+                        .when(self.compensate_empty_code_gutter, |this| {
+                            this.ml(px(-10.)).mr(px(-10.))
+                        }),
                 )
                 .text_size(experimental_text_size_px),
             )
