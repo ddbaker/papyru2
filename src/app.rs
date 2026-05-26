@@ -57,6 +57,7 @@ pub(crate) const REQ_EDITOR_DEFAULT_SOFT_WRAP: bool = true;
 pub(crate) const REQ_EDITOR_DEFAULT_LINE_NUMBER: bool = false;
 pub(crate) const REQ_EDITOR_DEFAULT_SHOW_WHITESPACES: bool = false;
 pub(crate) const REQ_EDITOR_DEFAULT_INDENT_GUIDES: bool = false;
+pub(crate) const REQ_EDITOR_DEFAULT_FOLDING: bool = false;
 const REQ_COLR_MAX_RGB_HEX: u32 = 0x00FF_FFFF;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +98,7 @@ pub(crate) struct EditorConfig {
     pub line_number: bool,
     pub show_whitespaces: bool,
     pub indent_guides: bool,
+    pub folding: bool,
     pub context_menu: EditorContextMenuConfig,
 }
 
@@ -109,6 +111,7 @@ impl Default for EditorConfig {
             line_number: REQ_EDITOR_DEFAULT_LINE_NUMBER,
             show_whitespaces: REQ_EDITOR_DEFAULT_SHOW_WHITESPACES,
             indent_guides: REQ_EDITOR_DEFAULT_INDENT_GUIDES,
+            folding: REQ_EDITOR_DEFAULT_FOLDING,
             context_menu: EditorContextMenuConfig::default(),
         }
     }
@@ -223,6 +226,8 @@ struct ReqEditorSection {
     #[serde(default)]
     indent_guides: Option<bool>,
     #[serde(default)]
+    folding: Option<bool>,
+    #[serde(default)]
     context_menu: ReqEditorContextMenuSection,
 }
 
@@ -273,7 +278,7 @@ fn req_colr_hex_text(rgb_hex: u32) -> String {
 
 fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) -> String {
     format!(
-        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\n\n[editor.context_menu]\nGo_to_Definition = {}\nShow_Code_Actions = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\nfolding = {}\n\n[editor.context_menu]\nGo_to_Definition = {}\nShow_Code_Actions = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
         colors.background_rgb_hex,
         colors.foreground_rgb_hex,
         editor.code_editor,
@@ -282,6 +287,7 @@ fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) ->
         editor.line_number,
         editor.show_whitespaces,
         editor.indent_guides,
+        editor.folding,
         editor.context_menu.go_to_definition,
         editor.context_menu.show_code_actions,
         REQ_FTRHSC_DEFAULT_MOVE_TO_RIGHT_AT_LAUNCH_PX
@@ -407,6 +413,7 @@ fn req_editor_config_from_parsed(
             .editor
             .indent_guides
             .unwrap_or(defaults.indent_guides),
+        folding: parsed.editor.folding.unwrap_or(defaults.folding),
         context_menu: EditorContextMenuConfig {
             go_to_definition: parsed
                 .editor
@@ -2774,6 +2781,7 @@ mod editor_config_tests {
             defaults.indent_guides,
             super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
         );
+        assert_eq!(defaults.folding, super::REQ_EDITOR_DEFAULT_FOLDING);
         assert_eq!(
             defaults.context_menu.go_to_definition,
             super::REQ_EDITOR_DEFAULT_CONTEXT_MENU_GO_TO_DEFINITION
@@ -2809,7 +2817,7 @@ mod editor_config_tests {
         std::fs::create_dir_all(config_path.parent().expect("config parent")).expect("mkdir conf");
         std::fs::write(
             config_path.as_path(),
-            "[editor]\ncode_editor = true\ncode_editor_lang = \"markdown\"\nsoft_wrap = false\nline_number = true\nshow_whitespaces = true\nindent_guides = true\n",
+            "[editor]\ncode_editor = true\ncode_editor_lang = \"markdown\"\nsoft_wrap = false\nline_number = true\nshow_whitespaces = true\nindent_guides = true\nfolding = true\n",
         )
         .expect("write editor config");
 
@@ -2820,6 +2828,7 @@ mod editor_config_tests {
         assert!(resolved.line_number);
         assert!(resolved.show_whitespaces);
         assert!(resolved.indent_guides);
+        assert!(resolved.folding);
         assert!(super::req_editor_effective_indent_guides(&resolved));
 
         req_editor_test_cleanup(root.as_path());
@@ -2853,6 +2862,7 @@ mod editor_config_tests {
         assert!(raw.contains("line_number = false"));
         assert!(raw.contains("show_whitespaces = false"));
         assert!(raw.contains("indent_guides = false"));
+        assert!(raw.contains("folding = false"));
         assert!(raw.contains("[editor.context_menu]"));
         assert!(raw.contains("Go_to_Definition = false"));
         assert!(raw.contains("Show_Code_Actions = false"));
@@ -2884,6 +2894,7 @@ mod editor_config_tests {
             resolved.indent_guides,
             super::REQ_EDITOR_DEFAULT_INDENT_GUIDES
         );
+        assert_eq!(resolved.folding, super::REQ_EDITOR_DEFAULT_FOLDING);
         assert_eq!(
             resolved.context_menu,
             super::EditorContextMenuConfig::default()
@@ -2943,6 +2954,19 @@ mod editor_config_tests {
         assert_eq!(resolved.code_editor_lang, "markdown");
         assert!(resolved.indent_guides);
         assert!(super::req_editor_effective_indent_guides(&resolved));
+    }
+
+    #[test]
+    fn editor23_test1_folding_defaults_off_and_parses_switch() {
+        let resolved = req_editor_config_from_raw("[editor]\ncode_editor = true\n");
+        assert!(!resolved.folding);
+
+        let resolved = req_editor_config_from_raw("[editor]\ncode_editor = true\nfolding = true\n");
+        assert!(resolved.folding);
+
+        let resolved =
+            req_editor_config_from_raw("[editor]\ncode_editor = true\nfolding = false\n");
+        assert!(!resolved.folding);
     }
 
     #[test]

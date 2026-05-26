@@ -290,6 +290,7 @@ impl Papyru2Editor {
             let input_state = if editor_config.code_editor {
                 InputState::new(window, cx)
                     .code_editor(editor_config.code_editor_lang.clone())
+                    .folding(editor_config.folding)
                     .line_number(editor_config.line_number)
                     .indent_guides(crate::app::req_editor_effective_indent_guides(
                         &editor_config,
@@ -413,7 +414,7 @@ impl Papyru2Editor {
             req_editor_editor_font_size_policy()
         ));
         crate::log::trace_debug(format!(
-            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
+            "req-editor startup editor_config code_editor={} code_editor_lang={} soft_wrap={} line_number={} show_whitespaces={} indent_guides={} effective_indent_guides={} folding={} searchable=true context_menu_go_to_definition={} context_menu_show_code_actions={}",
             editor_config.code_editor,
             editor_config.code_editor_lang,
             editor_config.soft_wrap,
@@ -421,6 +422,7 @@ impl Papyru2Editor {
             editor_config.show_whitespaces,
             editor_config.indent_guides,
             crate::app::req_editor_effective_indent_guides(&editor_config),
+            editor_config.folding,
             context_menu_config.go_to_definition,
             context_menu_config.show_code_actions
         ));

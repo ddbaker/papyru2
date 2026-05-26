@@ -8,6 +8,7 @@ code_editor_lang = "text"
 soft_wrap = true
 line_number = false
 indent_guides = false
+folding = false
 
 [editor.context_menu]
 go_to_definition = false
