@@ -88,7 +88,7 @@ pub struct Papyru2Editor {
     pub(crate) input_state: Entity<InputState>,
     last_value: String,
     last_cursor: gpui_component::input::Position,
-    pending_programmatic_change_events: usize,
+    pending_programmatic_change_value: Option<String>,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
     font_size_logged_once: bool,
@@ -110,6 +110,50 @@ pub(crate) fn req_editor_editor_font_size_policy() -> &'static str {
 
 pub(crate) fn read_editor_text_from_disk(path: &Path) -> std::io::Result<String> {
     std::fs::read_to_string(path)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgrammaticChangeMarkerUpdate {
+    Armed,
+    ClearedNoValueChange,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgrammaticChangeEventMatch {
+    NoMarker,
+    Matched,
+    Mismatched { expected_len: usize },
+}
+
+fn set_programmatic_change_marker(
+    pending_programmatic_change_value: &mut Option<String>,
+    current_value: &str,
+    next_value: &str,
+) -> ProgrammaticChangeMarkerUpdate {
+    if current_value == next_value {
+        *pending_programmatic_change_value = None;
+        ProgrammaticChangeMarkerUpdate::ClearedNoValueChange
+    } else {
+        *pending_programmatic_change_value = Some(next_value.to_string());
+        ProgrammaticChangeMarkerUpdate::Armed
+    }
+}
+
+fn take_programmatic_change_event_match(
+    pending_programmatic_change_value: &mut Option<String>,
+    value: &str,
+) -> ProgrammaticChangeEventMatch {
+    let Some(expected_value) = pending_programmatic_change_value.take() else {
+        return ProgrammaticChangeEventMatch::NoMarker;
+    };
+
+    if expected_value == value {
+        ProgrammaticChangeEventMatch::Matched
+    } else {
+        ProgrammaticChangeEventMatch::Mismatched {
+            expected_len: expected_value.len(),
+        }
+    }
 }
 
 fn should_emit_backspace_at_line_head_on_change(
@@ -334,15 +378,27 @@ impl Papyru2Editor {
                         )
                     });
 
-                    if this.pending_programmatic_change_events > 0 {
-                        this.pending_programmatic_change_events -= 1;
-                        crate::log::trace_debug(format!(
-                            "editor InputEvent::Change ignored as programmatic (remaining={})",
-                            this.pending_programmatic_change_events
-                        ));
-                        this.last_value = value;
-                        this.last_cursor = cursor;
-                        return;
+                    match take_programmatic_change_event_match(
+                        &mut this.pending_programmatic_change_value,
+                        &value,
+                    ) {
+                        ProgrammaticChangeEventMatch::Matched => {
+                            crate::log::trace_debug(format!(
+                                "editor InputEvent::Change ignored as programmatic expected_len={}",
+                                value.len()
+                            ));
+                            this.last_value = value;
+                            this.last_cursor = cursor;
+                            return;
+                        }
+                        ProgrammaticChangeEventMatch::Mismatched { expected_len } => {
+                            crate::log::trace_debug(format!(
+                                "editor InputEvent::Change programmatic marker mismatch expected_len={} actual_len={} treating_as_user_change=true",
+                                expected_len,
+                                value.len()
+                            ));
+                        }
+                        ProgrammaticChangeEventMatch::NoMarker => {}
                     }
 
                     let should_emit_backspace = should_emit_backspace_at_line_head_on_change(
@@ -441,7 +497,7 @@ impl Papyru2Editor {
             input_state,
             last_value,
             last_cursor,
-            pending_programmatic_change_events: 0,
+            pending_programmatic_change_value: None,
             current_editing_file_path: None,
             _subscriptions,
             font_size_logged_once: false,
@@ -453,6 +509,34 @@ impl Papyru2Editor {
             req_assoc18_editor_input_guard_active: true,
             spellchecker_store,
             compensate_empty_code_gutter,
+        }
+    }
+
+    fn mark_programmatic_value_change(
+        &mut self,
+        reason: &str,
+        next_value: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let current_value = self.input_state.read(cx).value().to_string();
+        match set_programmatic_change_marker(
+            &mut self.pending_programmatic_change_value,
+            &current_value,
+            next_value,
+        ) {
+            ProgrammaticChangeMarkerUpdate::Armed => {
+                crate::log::trace_debug(format!(
+                    "editor mark programmatic change ({reason}, current_len={}, expected_len={})",
+                    current_value.len(),
+                    next_value.len()
+                ));
+            }
+            ProgrammaticChangeMarkerUpdate::ClearedNoValueChange => {
+                crate::log::trace_debug(format!(
+                    "editor programmatic change marker cleared ({reason}, reason=no-value-change, value_len={})",
+                    next_value.len()
+                ));
+            }
         }
     }
 
@@ -594,11 +678,7 @@ impl Papyru2Editor {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
 
-        self.pending_programmatic_change_events += 1;
-        crate::log::trace_debug(format!(
-            "editor mark programmatic change (apply_text_and_cursor, pending={})",
-            self.pending_programmatic_change_events
-        ));
+        self.mark_programmatic_value_change("apply_text_and_cursor", &text_owned, cx);
 
         self.input_state.update(cx, move |state, cx| {
             state.set_value(text.clone(), window, cx);
@@ -660,10 +740,10 @@ impl Papyru2Editor {
         let total_lines = crate::quic_rpc_protocol::content_line_count(&content);
         let anchor_line = rpc_centering_anchor_line(cursor_line, total_lines);
 
-        self.pending_programmatic_change_events += 1;
+        self.mark_programmatic_value_change("open_content_from_rpc", &content, cx);
         crate::log::trace_debug(format!(
-            "editor mark programmatic change (open_content_from_rpc, pending={}, target_line={}, anchor_line={}, total_lines={})",
-            self.pending_programmatic_change_events, cursor_line, anchor_line, total_lines
+            "editor open_content_from_rpc target_line={} anchor_line={} total_lines={}",
+            cursor_line, anchor_line, total_lines
         ));
 
         self.input_state.update(cx, |state, cx| {
@@ -793,11 +873,7 @@ impl Papyru2Editor {
             .unwrap_or("txt")
             .to_string();
 
-        self.pending_programmatic_change_events += 1;
-        crate::log::trace_debug(format!(
-            "editor mark programmatic change (open_file, pending={})",
-            self.pending_programmatic_change_events
-        ));
+        self.mark_programmatic_value_change("open_file", &content, cx);
 
         self.input_state.update(cx, |state, cx| {
             state.set_highlighter(language, cx);
@@ -968,6 +1044,52 @@ mod tests {
     fn qsrv_editor_test3_rpc_anchor_clamps_to_last_line() {
         let anchor = super::rpc_centering_anchor_line(98, 100);
         assert_eq!(anchor, 99);
+    }
+
+    #[test]
+    fn editor_may28_test1_programmatic_noop_open_does_not_suppress_next_user_paste() {
+        let mut pending_marker = Some("stale-marker".to_string());
+
+        let update = super::set_programmatic_change_marker(&mut pending_marker, "", "");
+
+        assert_eq!(
+            update,
+            super::ProgrammaticChangeMarkerUpdate::ClearedNoValueChange
+        );
+        assert_eq!(pending_marker, None);
+
+        let pasted_text = "fileB\nfileB\n\nfileB\nfileB";
+        assert_eq!(
+            super::take_programmatic_change_event_match(&mut pending_marker, pasted_text),
+            super::ProgrammaticChangeEventMatch::NoMarker
+        );
+    }
+
+    #[test]
+    fn editor_may28_test2_programmatic_value_change_is_still_suppressed() {
+        let mut pending_marker = None;
+
+        let update = super::set_programmatic_change_marker(&mut pending_marker, "fileA", "fileB");
+
+        assert_eq!(update, super::ProgrammaticChangeMarkerUpdate::Armed);
+        assert_eq!(pending_marker.as_deref(), Some("fileB"));
+        assert_eq!(
+            super::take_programmatic_change_event_match(&mut pending_marker, "fileB"),
+            super::ProgrammaticChangeEventMatch::Matched
+        );
+        assert_eq!(pending_marker, None);
+    }
+
+    #[test]
+    fn editor_may28_test3_marker_mismatch_is_treated_as_user_change() {
+        let mut pending_marker = Some(String::new());
+        let pasted_text = "fileB\nfileB\n\nfileB\nfileB";
+
+        assert_eq!(
+            super::take_programmatic_change_event_match(&mut pending_marker, pasted_text),
+            super::ProgrammaticChangeEventMatch::Mismatched { expected_len: 0 }
+        );
+        assert_eq!(pending_marker, None);
     }
 
     #[test]
