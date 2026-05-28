@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::*;
 use gpui_component::{
     highlighter::{Diagnostic, DiagnosticSeverity},
-    input::{CodeActionProvider, InputState, RopeExt, ToggleCodeActions},
+    input::{CodeActionProvider, InputState, ToggleCodeActions},
 };
 
 pub(crate) type SpellCheckerController = crate::spellchecker::SpellCheckerController;
@@ -96,41 +96,64 @@ impl crate::editor::Papyru2Editor {
         self.input_state.update(cx, move |state, cx| {
             let text = state.text().clone();
             let text_value = state.value().to_string();
-            let mut editor_diagnostics = Vec::new();
-            let mut code_actions = Vec::new();
+            let mut prepared_diagnostics = Vec::new();
             let mut latest_version = 0;
 
             for diagnostic in diagnostics {
                 latest_version = latest_version.max(diagnostic.version);
-                let start =
-                    crate::spellchecker_ranges::input_position_from_lsp(diagnostic.range.start);
-                let end = crate::spellchecker_ranges::input_position_from_lsp(diagnostic.range.end);
-                let severity = spellchecker_diagnostic_severity(diagnostic.severity);
-                editor_diagnostics.push(
-                    Diagnostic::new(start..end, diagnostic.message.clone()).with_severity(severity),
-                );
-
-                let action_range = crate::spellchecker_ranges::lsp_range_to_byte_range(
+                let Some(input_range) = crate::spellchecker_ranges::lsp_range_to_input_range(
                     text_value.as_str(),
                     &diagnostic.range,
-                )
-                .unwrap_or_else(|| text.position_to_offset(&start)..text.position_to_offset(&end));
-                for suggestion in &diagnostic.suggestions {
-                    code_actions.push((
-                        action_range.clone(),
-                        crate::spellchecker::code_action_for_suggestion(suggestion),
+                ) else {
+                    crate::log::trace_debug(format!(
+                        "spellchecker diagnostic skipped invalid_range version={} message={}",
+                        diagnostic.version, diagnostic.message
                     ));
-                }
+                    continue;
+                };
+                let Some(action_range) = crate::spellchecker_ranges::lsp_range_to_byte_range(
+                    text_value.as_str(),
+                    &diagnostic.range,
+                ) else {
+                    crate::log::trace_debug(format!(
+                        "spellchecker code action skipped invalid_range version={} message={}",
+                        diagnostic.version, diagnostic.message
+                    ));
+                    continue;
+                };
+                let severity = spellchecker_diagnostic_severity(diagnostic.severity);
+                let editor_diagnostic = Diagnostic::new(input_range, diagnostic.message.clone())
+                    .with_severity(severity);
+                let code_actions = diagnostic
+                    .suggestions
+                    .iter()
+                    .map(|suggestion| {
+                        (
+                            action_range.clone(),
+                            crate::spellchecker::code_action_for_suggestion(suggestion),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                prepared_diagnostics.push((action_range, editor_diagnostic, code_actions));
+            }
+
+            prepared_diagnostics.sort_by_key(|(range, _, _)| (range.start, range.end));
+
+            let mut editor_diagnostics = Vec::with_capacity(prepared_diagnostics.len());
+            let mut code_actions = Vec::new();
+            for (_, editor_diagnostic, diagnostic_code_actions) in prepared_diagnostics {
+                editor_diagnostics.push(editor_diagnostic);
+                code_actions.extend(diagnostic_code_actions);
             }
 
             let diagnostic_count = editor_diagnostics.len();
             state.diagnostics_mut().map(|set| {
-                set.clear();
+                set.reset(&text);
                 set.extend(editor_diagnostics);
             });
             store.update_code_actions(code_actions);
             crate::log::trace_debug(format!(
-                "spellchecker editor diagnostics applied version={} count={}",
+                "spellchecker editor diagnostics applied version={} count={} sorted_by_range=true",
                 latest_version, diagnostic_count
             ));
             cx.notify();
@@ -140,7 +163,8 @@ impl crate::editor::Papyru2Editor {
     pub(crate) fn clear_spellchecker_diagnostics(&mut self, cx: &mut Context<Self>) {
         let store = self.spellchecker_store.clone();
         self.input_state.update(cx, move |state, cx| {
-            state.diagnostics_mut().map(|set| set.clear());
+            let text = state.text().clone();
+            state.diagnostics_mut().map(|set| set.reset(&text));
             store.update_code_actions(Vec::new());
             crate::log::trace_debug("spellchecker editor diagnostics cleared");
             cx.notify();

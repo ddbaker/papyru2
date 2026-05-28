@@ -2,8 +2,15 @@ use std::ops::Range;
 
 use gpui_component::input::Position;
 
-pub(crate) fn input_position_from_lsp(position: lsp_types::Position) -> Position {
-    Position::new(position.line, position.character)
+pub(crate) fn lsp_range_to_input_range(
+    text: &str,
+    range: &lsp_types::Range,
+) -> Option<Range<Position>> {
+    let byte_range = lsp_range_to_byte_range(text, range)?;
+    Some(
+        input_position_from_byte_index(text, byte_range.start)
+            ..input_position_from_byte_index(text, byte_range.end),
+    )
 }
 
 pub(crate) fn lsp_range_to_byte_range(
@@ -60,9 +67,47 @@ fn utf16_character_to_byte_index(line_text: &str, target_utf16: u32) -> Option<u
     (utf16_units == target_utf16).then_some(line_text.find('\n').unwrap_or(line_text.len()))
 }
 
+fn input_position_from_byte_index(text: &str, byte_index: usize) -> Position {
+    let mut line = 0u32;
+    let mut character = 0u32;
+    let mut chars = text.char_indices().peekable();
+
+    while let Some((current_byte_index, ch)) = chars.next() {
+        if current_byte_index >= byte_index {
+            break;
+        }
+
+        match ch {
+            '\r' => {
+                line += 1;
+                character = 0;
+                if chars.peek().is_some_and(|(next_byte_index, next)| {
+                    *next_byte_index < byte_index && *next == '\n'
+                }) {
+                    chars.next();
+                }
+            }
+            '\n' => {
+                line += 1;
+                character = 0;
+            }
+            _ => {
+                character += 1;
+            }
+        }
+    }
+
+    Position { line, character }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{lsp_position_to_byte_index, lsp_range_to_byte_range};
+    use gpui_component::input::Position;
+
+    use super::{
+        input_position_from_byte_index, lsp_position_to_byte_index, lsp_range_to_byte_range,
+        lsp_range_to_input_range,
+    };
 
     #[test]
     fn spchk_test4_ascii_lsp_range_converts_to_byte_range() {
@@ -102,5 +147,27 @@ mod tests {
         );
 
         assert_eq!(lsp_range_to_byte_range(text, &range), Some(4..10));
+    }
+
+    #[test]
+    fn spchk_may28_test1_lsp_utf16_range_converts_to_input_character_range() {
+        let text = "a😊b";
+        let range = lsp_types::Range::new(
+            lsp_types::Position::new(0, 3),
+            lsp_types::Position::new(0, 4),
+        );
+
+        assert_eq!(
+            lsp_range_to_input_range(text, &range),
+            Some(Position::new(0, 2)..Position::new(0, 3))
+        );
+    }
+
+    #[test]
+    fn spchk_may28_test2_byte_index_to_input_position_treats_crlf_as_one_line_break() {
+        let text = "ab\r\nc";
+
+        assert_eq!(input_position_from_byte_index(text, 4), Position::new(1, 0));
+        assert_eq!(input_position_from_byte_index(text, 5), Position::new(1, 1));
     }
 }
