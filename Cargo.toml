@@ -1,6 +1,6 @@
 [package]
 name = "papyru2"
-version = "0.40.2"
+version = "0.50.0"
 publish = false
 edition = "2024"
 build = "build.rs"
