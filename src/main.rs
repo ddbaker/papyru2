@@ -7,6 +7,7 @@ mod editor;
 mod file_tree;
 mod file_tree_watcher;
 mod file_update_handler;
+mod font_config;
 mod log;
 mod quic_rpc;
 mod single_instance;

@@ -281,10 +281,12 @@ fn req_colr_hex_text(rgb_hex: u32) -> String {
 }
 
 fn req_colr_default_config_toml(colors: UiColorConfig, editor: &EditorConfig) -> String {
+    let font = crate::font_config::req_font_generated_default_config();
     format!(
-        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\nfolding = {}\n\n[editor.context_menu]\nGo_to_Definition = {}\nShow_Code_Actions = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
+        "[color]\nbackground = 0x{:06x}\nforeground = 0x{:06x}\n\n[font]\nfamily = \"{}\"\n\n[editor]\ncode_editor = {}\ncode_editor_lang = \"{}\"\nsoft_wrap = {}\nline_number = {}\nshow_whitespaces = {}\nindent_guides = {}\nfolding = {}\n\n[editor.context_menu]\nGo_to_Definition = {}\nShow_Code_Actions = {}\n\n[file_tree.scrollbar.hz]\nmove_to_right_at_launch = {}\n",
         colors.background_rgb_hex,
         colors.foreground_rgb_hex,
+        font.family.as_deref().unwrap_or(""),
         editor.code_editor,
         editor.code_editor_lang,
         editor.soft_wrap,
@@ -2661,6 +2663,10 @@ mod tests {
         let raw = std::fs::read_to_string(config_path.as_path()).expect("read color config");
         assert!(raw.contains("background = 0xfdfde6"));
         assert!(raw.contains("foreground = 0x000000"));
+        assert!(raw.contains("[font]"));
+        assert!(raw.contains("family = \".SystemUIFont\""));
+        assert!(!raw.contains("size ="));
+        assert!(!raw.contains("style ="));
 
         req_colr_test_cleanup(root.as_path());
     }
@@ -2872,6 +2878,10 @@ mod editor_config_tests {
         assert!(raw.contains("[editor.context_menu]"));
         assert!(raw.contains("Go_to_Definition = false"));
         assert!(raw.contains("Show_Code_Actions = false"));
+        assert!(raw.contains("[font]"));
+        assert!(raw.contains("family = \".SystemUIFont\""));
+        assert!(!raw.contains("size ="));
+        assert!(!raw.contains("style ="));
 
         req_editor_test_cleanup(root.as_path());
     }
@@ -3320,6 +3330,20 @@ pub fn run() {
         file_tree_config.horizontal_scroll_launch_offset_px
     ));
 
+    let font_config_started = Instant::now();
+    let font_config = crate::font_config::load_font_config(color_config_path.as_path());
+    crate::log::boot_profile_mark_timing(
+        "startup.load_font_config",
+        font_config_started.elapsed(),
+        String::new(),
+    );
+    trace_debug(format!(
+        "req-font startup config path={} family_override={} family={}",
+        color_config_path.display(),
+        font_config.family.is_some(),
+        font_config.family.as_deref().unwrap_or("")
+    ));
+
     let window_position_started = Instant::now();
     let window_position_path =
         app_paths.config_file_path(crate::window_position::WINDOW_POSITION_FILE_NAME);
@@ -3379,6 +3403,14 @@ pub fn run() {
             "startup.apply_theme_overrides",
             apply_theme_started.elapsed(),
             String::new(),
+        );
+
+        let apply_font_theme_started = Instant::now();
+        let font_theme_decision = crate::font_config::apply_font_theme_overrides(&font_config, cx);
+        crate::log::boot_profile_mark_timing(
+            "startup.apply_font_theme_overrides",
+            apply_font_theme_started.elapsed(),
+            format!("decision={font_theme_decision:?}"),
         );
 
         let window_options_started = Instant::now();

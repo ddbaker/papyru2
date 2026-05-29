@@ -10,6 +10,9 @@ line_number = false
 indent_guides = false
 folding = false
 
+[font]
+#family = "Noto Sans JP"
+
 [editor.context_menu]
 go_to_definition = false
 show_code_actions = false
