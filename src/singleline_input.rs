@@ -19,6 +19,14 @@ pub struct SingleLineSnapshot {
     pub cursor_char: usize,
 }
 
+fn should_arm_programmatic_change_suppression(current_value: &str, next_value: &str) -> bool {
+    current_value != next_value
+}
+
+fn should_suppress_pending_programmatic_change(last_value: &str, observed_value: &str) -> bool {
+    observed_value == last_value
+}
+
 pub struct SingleLineInput {
     sl_input_state: Entity<InputState>,
     last_value: String,
@@ -56,10 +64,19 @@ impl SingleLineInput {
                     let value = state.value().to_string();
                     let cursor = state.cursor_position();
                     if this.pending_programmatic_change_events > 0 {
-                        this.pending_programmatic_change_events -= 1;
-                        this.last_value = value;
-                        this.last_cursor = cursor;
-                        return;
+                        if should_suppress_pending_programmatic_change(&this.last_value, &value) {
+                            this.pending_programmatic_change_events -= 1;
+                            this.last_cursor = cursor;
+                            return;
+                        }
+
+                        crate::log::trace_debug(format!(
+                            "req-newf-jun4 stale singleline suppression cleared pending={} last='{}' observed='{}'",
+                            this.pending_programmatic_change_events,
+                            crate::app::compact_text(&this.last_value),
+                            crate::app::compact_text(&value)
+                        ));
+                        this.pending_programmatic_change_events = 0;
                     }
 
                     this.last_value = value.clone();
@@ -142,26 +159,31 @@ impl SingleLineInput {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
         let cursor_char_u32 = cursor_char.min(u32::MAX as usize) as u32;
-
-        self.pending_programmatic_change_events += 1;
-
-        self.sl_input_state.update(cx, move |state, cx| {
-            state.set_value(text.clone(), window, cx);
-            state.set_cursor_position(
-                gpui_component::input::Position {
-                    line: 0,
-                    character: cursor_char_u32,
-                },
-                window,
-                cx,
-            );
-        });
-
-        self.last_value = text_owned;
-        self.last_cursor = gpui_component::input::Position {
+        let next_cursor = gpui_component::input::Position {
             line: 0,
             character: cursor_char_u32,
         };
+        let should_arm_suppression = {
+            let current_value = self.sl_input_state.read(cx).value().to_string();
+            should_arm_programmatic_change_suppression(&current_value, &text_owned)
+        };
+
+        if should_arm_suppression {
+            self.pending_programmatic_change_events += 1;
+        } else {
+            crate::log::trace_debug(format!(
+                "req-newf-jun4 singleline programmatic same-value sync suppression_not_armed value='{}'",
+                crate::app::compact_text(&text_owned)
+            ));
+        }
+
+        self.last_value = text_owned;
+        self.last_cursor = next_cursor;
+
+        self.sl_input_state.update(cx, move |state, cx| {
+            state.set_value(text.clone(), window, cx);
+            state.set_cursor_position(next_cursor, window, cx);
+        });
     }
 
     pub fn apply_text_value_only(
@@ -172,14 +194,25 @@ impl SingleLineInput {
     ) {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
+        let should_arm_suppression = {
+            let current_value = self.sl_input_state.read(cx).value().to_string();
+            should_arm_programmatic_change_suppression(&current_value, &text_owned)
+        };
 
-        self.pending_programmatic_change_events += 1;
+        if should_arm_suppression {
+            self.pending_programmatic_change_events += 1;
+        } else {
+            crate::log::trace_debug(format!(
+                "req-newf-jun4 singleline programmatic same-value sync suppression_not_armed value='{}'",
+                crate::app::compact_text(&text_owned)
+            ));
+        }
+
+        self.last_value = text_owned;
 
         self.sl_input_state.update(cx, move |state, cx| {
             state.set_value(text.clone(), window, cx);
         });
-
-        self.last_value = text_owned;
     }
 
     pub fn apply_cursor(
@@ -318,6 +351,15 @@ impl crate::app::Papyru2App {
 
                 let now_local = Local::now();
                 let previous_path = self.file_workflow.current_edit_path();
+                if value.is_empty() {
+                    crate::log::trace_debug(format!(
+                        "req-newf-jun4 empty singleline rename dispatch previous_path={}",
+                        previous_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<none>".to_string())
+                    ));
+                }
                 match self.file_workflow.try_rename_in_edit(
                     value,
                     self.app_paths.user_document_dir.as_path(),
@@ -329,6 +371,12 @@ impl crate::app::Papyru2App {
                             path.display(),
                             crate::app::compact_text(value)
                         ));
+                        if value.is_empty() {
+                            crate::log::trace_debug(format!(
+                                "req-newf-jun4 empty singleline rename success notitle_path={} singleline_kept_blank=true",
+                                path.display()
+                            ));
+                        }
                         self.sync_current_editing_path_to_components(Some(path.clone()), cx);
                         if crate::app::req_ftr14_rename_flow_uses_watcher_refresh_only() {
                             crate::log::trace_debug(format!(
@@ -366,7 +414,10 @@ impl crate::app::Papyru2App {
 
 #[cfg(test)]
 mod tests {
-    use super::singleline_stem_from_file_tree_selection;
+    use super::{
+        should_arm_programmatic_change_suppression, should_suppress_pending_programmatic_change,
+        singleline_stem_from_file_tree_selection,
+    };
     use std::path::Path;
 
     #[test]
@@ -380,5 +431,17 @@ mod tests {
         let actual =
             singleline_stem_from_file_tree_selection(Path::new("C:/tmp/こんにちは 世界.txt"));
         assert_eq!(actual.as_deref(), Some("こんにちは 世界"));
+    }
+
+    #[test]
+    fn newf_jun4_same_value_programmatic_sync_does_not_arm_suppression() {
+        assert!(!should_arm_programmatic_change_suppression("fileA", "fileA"));
+        assert!(should_arm_programmatic_change_suppression("fileA", "fileB"));
+    }
+
+    #[test]
+    fn newf_jun4_stale_suppression_does_not_hide_delete_to_empty() {
+        assert!(should_suppress_pending_programmatic_change("fileA", "fileA"));
+        assert!(!should_suppress_pending_programmatic_change("fileA", ""));
     }
 }
