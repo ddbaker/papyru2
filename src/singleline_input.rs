@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
-use gpui::*;
-use gpui_component::input::InputEvent;
-use gpui_component::input::{Input, InputState};
+use gpui_kit::component::input::InputEvent;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::*;
 
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
 #[derive(Clone, Debug)]
 pub enum SingleLineEvent {
     PressEnter,
@@ -30,7 +30,7 @@ fn should_suppress_pending_programmatic_change(last_value: &str, observed_value:
 pub struct SingleLineInput {
     sl_input_state: Entity<InputState>,
     last_value: String,
-    last_cursor: gpui_component::input::Position,
+    last_cursor: gpui_kit::component::input::Position,
     pending_programmatic_change_events: usize,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
@@ -159,7 +159,7 @@ impl SingleLineInput {
         let text: SharedString = text.into();
         let text_owned = text.to_string();
         let cursor_char_u32 = cursor_char.min(u32::MAX as usize) as u32;
-        let next_cursor = gpui_component::input::Position {
+        let next_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: cursor_char_u32,
         };
@@ -223,7 +223,7 @@ impl SingleLineInput {
     ) {
         self.sl_input_state.update(cx, move |state, cx| {
             state.set_cursor_position(
-                gpui_component::input::Position {
+                gpui_kit::component::input::Position {
                     line: 0,
                     character: cursor_char.min(u32::MAX as usize) as u32,
                 },
@@ -232,7 +232,7 @@ impl SingleLineInput {
             );
         });
 
-        self.last_cursor = gpui_component::input::Position {
+        self.last_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: cursor_char.min(u32::MAX as usize) as u32,
         };

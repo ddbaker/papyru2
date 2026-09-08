@@ -9,7 +9,7 @@ use std::{
 
 use chrono::{DateTime, Local};
 use filetime::{FileTime, set_file_mtime};
-use gpui::{Context, Window};
+use gpui_kit::{Context, Window};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_FILE_STEM_CHARS: usize = 64;

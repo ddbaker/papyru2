@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use gpui_component::input::Position;
+use gpui_kit::component::input::Position;
 
 pub(crate) fn lsp_range_to_input_range(
     text: &str,
@@ -102,7 +102,7 @@ fn input_position_from_byte_index(text: &str, byte_index: usize) -> Position {
 
 #[cfg(test)]
 mod tests {
-    use gpui_component::input::Position;
+    use gpui_kit::component::input::Position;
 
     use super::{
         input_position_from_byte_index, lsp_position_to_byte_index, lsp_range_to_byte_range,

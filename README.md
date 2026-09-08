@@ -1,5 +1,5 @@
 # papyru2 <img alt="appicon" src="assets/icons/source/papyru2_app_icon_base.png" width=32>
-A simple desktop note taking application built with Rust, `gpui`, and `gpui-component`.
+A simple desktop note taking application built with Rust and `gpui-kit` 0.6, which bundles GPUI, GPUI Component, and icon assets.
 
 <div align="center">
 <img alt="main window" src="./docs/images/papyru2_main_window_with_shadow.png" width=480>

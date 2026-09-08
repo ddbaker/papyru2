@@ -1,10 +1,10 @@
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     IconNamed, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{ResizableState, h_resizable, resizable_panel},
 };
+use gpui_kit::*;
 
 use crate::singleline_input::SingleLineInput;
 
@@ -346,12 +346,14 @@ mod tests {
     #[test]
     fn ftr_test87_req_ftr23_follow_icons_are_custom_svg_assets() {
         assert_eq!(
-            <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::FolderRefresh)
-                .as_ref(),
+            <TopBarsIconName as gpui_kit::component::IconNamed>::path(
+                TopBarsIconName::FolderRefresh
+            )
+            .as_ref(),
             FOLDER_REFRESH_ICON_PATH
         );
         assert_eq!(
-            <TopBarsIconName as gpui_component::IconNamed>::path(TopBarsIconName::PlusThin)
+            <TopBarsIconName as gpui_kit::component::IconNamed>::path(TopBarsIconName::PlusThin)
                 .as_ref(),
             PLUS_THIN_ICON_PATH
         );

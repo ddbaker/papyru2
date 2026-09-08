@@ -1,5 +1,5 @@
-use gpui::App;
-use gpui_component::Theme;
+use gpui_kit::App;
+use gpui_kit::component::Theme;
 
 pub(crate) const REQ_FONT_DEFAULT_FAMILY: &str = ".SystemUIFont";
 

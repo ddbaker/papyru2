@@ -1,10 +1,10 @@
 use std::rc::Rc;
 
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     highlighter::{Diagnostic, DiagnosticSeverity},
-    input::{CodeActionProvider, InputState, ToggleCodeActions},
+    input::{CodeActionProvider, EditorState, ToggleCodeActions},
 };
+use gpui_kit::*;
 
 pub(crate) type SpellCheckerController = crate::spellchecker::SpellCheckerController;
 pub(crate) type EditorStore = crate::spellchecker::SpellCheckerEditorStore;
@@ -39,10 +39,10 @@ pub(crate) fn editor_code_action_provider(store: &EditorStore) -> Rc<dyn CodeAct
 }
 
 pub(crate) fn attach_editor_code_action_provider(
-    mut input_state: InputState,
+    mut input_state: EditorState,
     provider: Rc<dyn CodeActionProvider>,
-) -> InputState {
-    input_state.lsp.code_action_providers.push(provider);
+) -> EditorState {
+    input_state.lsp_mut().code_action_providers.push(provider);
     input_state
 }
 

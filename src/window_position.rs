@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use gpui::{App, Bounds, Pixels, Window, WindowBounds, bounds, point, px, size};
+use gpui_kit::{App, Bounds, Pixels, Window, WindowBounds, bounds, point, px, size};
 use serde::{Deserialize, Serialize};
 
 pub const WINDOW_POSITION_FILE_NAME: &str = "window_position.toml";

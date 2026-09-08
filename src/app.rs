@@ -6,12 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     Root,
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
+use gpui_kit::*;
 
 #[cfg(target_os = "windows")]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -612,7 +612,7 @@ pub(crate) fn apply_req_colr_theme_overrides(ui_color_config: UiColorConfig, cx:
     let background = req_colr_rgb_hex_to_hsla(ui_color_config.background_rgb_hex);
     let foreground = req_colr_rgb_hex_to_hsla(ui_color_config.foreground_rgb_hex);
 
-    let theme = gpui_component::Theme::global_mut(cx);
+    let theme = gpui_kit::component::Theme::global_mut(cx);
     theme.background = background;
     theme.foreground = foreground;
 
@@ -1064,11 +1064,11 @@ impl AssetSource for AppAssets {
         if let Some(svg_bytes) = crate::top_bars::load_top_bars_icon_asset(path) {
             return Ok(Some(Cow::Borrowed(svg_bytes)));
         }
-        gpui_component_assets::Assets.load(path)
+        gpui_kit::assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut assets = gpui_component_assets::Assets.list(path)?;
+        let mut assets = gpui_kit::assets::Assets.list(path)?;
         crate::top_bars::list_top_bars_icon_assets(path, &mut assets);
         Ok(assets)
     }
@@ -1802,13 +1802,13 @@ mod tests {
     use crate::file_update_handler::EditorAutoSaveCoordinator;
     use crate::path_resolver::{AppPaths, RunEnvPattern};
     use crate::top_bars::SHARED_INTER_PANEL_SPACING_PX;
-    use gpui::{WindowBounds, bounds, point, px, size};
+    use gpui_kit::{WindowBounds, bounds, point, px, size};
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
     };
 
-    use gpui::DisplayId;
+    use gpui_kit::DisplayId;
 
     fn display_id_for_test(id: u32) -> DisplayId {
         DisplayId::new(u64::from(id))
@@ -3379,7 +3379,7 @@ pub fn run() {
     ));
 
     let application_new_started = Instant::now();
-    let app = gpui_platform::application().with_assets(AppAssets);
+    let app = gpui_kit::application().with_assets(AppAssets);
     crate::log::boot_profile_mark_timing(
         "startup.application_new",
         application_new_started.elapsed(),
@@ -3390,7 +3390,7 @@ pub fn run() {
         crate::log::boot_profile_mark("startup.app_run_enter");
 
         let component_init_started = Instant::now();
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
         crate::log::boot_profile_mark_timing(
             "startup.gpui_component_init",
             component_init_started.elapsed(),

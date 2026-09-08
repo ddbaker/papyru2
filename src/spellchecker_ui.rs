@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use gpui::{prelude::FluentBuilder as _, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     h_flex,
 };
+use gpui_kit::{prelude::FluentBuilder as _, *};
 
 impl crate::app::Papyru2App {
     pub(crate) fn render_spellchecker_bar(

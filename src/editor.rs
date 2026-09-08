@@ -3,18 +3,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme,
     input::{
-        Backspace, Copy, Cut, GoToDefinition, Input, InputState, Paste, Position, SelectAll,
+        Backspace, Copy, Cut, Editor, EditorState, GoToDefinition, Paste, Position, SelectAll,
         ToggleCodeActions,
     },
     menu::PopupMenu,
 };
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
-use gpui_component::input::InputEvent;
+use gpui_kit::component::input::InputEvent;
 #[derive(Clone, Debug)]
 pub enum EditorEvent {
     BackspaceAtLineHead,
@@ -85,9 +85,9 @@ fn build_editor_context_menu(
 }
 
 pub struct Papyru2Editor {
-    pub(crate) input_state: Entity<InputState>,
+    pub(crate) input_state: Entity<EditorState>,
     last_value: String,
-    last_cursor: gpui_component::input::Position,
+    last_cursor: gpui_kit::component::input::Position,
     pending_programmatic_change_value: Option<String>,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
@@ -334,15 +334,19 @@ impl Papyru2Editor {
             crate::spellcheker::editor_code_action_provider(&spellchecker_store);
         let input_state = cx.new(|cx| {
             let input_state = if editor_config.code_editor {
-                InputState::new(window, cx)
-                    .code_editor(editor_config.code_editor_lang.clone())
+                EditorState::new(window, cx)
+                    .language(editor_config.code_editor_lang.clone())
                     .folding(editor_config.folding)
                     .line_number(editor_config.line_number)
                     .indent_guides(crate::app::req_editor_effective_indent_guides(
                         &editor_config,
                     ))
             } else {
-                InputState::new(window, cx).multi_line(true)
+                EditorState::new(window, cx)
+                    .language("plain")
+                    .line_number(false)
+                    .folding(false)
+                    .indent_guides(false)
             };
 
             let input_state = input_state
@@ -619,7 +623,7 @@ impl Papyru2Editor {
         ));
 
         self.input_state.update(cx, |state, cx| {
-            gpui::EntityInputHandler::replace_text_in_range(
+            gpui_kit::EntityInputHandler::replace_text_in_range(
                 state,
                 Some(guard.utf16_range.clone()),
                 "",
@@ -634,7 +638,7 @@ impl Papyru2Editor {
 
     fn on_move_up_action(
         &mut self,
-        _: &gpui_component::input::MoveUp,
+        _: &gpui_kit::component::input::MoveUp,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -683,7 +687,7 @@ impl Papyru2Editor {
         self.input_state.update(cx, move |state, cx| {
             state.set_value(text.clone(), window, cx);
             state.set_cursor_position(
-                gpui_component::input::Position {
+                gpui_kit::component::input::Position {
                     line: cursor_line,
                     character: cursor_char,
                 },
@@ -693,7 +697,7 @@ impl Papyru2Editor {
         });
 
         self.last_value = text_owned;
-        self.last_cursor = gpui_component::input::Position {
+        self.last_cursor = gpui_kit::component::input::Position {
             line: cursor_line,
             character: cursor_char,
         };
@@ -708,7 +712,7 @@ impl Papyru2Editor {
     ) {
         self.input_state.update(cx, move |state, cx| {
             state.set_cursor_position(
-                gpui_component::input::Position {
+                gpui_kit::component::input::Position {
                     line: cursor_line,
                     character: cursor_char,
                 },
@@ -717,7 +721,7 @@ impl Papyru2Editor {
             );
         });
 
-        self.last_cursor = gpui_component::input::Position {
+        self.last_cursor = gpui_kit::component::input::Position {
             line: cursor_line,
             character: cursor_char,
         };
@@ -750,7 +754,7 @@ impl Papyru2Editor {
             state.set_highlighter(language, cx);
             state.set_value(content.clone(), window, cx);
             state.set_cursor_position(
-                gpui_component::input::Position {
+                gpui_kit::component::input::Position {
                     line: cursor_line,
                     character: cursor_char,
                 },
@@ -779,7 +783,7 @@ impl Papyru2Editor {
         }
 
         self.last_value = content;
-        self.last_cursor = gpui_component::input::Position {
+        self.last_cursor = gpui_kit::component::input::Position {
             line: cursor_line,
             character: cursor_char,
         };
@@ -879,7 +883,7 @@ impl Papyru2Editor {
             state.set_highlighter(language, cx);
             state.set_value(content.clone(), window, cx);
             state.set_cursor_position(
-                gpui_component::input::Position {
+                gpui_kit::component::input::Position {
                     line: 0,
                     character: 0,
                 },
@@ -889,7 +893,7 @@ impl Papyru2Editor {
         });
 
         self.last_value = content;
-        self.last_cursor = gpui_component::input::Position {
+        self.last_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
@@ -979,7 +983,7 @@ impl Render for Papyru2Editor {
             )
             .child(
                 crate::app::apply_req_editor_shared_text_size(
-                    Input::new(&self.input_state)
+                    Editor::new(&self.input_state)
                         .disabled(self.req_assoc18_editor_input_guard_active)
                         .appearance(false)
                         .size_full()
@@ -1121,7 +1125,7 @@ mod tests {
 
     #[test]
     fn editor16_test1_narrow_box_guard_matches_box_after_cursor() {
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
@@ -1137,7 +1141,7 @@ mod tests {
 
     #[test]
     fn editor16_test2_narrow_box_guard_rejects_normal_ascii() {
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
@@ -1149,11 +1153,11 @@ mod tests {
 
     #[test]
     fn editor16_test3_narrow_box_guard_rejects_emoji_and_cjk_text() {
-        let emoji_cursor = gpui_component::input::Position {
+        let emoji_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 2,
         };
-        let cjk_cursor = gpui_component::input::Position {
+        let cjk_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
@@ -1170,7 +1174,7 @@ mod tests {
 
     #[test]
     fn editor16_test4_narrow_box_guard_rejects_selection_modified_key_and_delete() {
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
@@ -1188,11 +1192,11 @@ mod tests {
 
     #[test]
     fn editor16_test5_narrow_box_guard_rejects_line_head_association_and_trailing_space() {
-        let origin_cursor = gpui_component::input::Position {
+        let origin_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
-        let trailing_space_cursor = gpui_component::input::Position {
+        let trailing_space_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 4,
         };
@@ -1217,7 +1221,7 @@ mod tests {
     fn editor16_test6_narrow_box_guard_matches_crlf_and_cr_second_line() {
         for value in ["head\r\n- □\r\ntail", "head\r- □\rtail"] {
             for character in [3, 4] {
-                let cursor = gpui_component::input::Position { line: 1, character };
+                let cursor = gpui_kit::component::input::Position { line: 1, character };
                 let box_start = value.find('□').expect("box char");
                 let guard =
                     super::narrow_box_backspace_guard("backspace", false, value, &cursor, false)
@@ -1237,11 +1241,11 @@ mod tests {
 
     #[test]
     fn editor_delete_test1_changed_multibyte_backspace_stays_native_only() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 2,
         };
@@ -1256,11 +1260,11 @@ mod tests {
 
     #[test]
     fn editor_delete_test2_changed_emoji_backspace_stays_native_only() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 2,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 1,
         };
@@ -1275,11 +1279,11 @@ mod tests {
 
     #[test]
     fn editor_delete_test3_changed_multiline_selection_stays_native_only() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 2,
             character: 0,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 1,
             character: 0,
         };
@@ -1294,11 +1298,11 @@ mod tests {
 
     #[test]
     fn editor_delete_test4_line_head_noop_remains_association_trigger() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
@@ -1313,11 +1317,11 @@ mod tests {
 
     #[test]
     fn editor_undo_test1_native_first_has_no_custom_delete_history_unit_path() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 4,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 3,
         };
@@ -1397,11 +1401,11 @@ mod tests {
 
     #[test]
     fn assoc_test21_req_assoc14_blank_origin_noop_change_emits_backspace_signal() {
-        let previous_cursor = gpui_component::input::Position {
+        let previous_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
-        let cursor = gpui_component::input::Position {
+        let cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
@@ -1416,11 +1420,11 @@ mod tests {
 
     #[test]
     fn assoc_test22_req_assoc14_non_origin_or_non_noop_does_not_emit_backspace_signal() {
-        let origin_cursor = gpui_component::input::Position {
+        let origin_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
-        let non_origin_cursor = gpui_component::input::Position {
+        let non_origin_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 1,
         };
@@ -1447,7 +1451,7 @@ mod tests {
 
     #[test]
     fn assoc_test23_req_assoc17_blank_multiline_noop_change_emits_backspace_signal() {
-        let origin_cursor = gpui_component::input::Position {
+        let origin_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };
@@ -1462,7 +1466,7 @@ mod tests {
 
     #[test]
     fn assoc_test24_req_assoc17_changed_multiline_does_not_emit_duplicate_backspace_signal() {
-        let origin_cursor = gpui_component::input::Position {
+        let origin_cursor = gpui_kit::component::input::Position {
             line: 0,
             character: 0,
         };

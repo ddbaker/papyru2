@@ -1,6 +1,6 @@
 use std::{path::PathBuf, sync::Arc, thread};
 
-use gpui::Window;
+use gpui_kit::Window;
 use irpc::{channel::oneshot, rpc::Handler};
 
 #[derive(Debug, Clone)]
@@ -171,7 +171,7 @@ impl crate::app::Papyru2App {
         &mut self,
         command: QuicRpcUiCommand,
         window: &mut Window,
-        app: &mut gpui::App,
+        app: &mut gpui_kit::App,
     ) {
         let target_path = command.resolved_path.clone();
         let cursor_line = command.linenum_1_based.saturating_sub(1);

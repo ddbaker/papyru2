@@ -7,8 +7,8 @@ use std::{
     time::Duration,
 };
 
-use gpui::*;
-use gpui_component::input::{CodeActionProvider, InputState};
+use gpui_kit::component::input::{CodeActionProvider, EditorState};
+use gpui_kit::*;
 use lsp_types::{CodeAction, CodeActionKind, TextEdit, WorkspaceEdit};
 
 use crate::spellchecker_lsp::{self, SpellCheckerWorkerHandle, start_harper_worker};
@@ -357,7 +357,7 @@ impl CodeActionProvider for SpellCheckerEditorStore {
 
     fn code_actions(
         &self,
-        _state: Entity<InputState>,
+        _state: Entity<EditorState>,
         range: Range<usize>,
         _window: &mut Window,
         _cx: &mut App,
@@ -367,7 +367,7 @@ impl CodeActionProvider for SpellCheckerEditorStore {
 
     fn perform_code_action(
         &self,
-        state: Entity<InputState>,
+        state: Entity<EditorState>,
         action: CodeAction,
         _push_to_history: bool,
         window: &mut Window,

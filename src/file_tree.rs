@@ -6,16 +6,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gpui::prelude::FluentBuilder as _;
-use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     IconName, h_flex,
     list::ListItem,
-    scroll::{Scrollbar, ScrollbarShow},
+    scroll::{Scrollbar, ScrollbarMode},
     tree::{TreeItem, TreeState, tree},
 };
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
 
 pub enum FileTreeEvent {
     SelectionChanged(PathBuf),
@@ -1234,9 +1234,9 @@ impl FileTreeView {
         self.tree_state.update(cx, |state, cx| {
             state.set_selected_index(Some(next_index), cx);
             let strategy = if key == "up" {
-                gpui::ScrollStrategy::Top
+                gpui_kit::ScrollStrategy::Top
             } else {
-                gpui::ScrollStrategy::Bottom
+                gpui_kit::ScrollStrategy::Bottom
             };
             state.scroll_to_item(next_index, strategy);
         });
@@ -1649,7 +1649,7 @@ impl Render for FileTreeView {
                         .h(px(12.))
                         .child(
                             Scrollbar::horizontal(&self.horizontal_scroll_handle)
-                                .scrollbar_show(ScrollbarShow::Always)
+                                .mode(ScrollbarMode::Always)
                                 .scroll_size(size(px(req_ftr25_content_width_px), px(1.))),
                         ),
                 )
@@ -3481,7 +3481,7 @@ impl crate::app::Papyru2App {
         self.file_tree.update(cx, |file_tree, cx| {
             file_tree.tree_state.update(cx, |state, cx| {
                 state.set_selected_index(Some(last_index), cx);
-                state.scroll_to_item(last_index, gpui::ScrollStrategy::Bottom);
+                state.scroll_to_item(last_index, gpui_kit::ScrollStrategy::Bottom);
             });
         });
         crate::log::trace_debug(format!(
@@ -3504,7 +3504,7 @@ impl crate::app::Papyru2App {
                 this.file_tree.update(cx, |file_tree, cx| {
                     file_tree.tree_state.update(cx, |state, cx| {
                         state.set_selected_index(Some(target_index), cx);
-                        state.scroll_to_item(target_index, gpui::ScrollStrategy::Top);
+                        state.scroll_to_item(target_index, gpui_kit::ScrollStrategy::Top);
                     });
                 });
             }
@@ -3524,7 +3524,7 @@ impl crate::app::Papyru2App {
                     this.file_tree.update(cx, |file_tree, cx| {
                         file_tree.tree_state.update(cx, |state, cx| {
                             state.set_selected_index(Some(target_index), cx);
-                            state.scroll_to_item(target_index, gpui::ScrollStrategy::Top);
+                            state.scroll_to_item(target_index, gpui_kit::ScrollStrategy::Top);
                         });
                     });
                 }
@@ -3738,7 +3738,7 @@ mod tests {
         should_restore_selection_after_watcher_refresh, toggle_item_selection,
         tree_items_from_models, use_checkbox_selection_markers,
     };
-    use gpui::hsla;
+    use gpui_kit::hsla;
     use std::{
         collections::HashSet,
         fs,

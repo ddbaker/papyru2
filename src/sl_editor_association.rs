@@ -1,4 +1,4 @@
-use gpui::{Context, Window};
+use gpui_kit::{Context, Window};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
