@@ -435,13 +435,17 @@ mod tests {
 
     #[test]
     fn newf_jun4_same_value_programmatic_sync_does_not_arm_suppression() {
-        assert!(!should_arm_programmatic_change_suppression("fileA", "fileA"));
+        assert!(!should_arm_programmatic_change_suppression(
+            "fileA", "fileA"
+        ));
         assert!(should_arm_programmatic_change_suppression("fileA", "fileB"));
     }
 
     #[test]
     fn newf_jun4_stale_suppression_does_not_hide_delete_to_empty() {
-        assert!(should_suppress_pending_programmatic_change("fileA", "fileA"));
+        assert!(should_suppress_pending_programmatic_change(
+            "fileA", "fileA"
+        ));
         assert!(!should_suppress_pending_programmatic_change("fileA", ""));
     }
 }
