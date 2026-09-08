@@ -68,6 +68,13 @@ fn compile_windows_icon_resources() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let package_version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string());
 
+    if target_env == "msvc" {
+        // Native dependencies export symbols, but these executables are not linkable libraries.
+        // Skip import/export sidecars and their informational linker output. PE exports remain.
+        println!("cargo:rustc-link-arg-bins=/NOIMPLIB");
+        println!("cargo:rustc-link-arg-bins=/NOEXP");
+    }
+
     for icon in BINARY_ICONS {
         ensure_exists(icon.windows_ico);
         let rc_path = out_dir.join(format!("{}_app_icon.rc", icon.binary_name));
