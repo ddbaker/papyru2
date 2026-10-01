@@ -7,7 +7,6 @@ use std::{
 };
 
 use gpui_kit::component::{
-    Root,
     resizable::{ResizablePanelEvent, ResizableState, h_resizable, resizable_panel},
     v_flex,
 };
@@ -612,14 +611,15 @@ pub(crate) fn apply_req_colr_theme_overrides(ui_color_config: UiColorConfig, cx:
     let background = req_colr_rgb_hex_to_hsla(ui_color_config.background_rgb_hex);
     let foreground = req_colr_rgb_hex_to_hsla(ui_color_config.foreground_rgb_hex);
 
-    let theme = gpui_kit::component::Theme::global_mut(cx);
-    theme.background = background;
-    theme.foreground = foreground;
+    gpui_kit::component::Theme::update(cx, |theme| {
+        theme.background = background;
+        theme.foreground = foreground;
 
-    let mut highlight_theme = (*theme.highlight_theme).clone();
-    highlight_theme.style.editor_background = Some(background);
-    highlight_theme.style.editor_foreground = Some(foreground);
-    theme.highlight_theme = std::sync::Arc::new(highlight_theme);
+        let mut highlight_theme = (*theme.highlight_theme).clone();
+        highlight_theme.style.editor_background = Some(background);
+        highlight_theme.style.editor_foreground = Some(foreground);
+        theme.highlight_theme = std::sync::Arc::new(highlight_theme);
+    });
 
     trace_debug(format!(
         "req-colr theme override applied background={} foreground={} editor_background_synced=true",
@@ -3531,121 +3531,122 @@ pub fn run() {
         cx.spawn(async move |cx| {
             crate::log::boot_profile_mark("startup.open_window_async_enter");
             let open_window_started = Instant::now();
-            let open_window_result = cx.open_window(window_options, move |window, cx| {
-                let root_build_started = Instant::now();
-                crate::log::boot_profile_mark("startup.open_window_callback_enter");
+            let open_window_result = cx.update(|cx| {
+                gpui_kit::open_window(window_options, cx, move |window, cx| {
+                    let content_build_started = Instant::now();
+                    crate::log::boot_profile_mark("startup.open_window_callback_enter");
 
-                let startup_window_position_guard =
-                    Rc::new(RefCell::new(startup_window_position_guard(
-                        persisted_window_position
-                            .as_ref()
-                            .map(|_| startup_bounds),
-                    )));
-                if startup_window_position_guard.borrow().is_some() {
-                    apply_windows_native_window_bounds(window, startup_bounds);
-                    let deferred_startup_bounds = startup_bounds;
-                    window.defer(cx, move |window, _| {
-                        apply_windows_native_window_bounds(window, deferred_startup_bounds);
-                    });
-                }
-
-                let app_paths = app_paths.clone();
-                let single_instance_server = single_instance_server.clone();
-                let app_startup_window_position_guard = startup_window_position_guard.clone();
-                let view = cx.new(|cx| {
-                    Papyru2App::new(
-                        window,
-                        app_paths,
-                        restored_splitter_left_size,
-                        app_startup_window_position_guard,
-                        ui_color_config,
-                        editor_config,
-                        file_tree_config,
-                        single_instance_server,
-                        cx,
-                    )
-                });
-
-                let close_save_path = window_position_path.clone();
-                let close_view = view.clone();
-                let close_startup_window_position_guard = startup_window_position_guard.clone();
-                window.on_window_should_close(cx, move |window, cx| {
-                    let pre_close_saved = cx.update_entity(&close_view, |app, cx| {
-                        app.flush_editor_content_before_context_switch("req-aus7-window-close", cx)
-                    });
-                    if !pre_close_saved {
-                        trace_debug("autosave pre-close aborted close");
-                        return false;
+                    let startup_window_position_guard =
+                        Rc::new(RefCell::new(startup_window_position_guard(
+                            persisted_window_position
+                                .as_ref()
+                                .map(|_| startup_bounds),
+                        )));
+                    if startup_window_position_guard.borrow().is_some() {
+                        apply_windows_native_window_bounds(window, startup_bounds);
+                        let deferred_startup_bounds = startup_bounds;
+                        window.defer(cx, move |window, _| {
+                            apply_windows_native_window_bounds(window, deferred_startup_bounds);
+                        });
                     }
 
-                    cx.update_entity(&close_view, |app, _cx| {
-                        app.stop_spellchecker_for_shutdown();
+                    let app_paths = app_paths.clone();
+                    let single_instance_server = single_instance_server.clone();
+                    let app_startup_window_position_guard = startup_window_position_guard.clone();
+                    let view = cx.new(|cx| {
+                        Papyru2App::new(
+                            window,
+                            app_paths,
+                            restored_splitter_left_size,
+                            app_startup_window_position_guard,
+                            ui_color_config,
+                            editor_config,
+                            file_tree_config,
+                            single_instance_server,
+                            cx,
+                        )
                     });
 
-                    let state = cx.update_entity(&close_view, |app, cx| {
-                        app.capture_window_position_state(window, cx)
-                    });
-                    let state = if let Some(observed_bounds) = state.to_window_bounds() {
-                        if let Some(expected_bounds) =
-                            startup_window_position_expected_bounds_for_close_save(
-                                &close_startup_window_position_guard.borrow(),
-                                observed_bounds,
-                            )
-                        {
-                            let guarded_state = crate::window_position::WindowPositionState::from_window_bounds(
-                                expected_bounds,
-                                state.monitor_id,
-                                state.monitor_uuid.clone(),
-                                state.dpi_scale,
-                            )
-                            .with_splitter_sizes(
+                    let close_save_path = window_position_path.clone();
+                    let close_view = view.clone();
+                    let close_startup_window_position_guard = startup_window_position_guard.clone();
+                    window.on_window_should_close(cx, move |window, cx| {
+                        let pre_close_saved = cx.update_entity(&close_view, |app, cx| {
+                            app.flush_editor_content_before_context_switch("req-aus7-window-close", cx)
+                        });
+                        if !pre_close_saved {
+                            trace_debug("autosave pre-close aborted close");
+                            return false;
+                        }
+
+                        cx.update_entity(&close_view, |app, _cx| {
+                            app.stop_spellchecker_for_shutdown();
+                        });
+
+                        let state = cx.update_entity(&close_view, |app, cx| {
+                            app.capture_window_position_state(window, cx)
+                        });
+                        let state = if let Some(observed_bounds) = state.to_window_bounds() {
+                            if let Some(expected_bounds) =
+                                startup_window_position_expected_bounds_for_close_save(
+                                    &close_startup_window_position_guard.borrow(),
+                                    observed_bounds,
+                                )
+                            {
+                                let guarded_state = crate::window_position::WindowPositionState::from_window_bounds(
+                                    expected_bounds,
+                                    state.monitor_id,
+                                    state.monitor_uuid.clone(),
+                                    state.dpi_scale,
+                                )
+                                .with_splitter_sizes(
+                                    state
+                                        .splitter_sizes
+                                        .as_ref()
+                                        .map(|sizes| {
+                                            sizes.iter().copied().map(px).collect::<Vec<Pixels>>()
+                                        })
+                                        .unwrap_or_default()
+                                        .as_slice(),
+                                );
+                                trace_debug(format!(
+                                    "window_position close save guard replaced observed_bounds={observed_bounds:?} expected_bounds={expected_bounds:?}"
+                                ));
+                                guarded_state
+                            } else {
                                 state
-                                    .splitter_sizes
-                                    .as_ref()
-                                    .map(|sizes| {
-                                        sizes.iter().copied().map(px).collect::<Vec<Pixels>>()
-                                    })
-                                    .unwrap_or_default()
-                                    .as_slice(),
-                            );
-                            trace_debug(format!(
-                                "window_position close save guard replaced observed_bounds={observed_bounds:?} expected_bounds={expected_bounds:?}"
-                            ));
-                            guarded_state
+                            }
                         } else {
                             state
-                        }
-                    } else {
-                        state
-                    };
-                    trace_debug(format!(
-                        "window_position close save path={} {}",
-                        close_save_path.display(),
-                        window_position_state_trace(&state)
-                    ));
-                    if let Err(error) = crate::window_position::save_window_position_atomic(
-                        close_save_path.as_path(),
-                        &state,
-                    ) {
+                        };
                         trace_debug(format!(
-                            "window_position close save failed path={} error={error}",
-                            close_save_path.display()
+                            "window_position close save path={} {}",
+                            close_save_path.display(),
+                            window_position_state_trace(&state)
                         ));
-                    }
-                    true
-                });
+                        if let Err(error) = crate::window_position::save_window_position_atomic(
+                            close_save_path.as_path(),
+                            &state,
+                        ) {
+                            trace_debug(format!(
+                                "window_position close save failed path={} error={error}",
+                                close_save_path.display()
+                            ));
+                        }
+                        true
+                    });
 
-                let root = cx.new(|cx| Root::new(view, window, cx));
-                crate::log::boot_profile_mark_timing(
-                    "startup.open_window_root_build",
-                    root_build_started.elapsed(),
-                    String::new(),
-                );
-                root
+                    crate::log::boot_profile_mark_timing(
+                        "startup.open_window_content_build",
+                        content_build_started.elapsed(),
+                        String::new(),
+                    );
+                    view
+                })
             });
 
             match open_window_result {
-                Ok(_) => crate::log::boot_profile_mark_timing(
+                Ok((_window_handle, _content)) => crate::log::boot_profile_mark_timing(
                     "startup.open_window",
                     open_window_started.elapsed(),
                     "ok=true".to_string(),

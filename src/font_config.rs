@@ -121,11 +121,12 @@ pub(crate) fn apply_font_theme_overrides(
             ));
         }
         FontThemeOverrideDecision::Apply(family) => {
-            let theme = Theme::global_mut(cx);
-            let previous_font_family = theme.font_family.clone();
-            let previous_mono_font_family = theme.mono_font_family.clone();
-            theme.font_family = family.as_str().into();
-            theme.mono_font_family = family.as_str().into();
+            let (previous_font_family, previous_mono_font_family) = Theme::update(cx, |theme| {
+                let previous = (theme.font_family.clone(), theme.mono_font_family.clone());
+                theme.font_family = family.as_str().into();
+                theme.mono_font_family = family.as_str().into();
+                previous
+            });
             crate::log::trace_debug(format!(
                 "req-font theme override applied family={} previous_font_family={} previous_mono_font_family={} available_fonts={}",
                 family,
