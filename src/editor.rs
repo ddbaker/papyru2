@@ -87,7 +87,6 @@ fn build_editor_context_menu(
 pub struct Papyru2Editor {
     pub(crate) input_state: Entity<EditorState>,
     last_value: String,
-    last_cursor: gpui_kit::component::input::Position,
     pending_programmatic_change_value: Option<String>,
     current_editing_file_path: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
@@ -154,38 +153,6 @@ fn take_programmatic_change_event_match(
             expected_len: expected_value.len(),
         }
     }
-}
-
-fn should_emit_backspace_at_line_head_on_change(
-    previous_value: &str,
-    previous_cursor: &Position,
-    value: &str,
-    cursor: &Position,
-) -> bool {
-    let is_noop_change = value == previous_value;
-    let at_editor_origin = cursor.line == 0 && cursor.character == 0;
-    if !is_noop_change || !at_editor_origin {
-        return false;
-    }
-
-    let first_line_non_empty = value
-        .split('\n')
-        .next()
-        .is_some_and(|line| !line.is_empty());
-    let has_non_empty_tail_line = value.split('\n').skip(1).any(|line| !line.is_empty());
-
-    let req_assoc12_candidate = first_line_non_empty || has_non_empty_tail_line;
-    let req_assoc14_candidate = value.is_empty()
-        && previous_value.is_empty()
-        && previous_cursor.line == 0
-        && previous_cursor.character == 0;
-    let req_assoc17_blank_multiline_noop = !value.is_empty()
-        && value.contains('\n')
-        && value.split('\n').all(|line| line.is_empty())
-        && previous_cursor.line == 0
-        && previous_cursor.character == 0;
-
-    req_assoc12_candidate || req_assoc14_candidate || req_assoc17_blank_multiline_noop
 }
 
 fn byte_index_from_position(value: &str, position: &Position) -> usize {
@@ -359,10 +326,7 @@ impl Papyru2Editor {
             )
         });
 
-        let (last_value, last_cursor) = {
-            let initial = input_state.read(cx);
-            (initial.value().to_string(), initial.cursor_position())
-        };
+        let last_value = input_state.read(cx).value().to_string();
 
         let context_menu_config = editor_config.context_menu;
         let compensate_empty_code_gutter =
@@ -392,7 +356,6 @@ impl Papyru2Editor {
                                 value.len()
                             ));
                             this.last_value = value;
-                            this.last_cursor = cursor;
                             return;
                         }
                         ProgrammaticChangeEventMatch::Mismatched { expected_len } => {
@@ -403,44 +366,6 @@ impl Papyru2Editor {
                             ));
                         }
                         ProgrammaticChangeEventMatch::NoMarker => {}
-                    }
-
-                    let should_emit_backspace = should_emit_backspace_at_line_head_on_change(
-                        &this.last_value,
-                        &this.last_cursor,
-                        &value,
-                        &cursor,
-                    );
-
-                    if should_emit_backspace {
-                        let first_line_non_empty =
-                            value.split('\n').next().is_some_and(|line| !line.is_empty());
-                        let has_non_empty_tail_line =
-                            value.split('\n').skip(1).any(|line| !line.is_empty());
-                        let req_assoc14_blank_origin_noop = value.is_empty()
-                            && this.last_value.is_empty()
-                            && this.last_cursor.line == 0
-                            && this.last_cursor.character == 0
-                            && cursor.line == 0
-                            && cursor.character == 0;
-                        let req_assoc17_blank_multiline_noop = !value.is_empty()
-                            && value.contains('\n')
-                            && value.split('\n').all(|line| line.is_empty())
-                            && this.last_cursor.line == 0
-                            && this.last_cursor.character == 0
-                            && cursor.line == 0
-                            && cursor.character == 0;
-
-                        crate::log::trace_debug(format!(
-                            "editor InputEvent::Change detected no-op backspace candidate at head (last_cursor=({}, {}), first_line_non_empty={}, has_non_empty_tail_line={}, req_assoc14_blank_origin_noop={}, req_assoc17_blank_multiline_noop={})",
-                            this.last_cursor.line,
-                            this.last_cursor.character,
-                            first_line_non_empty,
-                            has_non_empty_tail_line,
-                            req_assoc14_blank_origin_noop,
-                            req_assoc17_blank_multiline_noop
-                        ));
-                        cx.emit(EditorEvent::BackspaceAtLineHead);
                     }
 
                     if value != this.last_value {
@@ -456,7 +381,6 @@ impl Papyru2Editor {
                     }
 
                     this.last_value = value;
-                    this.last_cursor = cursor;
                 }
                 InputEvent::PressEnter { secondary, .. } => {
                     crate::log::trace_debug(format!(
@@ -500,7 +424,6 @@ impl Papyru2Editor {
         Self {
             input_state,
             last_value,
-            last_cursor,
             pending_programmatic_change_value: None,
             current_editing_file_path: None,
             _subscriptions,
@@ -570,6 +493,43 @@ impl Papyru2Editor {
         }
 
         cx.propagate();
+    }
+
+    fn on_backspace_at_line_head(
+        &mut self,
+        _: &Backspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Kit propagates Backspace only when its lone collapsed cursor has
+        // nothing to delete at offset zero. Selections and other cursors stay
+        // in the native editor, so association must run in the bubble phase.
+        let state = self.input_state.read(cx);
+        let cursor = state.cursor_position();
+        let document_focused = state.focus_handle(cx).is_focused(window);
+        let enabled = !self.req_assoc18_editor_input_guard_active && state.is_editable();
+        let transfer = enabled
+            && document_focused
+            && crate::sl_editor_association::should_transfer_backspace(
+                cursor.line,
+                cursor.character,
+            );
+        crate::log::trace_debug(format!(
+            "editor Backspace action bubbled cursor=({}, {}) value_len={} document_focused={} enabled={} transfer={}",
+            cursor.line,
+            cursor.character,
+            state.value().len(),
+            document_focused,
+            enabled,
+            transfer,
+        ));
+
+        if transfer {
+            cx.emit(EditorEvent::BackspaceAtLineHead);
+            cx.stop_propagation();
+        } else {
+            cx.propagate();
+        }
     }
 
     fn handle_narrow_box_backspace_guard(
@@ -697,10 +657,6 @@ impl Papyru2Editor {
         });
 
         self.last_value = text_owned;
-        self.last_cursor = gpui_kit::component::input::Position {
-            line: cursor_line,
-            character: cursor_char,
-        };
     }
 
     pub fn apply_cursor(
@@ -720,11 +676,6 @@ impl Papyru2Editor {
                 cx,
             );
         });
-
-        self.last_cursor = gpui_kit::component::input::Position {
-            line: cursor_line,
-            character: cursor_char,
-        };
     }
 
     pub fn open_content_from_rpc(
@@ -783,10 +734,6 @@ impl Papyru2Editor {
         }
 
         self.last_value = content;
-        self.last_cursor = gpui_kit::component::input::Position {
-            line: cursor_line,
-            character: cursor_char,
-        };
         self.current_editing_file_path = Some(path);
     }
 
@@ -893,10 +840,6 @@ impl Papyru2Editor {
         });
 
         self.last_value = content;
-        self.last_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
         true
     }
 
@@ -972,6 +915,7 @@ impl Render for Papyru2Editor {
             .capture_key_down(cx.listener(Self::on_key_down))
             .capture_any_mouse_down(cx.listener(Self::on_context_menu_mouse_down))
             .capture_action(cx.listener(Self::on_backspace_action))
+            .on_action(cx.listener(Self::on_backspace_at_line_head))
             .capture_action(cx.listener(Self::on_move_up_action))
             .on_mouse_down(
                 MouseButton::Left,
@@ -996,6 +940,310 @@ impl Render for Papyru2Editor {
                 .text_size(experimental_text_size_px),
             )
             .children(context_menu_element)
+    }
+}
+
+#[cfg(test)]
+mod association_dispatch_tests {
+    use super::{EditorEvent, Papyru2Editor};
+    use gpui_kit::{AnyWindowHandle, AppContext, Context, Entity, TestAppContext, Window};
+    use std::{cell::Cell, rc::Rc};
+
+    // Exercise the production render tree and dependency keymap. Calling an action
+    // handler or manufacturing InputEvent::Change would miss migration regressions.
+    struct Fixture {
+        window: AnyWindowHandle,
+        editor: Entity<Papyru2Editor>,
+        transfers: Rc<Cell<usize>>,
+        ups: Rc<Cell<usize>>,
+        changes: Rc<Cell<usize>>,
+        input_changes: Rc<Cell<usize>>,
+    }
+
+    impl Fixture {
+        fn new(cx: &mut TestAppContext, text: &str, line: u32, character: u32) -> Self {
+            cx.update(gpui_kit::init);
+            let (window, editor) = cx.update(|cx| {
+                gpui_kit::open_window(Default::default(), cx, |window, cx| {
+                    cx.new(|cx| {
+                        Papyru2Editor::new(window, Default::default(), Default::default(), cx)
+                    })
+                })
+                .expect("test window")
+            });
+            let transfers = Rc::new(Cell::new(0));
+            let ups = Rc::new(Cell::new(0));
+            let changes = Rc::new(Cell::new(0));
+            let input_changes = Rc::new(Cell::new(0));
+            cx.update(|cx| {
+                let input_changes = input_changes.clone();
+                let input = editor.read(cx).input_state.clone();
+                cx.subscribe(&input, move |_, event, _| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        input_changes.set(input_changes.get() + 1);
+                    }
+                })
+                .detach();
+                let transfers = transfers.clone();
+                let ups = ups.clone();
+                let changes = changes.clone();
+                cx.subscribe(&editor, move |_, event, _| match event {
+                    EditorEvent::BackspaceAtLineHead => transfers.set(transfers.get() + 1),
+                    EditorEvent::PressUpAtFirstLine => ups.set(ups.get() + 1),
+                    EditorEvent::UserBufferChanged { .. } => changes.set(changes.get() + 1),
+                    _ => {}
+                })
+                .detach();
+            });
+            let fixture = Self {
+                window,
+                editor,
+                transfers,
+                ups,
+                changes,
+                input_changes,
+            };
+            fixture.reset(cx, text, line, character);
+            fixture
+        }
+
+        fn reset(&self, cx: &mut TestAppContext, text: &str, line: u32, character: u32) {
+            self.transfers.set(0);
+            self.ups.set(0);
+            self.update(cx, |editor, window, cx| {
+                editor.set_req_assoc18_editor_input_guard_active(false, cx);
+                editor.apply_text_and_cursor(text.to_owned(), line, character, window, cx);
+                editor.focus(window, cx);
+            });
+            cx.run_until_parked();
+            assert_eq!(self.transfers.get(), 0, "setup must not transfer");
+            self.changes.set(0);
+            self.input_changes.set(0);
+        }
+
+        fn update<R>(
+            &self,
+            cx: &mut TestAppContext,
+            f: impl FnOnce(&mut Papyru2Editor, &mut Window, &mut Context<Papyru2Editor>) -> R,
+        ) -> R {
+            cx.update_window(self.window, |_, window, cx| {
+                self.editor.update(cx, |editor, cx| f(editor, window, cx))
+            })
+            .unwrap()
+        }
+
+        fn press(&self, cx: &mut TestAppContext, keys: &str) {
+            cx.simulate_keystrokes(self.window, keys);
+            cx.run_until_parked();
+        }
+
+        fn assert_state(&self, cx: &mut TestAppContext, value: &str, line: u32, character: u32) {
+            self.update(cx, |editor, window, cx| {
+                let snapshot = editor.snapshot(cx);
+                assert_eq!(snapshot.value, value);
+                assert_eq!(
+                    (snapshot.cursor_line, snapshot.cursor_char),
+                    (line, character)
+                );
+                assert!(editor.is_focused(window, cx));
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_req2_first_backspace_emits_once_with_unchanged_buffer(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = Fixture::new(cx, "ghijkl\nxyz", 0, 0);
+        fixture.press(cx, "backspace");
+        assert_eq!(
+            fixture.transfers.get(),
+            1,
+            "first Backspace must transfer once; native Change notifications={}",
+            fixture.input_changes.get(),
+        );
+        assert_eq!(fixture.changes.get(), 0);
+        fixture.assert_state(cx, "ghijkl\nxyz", 0, 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_req14_empty_editor_first_backspace_emits_once(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        fixture.press(cx, "backspace");
+        assert_eq!(
+            fixture.transfers.get(),
+            1,
+            "first Backspace must transfer once; native Change notifications={}",
+            fixture.input_changes.get(),
+        );
+        assert_eq!(fixture.changes.get(), 0);
+        fixture.assert_state(cx, "", 0, 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_req4_req12_req17_head_cases(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        for value in [
+            "は世界\n大好き",
+            "한글\n中文",
+            "🙂文\n尾",
+            "\nxyz",
+            "\n\n",
+            "abc",
+        ] {
+            fixture.reset(cx, value, 0, 0);
+            fixture.press(cx, "backspace");
+            assert_eq!(fixture.transfers.get(), 1, "first Backspace: {value:?}");
+            assert_eq!(fixture.changes.get(), 0);
+            fixture.assert_state(cx, value, 0, 0);
+            fixture.press(cx, "backspace");
+            assert_eq!(fixture.transfers.get(), 2, "one event per press");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_native_delete_then_head_then_undo(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "は世界", 0, 1);
+        fixture.press(cx, "backspace");
+        assert_eq!(
+            fixture.transfers.get(),
+            0,
+            "deletion landing at origin must not transfer"
+        );
+        assert_eq!(fixture.changes.get(), 1);
+        fixture.assert_state(cx, "世界", 0, 0);
+        fixture.press(cx, "backspace");
+        assert_eq!(
+            fixture.transfers.get(),
+            1,
+            "next press at origin must transfer"
+        );
+        #[cfg(target_os = "macos")]
+        fixture.press(cx, "cmd-z");
+        #[cfg(not(target_os = "macos"))]
+        fixture.press(cx, "ctrl-z");
+        fixture.assert_state(cx, "は世界", 0, 1);
+        assert_eq!(fixture.transfers.get(), 1, "undo is not Backspace");
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_reverse_selection_at_origin_deletes_natively(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "abc\nxyz", 0, 3);
+        fixture.press(cx, "shift-left shift-left shift-left");
+        fixture.press(cx, "backspace");
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 1);
+        fixture.assert_state(cx, "\nxyz", 0, 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_second_line_backspace_joins_natively(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "abc\nxyz", 1, 0);
+        fixture.press(cx, "backspace");
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 1);
+        fixture.assert_state(cx, "abcxyz", 0, 3);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_unrelated_noop_change_never_transfers(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "abc\nxyz", 0, 0);
+        fixture.update(cx, |editor, _, cx| {
+            // A Change notification carries no evidence of which key caused it.
+            editor.input_state.update(cx, |_, cx| {
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 0);
+        fixture.assert_state(cx, "abc\nxyz", 0, 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_disabled_editor_never_transfers(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        fixture.update(cx, |editor, _, cx| {
+            editor.set_req_assoc18_editor_input_guard_active(true, cx);
+        });
+        fixture.press(cx, "backspace");
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_search_input_backspace_never_transfers(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "abc\nxyz", 0, 0);
+        #[cfg(target_os = "macos")]
+        fixture.press(cx, "cmd-f");
+        #[cfg(not(target_os = "macos"))]
+        fixture.press(cx, "ctrl-f");
+        fixture.update(cx, |editor, window, cx| {
+            assert!(
+                !editor.is_focused(window, cx),
+                "search must own keyboard focus"
+            );
+        });
+        fixture.press(cx, "backspace");
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_programmatic_noop_then_first_backspace(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        fixture.update(cx, |editor, window, cx| {
+            editor.apply_text_and_cursor("", 0, 0, window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(fixture.transfers.get(), 0);
+        fixture.press(cx, "backspace");
+        assert_eq!(fixture.transfers.get(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_emoji_and_checkbox_deletion_remain_local(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        for (before, column, after, after_column) in [("a🙂", 2, "a", 1), ("- □", 3, "- ", 2)] {
+            fixture.reset(cx, before, 0, column);
+            fixture.press(cx, "backspace");
+            assert_eq!(fixture.transfers.get(), 0);
+            assert_eq!(fixture.changes.get(), 1);
+            fixture.assert_state(cx, after, 0, after_column);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_other_delete_actions_at_origin_do_not_transfer(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "", 0, 0);
+        fixture.press(cx, "delete");
+        #[cfg(target_os = "macos")]
+        fixture.press(cx, "alt-backspace");
+        #[cfg(not(target_os = "macos"))]
+        fixture.press(cx, "ctrl-backspace");
+        assert_eq!(fixture.transfers.get(), 0);
+        fixture.assert_state(cx, "", 0, 0);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_up_at_first_line_emits_once(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "は世界\n大好き", 0, 2);
+        fixture.press(cx, "up");
+        assert_eq!(fixture.ups.get(), 1);
+        assert_eq!(fixture.transfers.get(), 0);
+        assert_eq!(fixture.changes.get(), 0);
+        fixture.assert_state(cx, "は世界\n大好き", 0, 2);
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_up_from_second_line_is_native_until_boundary(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "abcdef\nuvwxyz", 1, 2);
+        fixture.press(cx, "up");
+        assert_eq!(fixture.ups.get(), 0);
+        fixture.assert_state(cx, "abcdef\nuvwxyz", 0, 2);
+        fixture.press(cx, "up");
+        assert_eq!(fixture.ups.get(), 1);
+        assert_eq!(fixture.changes.get(), 0);
     }
 }
 
@@ -1240,101 +1488,6 @@ mod tests {
     }
 
     #[test]
-    fn editor_delete_test1_changed_multibyte_backspace_stays_native_only() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 3,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 2,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "- □",
-            &previous_cursor,
-            "- ",
-            &cursor,
-        ));
-    }
-
-    #[test]
-    fn editor_delete_test2_changed_emoji_backspace_stays_native_only() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 2,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 1,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "a🙂",
-            &previous_cursor,
-            "a",
-            &cursor,
-        ));
-    }
-
-    #[test]
-    fn editor_delete_test3_changed_multiline_selection_stays_native_only() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 2,
-            character: 0,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 1,
-            character: 0,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "alpha\n- □\nbeta",
-            &previous_cursor,
-            "alpha\nbeta",
-            &cursor,
-        ));
-    }
-
-    #[test]
-    fn editor_delete_test4_line_head_noop_remains_association_trigger() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-
-        assert!(super::should_emit_backspace_at_line_head_on_change(
-            "abc\nxyz",
-            &previous_cursor,
-            "abc\nxyz",
-            &cursor,
-        ));
-    }
-
-    #[test]
-    fn editor_undo_test1_native_first_has_no_custom_delete_history_unit_path() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 4,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 3,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "- a ",
-            &previous_cursor,
-            "- a",
-            &cursor,
-        ));
-    }
-
-    #[test]
     fn ftr_test39_req_ftr16_selected_file_edit_save_updates_selected_path_not_stale_buffer() {
         let root = new_temp_root("ftr_test39");
         let path_a = root.join("fileA.txt");
@@ -1397,86 +1550,6 @@ mod tests {
         assert_eq!(loaded, "line-a\nline-b\n");
 
         remove_temp_root(root.as_path());
-    }
-
-    #[test]
-    fn assoc_test21_req_assoc14_blank_origin_noop_change_emits_backspace_signal() {
-        let previous_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-        let cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-
-        assert!(super::should_emit_backspace_at_line_head_on_change(
-            "",
-            &previous_cursor,
-            "",
-            &cursor,
-        ));
-    }
-
-    #[test]
-    fn assoc_test22_req_assoc14_non_origin_or_non_noop_does_not_emit_backspace_signal() {
-        let origin_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-        let non_origin_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 1,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "",
-            &origin_cursor,
-            "",
-            &non_origin_cursor,
-        ));
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "",
-            &non_origin_cursor,
-            "",
-            &origin_cursor,
-        ));
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "abc",
-            &origin_cursor,
-            "",
-            &origin_cursor,
-        ));
-    }
-
-    #[test]
-    fn assoc_test23_req_assoc17_blank_multiline_noop_change_emits_backspace_signal() {
-        let origin_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-
-        assert!(super::should_emit_backspace_at_line_head_on_change(
-            "\n\n",
-            &origin_cursor,
-            "\n\n",
-            &origin_cursor,
-        ));
-    }
-
-    #[test]
-    fn assoc_test24_req_assoc17_changed_multiline_does_not_emit_duplicate_backspace_signal() {
-        let origin_cursor = gpui_kit::component::input::Position {
-            line: 0,
-            character: 0,
-        };
-
-        assert!(!super::should_emit_backspace_at_line_head_on_change(
-            "\n\n",
-            &origin_cursor,
-            "\n",
-            &origin_cursor,
-        ));
     }
 
     #[test]

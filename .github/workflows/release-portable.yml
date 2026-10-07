@@ -175,6 +175,10 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $rcDir
           Write-Output "Using rc.exe from $rcDir"
 
+      - name: Verify editor and singleline association
+        # Keep the keystroke tests in the release gate; the excluded workflow test deletes files.
+        run: cargo test --locked --bin papyru2 assoc_ -- --skip assoc_test47_req_assoc18_singleline_key_path_still_creates_from_neutral
+
       - name: Build release binaries
         run: cargo build --release --bin papyru2 --bin papyru2_pin_file --bin papyru2_textfile_import --bin release_portable_packager
 

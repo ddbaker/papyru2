@@ -449,3 +449,67 @@ mod tests {
         assert!(!should_suppress_pending_programmatic_change("fileA", ""));
     }
 }
+
+#[cfg(test)]
+mod association_dispatch_tests {
+    use super::{SingleLineEvent, SingleLineInput};
+    use gpui_kit::{AppContext, TestAppContext};
+    use std::{cell::Cell, rc::Rc};
+
+    fn assert_key_routes_once(cx: &mut TestAppContext, key: &str, expected: (usize, usize, usize)) {
+        cx.update(gpui_kit::init);
+        let (window, input) = cx.update(|cx| {
+            gpui_kit::open_window(Default::default(), cx, |window, cx| {
+                cx.new(|cx| SingleLineInput::new(window, Default::default(), cx))
+            })
+            .expect("test window")
+        });
+        let events = Rc::new(Cell::new((0, 0, 0)));
+        cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&input, move |_, event, _| {
+                let (mut enter, mut down, mut change) = events.get();
+                match event {
+                    SingleLineEvent::PressEnter => enter += 1,
+                    SingleLineEvent::PressDown => down += 1,
+                    SingleLineEvent::ValueChanged { .. } => change += 1,
+                }
+                events.set((enter, down, change));
+            })
+            .detach();
+        });
+        for (value, cursor) in [("abcdef", 3), ("は世界", 2), ("", 0)] {
+            cx.update_window(window, |_, window, cx| {
+                input.update(cx, |input, cx| {
+                    input.apply_text_and_cursor(value, cursor, window, cx);
+                    input.focus(window, cx);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            events.set((0, 0, 0));
+            cx.simulate_keystrokes(window, key);
+            cx.run_until_parked();
+            assert_eq!(events.get(), expected, "{key} at {value:?}:{cursor}");
+            cx.update_window(window, |_, window, cx| {
+                input.update(cx, |input, cx| {
+                    let snapshot = input.snapshot(cx);
+                    assert_eq!(snapshot.value, value);
+                    assert_eq!(snapshot.cursor_char, cursor);
+                    assert!(input.is_focused(window, cx));
+                });
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_enter_preserves_buffer_and_emits_once(cx: &mut TestAppContext) {
+        assert_key_routes_once(cx, "enter", (1, 0, 0));
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_down_preserves_buffer_and_emits_once(cx: &mut TestAppContext) {
+        assert_key_routes_once(cx, "down", (0, 1, 0));
+    }
+}
