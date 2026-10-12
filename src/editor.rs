@@ -777,6 +777,13 @@ impl Papyru2Editor {
             }
         });
 
+        // GPUI Kit 0.7.3 retains an input's selection while its popup has focus.
+        // Install the association and focus before the popup's first frame.
+        let menu_focus = menu.focus_handle(cx);
+        self.input_state.update(cx, |state, cx| {
+            state.set_selection_focus(Some(menu_focus.clone()), cx);
+        });
+        menu_focus.focus(window, cx);
         self.context_menu = Some(menu);
         self.context_menu_position = event.position;
         self.context_menu_subscription = Some(subscription);
@@ -789,10 +796,18 @@ impl Papyru2Editor {
     }
 
     fn close_context_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let restore_input_focus = self.context_menu.as_ref().is_some_and(|menu| {
+            let focus = menu.focus_handle(cx);
+            focus.is_focused(window) || focus.contains_focused(window, cx)
+        });
         self.context_menu = None;
         self.context_menu_subscription = None;
-        self.input_state
-            .update(cx, |state, cx| state.focus(window, cx));
+        self.input_state.update(cx, |state, cx| {
+            state.set_selection_focus(None, cx);
+            if restore_input_focus {
+                state.focus(window, cx);
+            }
+        });
         cx.notify();
     }
 
@@ -869,16 +884,11 @@ impl Papyru2Editor {
 }
 
 impl Render for Papyru2Editor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let experimental_text_size_px = px(f32::from(cx.theme().font_size) + 0.5);
         let background_rgb_hex = self.ui_color_config.background_rgb_hex;
         let foreground_rgb_hex = self.ui_color_config.foreground_rgb_hex;
         let context_menu_element = self.context_menu.clone().map(|menu| {
-            let focus_handle = menu.focus_handle(cx);
-            if !focus_handle.contains_focused(window, cx) {
-                focus_handle.focus(window, cx);
-            }
-
             deferred(
                 anchored()
                     .snap_to_window_with_margin(px(8.))
@@ -946,7 +956,10 @@ impl Render for Papyru2Editor {
 #[cfg(test)]
 mod association_dispatch_tests {
     use super::{EditorEvent, Papyru2Editor};
-    use gpui_kit::{AnyWindowHandle, AppContext, Context, Entity, TestAppContext, Window};
+    use gpui_kit::{
+        AnyWindowHandle, AppContext, Context, Entity, Focusable, Modifiers, MouseButton,
+        TestAppContext, VisualTestContext, Window, point, px,
+    };
     use std::{cell::Cell, rc::Rc};
 
     // Exercise the production render tree and dependency keymap. Calling an action
@@ -1048,6 +1061,87 @@ mod association_dispatch_tests {
                 assert!(editor.is_focused(window, cx));
             });
         }
+    }
+
+    #[gpui_kit::test]
+    fn editor_context_menu_retains_selection_and_restores_focus(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "hello world", 0, 0);
+        fixture.update(cx, |editor, _window, cx| {
+            editor.input_state.update(cx, |state, cx| {
+                state.set_selected_range(0..5, cx);
+            });
+        });
+        let mut visual = VisualTestContext::from_window(fixture.window, cx);
+        visual.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        fixture.update(cx, |editor, window, cx| {
+            let menu = editor
+                .context_menu
+                .as_ref()
+                .expect("rendered right-click menu");
+            assert!(menu.focus_handle(cx).is_focused(window));
+            let state = editor.input_state.read(cx);
+            assert_eq!(state.selected_range(), 0..5);
+            assert!(state.has_selection_focus(window, cx));
+        });
+        fixture.press(cx, "escape");
+        fixture.update(cx, |editor, window, cx| {
+            assert!(editor.context_menu.is_none());
+            assert!(editor.is_focused(window, cx));
+            assert_eq!(editor.input_state.read(cx).selected_range(), 0..5);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn editor_context_menu_respects_focus_moved_elsewhere(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "hello world", 0, 0);
+        let mut visual = VisualTestContext::from_window(fixture.window, cx);
+        visual.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        let other_focus = fixture.update(cx, |editor, window, cx| {
+            assert!(editor.context_menu.is_some());
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            focus
+        });
+        cx.update_window(fixture.window, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        fixture.update(cx, |editor, window, cx| {
+            assert!(
+                other_focus.is_focused(window),
+                "render must not steal focus"
+            );
+            editor.close_context_menu(window, cx);
+            assert!(
+                other_focus.is_focused(window),
+                "dismiss must not steal focus"
+            );
+            assert!(!editor.input_state.read(cx).has_selection_focus(window, cx));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn editor_context_menu_disabled_editor_does_not_open(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(cx, "hello world", 0, 0);
+        fixture.update(cx, |editor, _window, cx| {
+            editor.set_req_assoc18_editor_input_guard_active(true, cx);
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(fixture.window, cx);
+        visual.simulate_mouse_down(
+            point(px(20.), px(20.)),
+            MouseButton::Right,
+            Modifiers::none(),
+        );
+        fixture.update(cx, |editor, _window, _cx| {
+            assert!(editor.context_menu.is_none())
+        });
     }
 
     #[gpui_kit::test]

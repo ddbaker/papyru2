@@ -1,6 +1,6 @@
 [package]
 name = "papyru2"
-version = "0.63.1"
+version = "0.64.0"
 publish = false
 edition = "2024"
 build = "build.rs"
@@ -21,7 +21,7 @@ icon = [
 ]
 
 [dependencies]
-gpui-kit = { version = "0.7.1", features = ["tree-sitter-languages"] }
+gpui-kit = { version = "0.7.3", features = ["tree-sitter-languages"] }
 raw-window-handle = "=0.6.2"
 reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
 sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
@@ -45,7 +45,7 @@ notify = "8.2.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-gpui-kit = { version = "0.7.1", features = ["test-support"] }
+gpui-kit = { version = "0.7.3", features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

@@ -179,3 +179,19 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 6. Confirm Windows `.exe` resources use the per-binary `.ico` files; sidecar copies are not present under `icons/windows/`.
 7. Confirm Linux `.desktop` entries reference matching hicolor icon names under `share/icons/hicolor/`.
 8. Confirm macOS `.app` bundles contain `Info.plist`, `Contents/MacOS/<binary>`, and matching `Contents/Resources/*.icns`.
+
+## opt-in local Windows artifact QA
+
+The packaging helper includes three ignored Rust tests for real release artifacts. They retain every generated file. Use a fresh output directory: the existing packager replaces previous staging/archive paths, so run the preparation check immediately before the packaging command above.
+
+```powershell
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_7_3-20261013'
+rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_prepare -- --ignored --nocapture
+
+# Run the documented packaging command with this output directory, then:
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_7_3-20261013/papyru2-windows-0_63_1.zip'
+rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_verify -- --ignored --nocapture
+rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_startup -- --ignored --nocapture
+```
+
+Preparation verifies the staged Harper executable against its bundled asset, creating it only if absent. Verification compares all archive payloads byte for byte with the build/source files and staging folder, checks embedded executable versions and icon images, and prints the archive size and SHA-256. Startup requires the application instance port to be free and the staging folder to have no earlier startup log; it checks the packaged process's native window and initial tree load, then requests a normal close. Runtime files remain in staging; the ZIP is unchanged. Visual launcher/taskbar appearance remains a separate manual check.

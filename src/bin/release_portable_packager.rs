@@ -956,4 +956,352 @@ mod tests {
         fs::create_dir_all(&path).expect("failed to create temp directory");
         path
     }
+
+    // Opt-in QA for a real release: reads payloads/resources and never deletes files.
+    // Supply a fresh PAPYRU2_RELEASE_OUTPUT for prepare, then the generated ZIP for verify.
+    #[test]
+    #[ignore = "requires built Windows release binaries and an explicit output path"]
+    fn local_windows_release_prepare() -> Result<()> {
+        let output =
+            PathBuf::from(env::var_os("PAPYRU2_RELEASE_OUTPUT").context("output required")?);
+        assert!(!output.exists(), "release output must be fresh");
+        let mut harper = zip::ZipArchive::new(File::open(
+            "assets/harper-ls/harper-ls-x86_64-pc-windows-msvc.zip",
+        )?)?;
+        let mut expected = Vec::new();
+        harper
+            .by_name("harper-ls.exe")?
+            .read_to_end(&mut expected)?;
+        let staged = Path::new("target/release/harper-ls.exe");
+        if staged.exists() {
+            assert_eq!(
+                fs::read(staged)?,
+                expected,
+                "staged Harper differs from asset"
+            );
+        } else {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(staged)?;
+            file.write_all(&expected)?;
+        }
+        println!("fresh_output={}", output.display());
+        println!("harper_asset_bytes_verified={}", expected.len());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a real packaged Windows release ZIP"]
+    fn local_windows_release_verify() -> Result<()> {
+        let zip_path = PathBuf::from(env::var_os("PAPYRU2_RELEASE_ZIP").context("ZIP required")?);
+        let root = format!(
+            "papyru2-windows-{}",
+            normalize_version(env!("CARGO_PKG_VERSION"))
+        );
+        let staged = zip_path.parent().context("ZIP parent")?.join(&root);
+        let mut archive = zip::ZipArchive::new(File::open(&zip_path)?)?;
+        let payloads = [
+            ("bin/papyru2.exe", "target/release/papyru2.exe"),
+            (
+                "bin/papyru2_pin_file.exe",
+                "target/release/papyru2_pin_file.exe",
+            ),
+            (
+                "bin/papyru2_textfile_import.exe",
+                "target/release/papyru2_textfile_import.exe",
+            ),
+            ("bin/harper-ls.exe", "target/release/harper-ls.exe"),
+            ("conf/papyru2_conf.toml", "conf/papyru2_conf.toml"),
+            ("licenses/LICENSE", "LICENSE"),
+            ("licenses/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"),
+            (
+                "licenses/harper/LICENSE-Apache-2.0.txt",
+                HARPER_LICENSE_SOURCE,
+            ),
+        ];
+        let mut actual = std::collections::BTreeSet::new();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index)?;
+            if !entry.is_dir() {
+                assert!(
+                    actual.insert(entry.name().to_owned()),
+                    "duplicate ZIP payload"
+                );
+            }
+        }
+        let mut expected = std::collections::BTreeSet::new();
+        for (relative, source) in payloads {
+            let name = format!("{root}/{relative}");
+            expected.insert(name.clone());
+            let mut bytes = Vec::new();
+            archive.by_name(&name)?.read_to_end(&mut bytes)?;
+            assert_eq!(bytes, fs::read(source)?, "ZIP payload differs: {relative}");
+            assert_eq!(
+                bytes,
+                fs::read(staged.join(relative))?,
+                "stage differs: {relative}"
+            );
+        }
+        let marker = format!("{root}/{PORTABLE_MARKER_FILE}");
+        expected.insert(marker.clone());
+        assert_eq!(
+            archive.by_name(&marker)?.size(),
+            0,
+            "portable marker must be empty"
+        );
+        assert_eq!(actual, expected, "unexpected or missing ZIP payloads");
+
+        for (binary, icon) in [
+            ("papyru2", "assets/icons/windows/papyru2_app_icon.ico"),
+            (
+                "papyru2_pin_file",
+                "assets/icons/windows/papyru2_pin_file_app_icon.ico",
+            ),
+            (
+                "papyru2_textfile_import",
+                "assets/icons/windows/papyru2_textfile_import_app_icon.ico",
+            ),
+        ] {
+            let image = fs::read(staged.join(format!("bin/{binary}.exe")))?;
+            let ico = fs::read(icon)?;
+            let mut expected_icons = Vec::new();
+            for index in 0..read_u16(&ico, 4)? as usize {
+                let entry = 6 + index * 16;
+                let length = read_u32(&ico, entry + 8)? as usize;
+                let offset = read_u32(&ico, entry + 12)? as usize;
+                expected_icons.push(
+                    ico.get(offset..offset + length)
+                        .context("ICO image")?
+                        .to_vec(),
+                );
+            }
+            let mut actual_icons = pe_resource_payloads(&image, 3)?;
+            actual_icons.sort();
+            expected_icons.sort();
+            assert_eq!(
+                actual_icons, expected_icons,
+                "embedded icon differs: {binary}"
+            );
+            let versions = pe_resource_payloads(&image, 16)?;
+            assert_eq!(versions.len(), 1, "version resource missing: {binary}");
+            let strings: String = char::decode_utf16(
+                versions[0]
+                    .chunks_exact(2)
+                    .map(|b| u16::from_le_bytes([b[0], b[1]])),
+            )
+            .map(|ch| ch.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+            assert!(
+                strings.contains(env!("CARGO_PKG_VERSION")),
+                "version differs: {binary}"
+            );
+            println!(
+                "verified_binary={binary} version={} icon_images={}",
+                env!("CARGO_PKG_VERSION"),
+                actual_icons.len()
+            );
+        }
+        let hash = std::process::Command::new("certutil")
+            .arg("-hashfile")
+            .arg(&zip_path)
+            .arg("SHA256")
+            .output()?;
+        assert!(hash.status.success(), "SHA256 command failed");
+        println!("archive_size={}", fs::metadata(&zip_path)?.len());
+        println!("{}", String::from_utf8_lossy(&hash.stdout));
+        println!("verified_zip_payloads={}", actual.len());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires a freshly packaged release and a free application instance port"]
+    fn local_windows_release_startup() -> Result<()> {
+        use std::os::windows::process::CommandExt as _;
+        use std::time::{Duration, Instant};
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetClassNameW, GetWindowThreadProcessId, PostMessageW, SW_HIDE,
+            ShowWindow, WM_CLOSE,
+        };
+        use windows::core::BOOL;
+
+        struct WindowProbe {
+            pid: u32,
+            hwnd: HWND,
+        }
+        unsafe extern "system" fn find_window(hwnd: HWND, parameter: LPARAM) -> BOOL {
+            // EnumWindows visits synchronously while the stack probe remains alive.
+            let probe = unsafe { &mut *(parameter.0 as *mut WindowProbe) };
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            if pid == probe.pid {
+                let mut class = [0_u16; 256];
+                let length = unsafe { GetClassNameW(hwnd, &mut class) };
+                if String::from_utf16_lossy(&class[..length as usize]) == "Zed::Window" {
+                    probe.hwnd = hwnd;
+                    return BOOL(0);
+                }
+            }
+            BOOL(1)
+        }
+        let endpoint = std::net::SocketAddr::from(([127, 0, 0, 1], 46927));
+        assert!(
+            std::net::TcpStream::connect_timeout(&endpoint, Duration::from_millis(100)).is_err(),
+            "close the existing papyru2 instance before startup QA"
+        );
+        let zip_path = PathBuf::from(env::var_os("PAPYRU2_RELEASE_ZIP").context("ZIP required")?);
+        let root = format!(
+            "papyru2-windows-{}",
+            normalize_version(env!("CARGO_PKG_VERSION"))
+        );
+        let stage = zip_path
+            .parent()
+            .context("ZIP parent")?
+            .join(root)
+            .canonicalize()?;
+        let log_path = stage.join("log/papyru2_boot_profile.log");
+        assert!(
+            !log_path.exists(),
+            "startup QA requires a fresh staging folder"
+        );
+        let mut child = std::process::Command::new(stage.join("bin/papyru2.exe"))
+            .arg("--portable")
+            .env("PAPYRU2_BOOT_PROFILE", "1")
+            .current_dir(&stage)
+            .creation_flags(0x0800_0000)
+            .spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut probe = WindowProbe {
+            pid: child.id(),
+            hwnd: HWND::default(),
+        };
+        loop {
+            unsafe {
+                let _ = EnumWindows(
+                    Some(find_window),
+                    LPARAM((&mut probe as *mut WindowProbe) as isize),
+                );
+            }
+            if !probe.hwnd.is_invalid() {
+                unsafe {
+                    let _ = ShowWindow(probe.hwnd, SW_HIDE);
+                }
+            }
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
+            if !probe.hwnd.is_invalid() && log.contains("file_tree.initial_load_total") {
+                break;
+            }
+            if let Some(status) = child.try_wait()? {
+                bail!("packaged app exited before readiness: {status}; log={log}");
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                bail!("startup timed out; log={log}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        unsafe {
+            PostMessageW(Some(probe.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                child.kill()?;
+                child.wait()?;
+                bail!("packaged app did not exit after native close request");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert!(status.success(), "packaged app exit: {status}");
+        let log = fs::read_to_string(&log_path)?;
+        assert!(log.contains("startup.open_window") && log.contains("ok=true"));
+        println!("startup_pid={} native_window=true exit={status}", probe.pid);
+        for line in log.lines().filter(|line| {
+            line.contains("single_instance")
+                || line.contains("first_render")
+                || line.contains("open_window")
+                || line.contains("startup_initial_load")
+        }) {
+            println!("{line}");
+        }
+        Ok(())
+    }
+
+    fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
+        let value: [u8; 2] = bytes
+            .get(offset..offset + 2)
+            .context("u16 bounds")?
+            .try_into()?;
+        Ok(u16::from_le_bytes(value))
+    }
+
+    fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
+        let value: [u8; 4] = bytes
+            .get(offset..offset + 4)
+            .context("u32 bounds")?
+            .try_into()?;
+        Ok(u32::from_le_bytes(value))
+    }
+
+    fn pe_resource_payloads(image: &[u8], resource_type: u32) -> Result<Vec<Vec<u8>>> {
+        let pe = read_u32(image, 0x3c)? as usize;
+        assert_eq!(image.get(pe..pe + 4), Some(b"PE\0\0".as_slice()));
+        let optional = pe + 24;
+        let directories = match read_u16(image, optional)? {
+            0x20b => optional + 112,
+            0x10b => optional + 96,
+            _ => bail!("unsupported PE optional header"),
+        };
+        let sections = optional + read_u16(image, pe + 20)? as usize;
+        let map_rva = |rva: u32| -> Result<usize> {
+            for index in 0..read_u16(image, pe + 6)? as usize {
+                let section = sections + index * 40;
+                let address = read_u32(image, section + 12)?;
+                let size = read_u32(image, section + 8)?.max(read_u32(image, section + 16)?);
+                if rva >= address && rva - address < size {
+                    return Ok((read_u32(image, section + 20)? + rva - address) as usize);
+                }
+            }
+            bail!("PE resource RVA outside sections")
+        };
+        let base = map_rva(read_u32(image, directories + 16)?)?;
+        let entries = |directory: usize| -> Result<Vec<(u32, u32)>> {
+            let count = read_u16(image, directory + 12)? as usize
+                + read_u16(image, directory + 14)? as usize;
+            (0..count)
+                .map(|index| {
+                    let offset = directory + 16 + index * 8;
+                    Ok((read_u32(image, offset)?, read_u32(image, offset + 4)?))
+                })
+                .collect()
+        };
+        let (_, types) = entries(base)?
+            .into_iter()
+            .find(|(id, _)| *id == resource_type)
+            .context("PE resource type missing")?;
+        assert_ne!(types & 0x8000_0000, 0);
+        let mut payloads = Vec::new();
+        for (_, names) in entries(base + (types & 0x7fff_ffff) as usize)? {
+            assert_ne!(names & 0x8000_0000, 0);
+            for (_, data) in entries(base + (names & 0x7fff_ffff) as usize)? {
+                assert_eq!(data & 0x8000_0000, 0);
+                let data = base + data as usize;
+                let start = map_rva(read_u32(image, data)?)?;
+                let length = read_u32(image, data + 4)? as usize;
+                payloads.push(
+                    image
+                        .get(start..start + length)
+                        .context("PE resource bounds")?
+                        .to_vec(),
+                );
+            }
+        }
+        Ok(payloads)
+    }
 }
