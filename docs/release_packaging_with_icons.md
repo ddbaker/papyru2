@@ -185,13 +185,13 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 The packaging helper includes three ignored Rust tests for real release artifacts. They retain every generated file. Use a fresh output directory: the existing packager replaces previous staging/archive paths, so run the preparation check immediately before the packaging command above.
 
 ```powershell
-$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_7_3-20261013'
-rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_prepare -- --ignored --nocapture
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_8_0-20261020'
+rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_prepare -- --ignored --nocapture
 
 # Run the documented packaging command with this output directory, then:
-$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_7_3-20261013/papyru2-windows-0_63_1.zip'
-rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_verify -- --ignored --nocapture
-rtk cargo test --locked --offline --bin release_portable_packager local_windows_release_startup -- --ignored --nocapture
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_8_0-20261020/papyru2-windows-0_64_0.zip'
+rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_verify -- --ignored --nocapture
+rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_startup -- --ignored --nocapture
 ```
 
 Preparation verifies the staged Harper executable against its bundled asset, creating it only if absent. Verification compares all archive payloads byte for byte with the build/source files and staging folder, checks embedded executable versions and icon images, and prints the archive size and SHA-256. Startup requires the application instance port to be free and the staging folder to have no earlier startup log; it checks the packaged process's native window and initial tree load, then requests a normal close. Runtime files remain in staging; the ZIP is unchanged. Visual launcher/taskbar appearance remains a separate manual check.
