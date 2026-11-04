@@ -1284,7 +1284,7 @@ impl FileTreeView {
 
         let modifiers = event.modifiers();
         if click_policy == ReqFtr33RowClickPolicy::EmptyFolderSelection {
-            if modifiers.shift || modifiers.secondary() {
+            if modifiers.shift || modifiers.secondary(cx) {
                 crate::log::trace_debug(format!(
                     "file_tree req-ftr34 empty_folder_modified_noop row_click item={} index={} selected_count={}",
                     item.id,
@@ -1324,7 +1324,7 @@ impl FileTreeView {
             return;
         }
 
-        if modifiers.secondary() && click_policy.allows_secondary_file_toggle() {
+        if modifiers.secondary(cx) && click_policy.allows_secondary_file_toggle() {
             let selected_now = toggle_item_selection(&mut self.selected_item_ids, item.id.as_ref());
             self.delete_shortcut_armed = !self.selected_item_ids.is_empty();
             self.selection_anchor_item_id = Some(item.id.to_string());

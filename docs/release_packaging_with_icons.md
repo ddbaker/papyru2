@@ -185,13 +185,23 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 The packaging helper includes three ignored Rust tests for real release artifacts. They retain every generated file. Use a fresh output directory: the existing packager replaces previous staging/archive paths, so run the preparation check immediately before the packaging command above.
 
 ```powershell
-$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_8_0-20261020'
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_9_0-20261104'
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_prepare -- --ignored --nocapture
 
 # Run the documented packaging command with this output directory, then:
-$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_8_0-20261020/papyru2-windows-0_64_0.zip'
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_9_0-20261104/papyru2-windows-0_65_1.zip'
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_verify -- --ignored --nocapture
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_startup -- --ignored --nocapture
 ```
+
+To run every release test, including the artifact QA tests, after packaging into the fresh directory above, use:
+
+```powershell
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_9_0-20261104-qa-guard'
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_9_0-20261104/papyru2-windows-0_65_1.zip'
+rtk cargo test --release --locked --all-targets -j 2 -- --include-ignored --test-threads=1
+```
+
+The preparation guard path must remain absent; it is separate from the package already created. The complete suite runs the preparation, startup and verification tests with no exclusions. Startup needs a fresh staging folder without an earlier boot-profile log and a free application instance port. Choose a new package output directory for a subsequent complete run; preserve previous artifacts.
 
 Preparation verifies the staged Harper executable against its bundled asset, creating it only if absent. Verification compares all archive payloads byte for byte with the build/source files and staging folder, checks embedded executable versions and icon images, and prints the archive size and SHA-256. Startup requires the application instance port to be free and the staging folder to have no earlier startup log; it checks the packaged process's native window and initial tree load, then requests a normal close. Runtime files remain in staging; the ZIP is unchanged. Visual launcher/taskbar appearance remains a separate manual check.

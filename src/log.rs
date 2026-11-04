@@ -455,6 +455,44 @@ pub(crate) fn load_req_log_config_override(path: &Path) -> Option<bool> {
     load_req_log_config_override_result(path).ok().flatten()
 }
 
+// Tests changing trace configuration share this guard, including worker-thread traces.
+#[cfg(test)]
+pub(crate) struct TraceDebugTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous_enabled: bool,
+    previous_path: PathBuf,
+}
+
+#[cfg(test)]
+impl TraceDebugTestGuard {
+    pub(crate) fn new(enabled: bool, path: Option<PathBuf>) -> Self {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = Self {
+            _lock: lock,
+            previous_enabled: trace_debug_is_enabled(),
+            previous_path: trace_debug_log_file_path(),
+        };
+        if let Some(path) = path {
+            *trace_debug_log_path_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = path;
+        }
+        configure_trace_debug_enabled(enabled);
+        guard
+    }
+}
+
+#[cfg(test)]
+impl Drop for TraceDebugTestGuard {
+    fn drop(&mut self) {
+        configure_trace_debug_enabled(self.previous_enabled);
+        *trace_debug_log_path_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.previous_path.clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,8 +690,7 @@ mod tests {
 
     #[test]
     fn log_test10_req_aus_lag_lazy_trace_skips_closure_when_disabled() {
-        let previous = trace_debug_is_enabled();
-        configure_trace_debug_enabled(false);
+        let _trace_guard = TraceDebugTestGuard::new(false, None);
 
         let evaluated = std::sync::atomic::AtomicUsize::new(0);
         trace_debug_lazy(|| {
@@ -662,7 +699,6 @@ mod tests {
         });
 
         assert_eq!(evaluated.load(std::sync::atomic::Ordering::SeqCst), 0);
-        configure_trace_debug_enabled(previous);
     }
 
     #[test]

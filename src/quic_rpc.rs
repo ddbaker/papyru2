@@ -421,6 +421,8 @@ mod tests {
     #[test]
     fn qsrv_test14_req_qsrv4_follow_trace_order_shows_daily_move_without_row_click_prerequisite() {
         let root = new_temp_root("qsrv_test14");
+        let _trace_guard =
+            crate::log::TraceDebugTestGuard::new(true, Some(root.join("rpc-trace.log")));
         let now = Local::now();
         let yesterday = now - Duration::days(1);
         let unique_name = format!(

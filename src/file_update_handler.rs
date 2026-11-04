@@ -2928,7 +2928,16 @@ mod tests {
         fs::write(&path_a, "A-old").expect("seed fileA");
         fs::write(&path_b, "B-old").expect("seed fileB");
 
-        let workflow = SinglelineCreateFileWorkflow::new();
+        // Observe the real worker result: autosave may relocate this historical file.
+        let (saved_path_tx, saved_path_rx) = mpsc::channel();
+        let dispatcher = FileWorkflowEventDispatcher::with_processor(move |event| {
+            let result = process_event(event);
+            if let Ok(FileWorkflowEventResult::AutoSaved { path }) = &result {
+                saved_path_tx.send(path.clone()).expect("send saved path");
+            }
+            result
+        });
+        let workflow = SinglelineCreateFileWorkflow::with_dispatcher(dispatcher);
         workflow.set_edit_from_open_file(path_a.clone());
 
         let payload = EditorAutoSavePayload {
@@ -2965,12 +2974,19 @@ mod tests {
         let content_b = fs::read_to_string(&path_b).expect("read fileB");
         assert_eq!(content_b, "B-old");
 
-        let content_a = fs::read_to_string(&path_a).expect("read fileA");
         if autosaved {
-            assert_eq!(content_a, "A-new");
+            let saved_path = saved_path_rx.recv().expect("receive saved path");
+            assert_eq!(
+                fs::read_to_string(saved_path).expect("read saved fileA"),
+                "A-new"
+            );
         } else {
-            assert_eq!(content_a, "A-old");
+            assert_eq!(
+                fs::read_to_string(&path_a).expect("read unchanged fileA"),
+                "A-old"
+            );
         }
+        assert_eq!(workflow.current_edit_path(), Some(path_b));
 
         workflow.dispatcher.shutdown();
         remove_temp_root(root.as_path());
