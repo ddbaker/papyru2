@@ -185,11 +185,11 @@ Swap `windows` for `linux` or `macos` when packaging on those hosts.
 The packaging helper includes three ignored Rust tests for real release artifacts. They retain every generated file. Use a fresh output directory: the existing packager replaces previous staging/archive paths, so run the preparation check immediately before the packaging command above.
 
 ```powershell
-$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_9_0-20261104'
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_10_0-20261116'
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_prepare -- --ignored --nocapture
 
 # Run the documented packaging command with this output directory, then:
-$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_9_0-20261104/papyru2-windows-0_65_1.zip'
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_10_0-20261116/papyru2-windows-0_66_0.zip'
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_verify -- --ignored --nocapture
 rtk cargo test --release --locked --offline --bin release_portable_packager local_windows_release_startup -- --ignored --nocapture
 ```
@@ -197,8 +197,8 @@ rtk cargo test --release --locked --offline --bin release_portable_packager loca
 To run every release test, including the artifact QA tests, after packaging into the fresh directory above, use:
 
 ```powershell
-$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_9_0-20261104-qa-guard'
-$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_9_0-20261104/papyru2-windows-0_65_1.zip'
+$env:PAPYRU2_RELEASE_OUTPUT = 'dist/gpui-kit-0_10_0-20261116-qa-guard'
+$env:PAPYRU2_RELEASE_ZIP = 'dist/gpui-kit-0_10_0-20261116/papyru2-windows-0_66_0.zip'
 rtk cargo test --release --locked --all-targets -j 2 -- --include-ignored --test-threads=1
 ```
 
