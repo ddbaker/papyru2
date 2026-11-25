@@ -1,4 +1,53 @@
-use gpui_kit::{Context, Window};
+use crate::{editor::Papyru2Editor, singleline_input::SingleLineInput};
+use gpui_kit::component::input::{MoveLeft, MoveRight};
+use gpui_kit::{App, Context, Entity, InteractiveElement, Window};
+
+/// Kit bubbles these actions when a lone, collapsed caret cannot move any farther.
+/// Let the focused input handle text movement and selections before crossing fields.
+pub(crate) fn bind_horizontal_arrows<E: InteractiveElement>(
+    root: E,
+    singleline: &Entity<SingleLineInput>,
+    editor: &Entity<Papyru2Editor>,
+    prepare_editor: impl Fn(&MoveRight, &mut Window, &mut App) + 'static,
+) -> E {
+    let title = singleline.clone();
+    let body = editor.clone();
+    let root = root.on_action(move |action: &MoveRight, window, cx| {
+        let input = title.read(cx);
+        if !input.is_focused(window, cx)
+            || !input.cursor_at_tail(cx)
+            || !body.read(cx).first_line_is_empty(cx)
+        {
+            cx.propagate();
+            return;
+        }
+        prepare_editor(action, window, cx);
+        body.update(cx, |editor, cx| {
+            if !editor.req_assoc18_editor_input_guard_active {
+                editor.apply_cursor(0, 0, window, cx);
+                editor.focus(window, cx);
+                crate::log::trace_debug("transfer_right singleline tail -> editor cursor=(0, 0)");
+            }
+        });
+        cx.stop_propagation();
+    });
+
+    let title = singleline.clone();
+    let body = editor.clone();
+    root.on_action(move |_: &MoveLeft, window, cx| {
+        let editor = body.read(cx);
+        if !editor.is_focused(window, cx)
+            || editor.req_assoc18_editor_input_guard_active
+            || editor.input_state.read(cx).cursor() != 0
+            || !editor.first_line_is_empty(cx)
+        {
+            cx.propagate();
+            return;
+        }
+        title.update(cx, |input, cx| input.focus_at_tail(window, cx));
+        cx.stop_propagation();
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusTarget {
@@ -633,6 +682,144 @@ impl crate::app::Papyru2App {
             ed_after.cursor_line,
             ed_after.cursor_char
         ));
+    }
+}
+
+#[cfg(test)]
+mod horizontal_arrow_tests {
+    use super::*;
+    use gpui_kit::{AppContext, IntoElement, ParentElement, Render, TestAppContext, div};
+
+    struct Inputs {
+        singleline: Entity<SingleLineInput>,
+        editor: Entity<Papyru2Editor>,
+    }
+
+    impl Render for Inputs {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            bind_horizontal_arrows(div(), &self.singleline, &self.editor, |_, _, _| {})
+                .child(self.singleline.clone())
+                .child(self.editor.clone())
+        }
+    }
+
+    fn check_keys(
+        cx: &mut TestAppContext,
+        body: &str,
+        initial_editor_line: u32,
+        initial_focus: FocusTarget,
+        steps: &[(&str, FocusTarget, usize, u32, u32)],
+    ) {
+        let (handle, inputs) = cx.update(|cx| {
+            gpui_kit::open_window(Default::default(), cx, |window, cx| {
+                cx.new(|cx| Inputs {
+                    singleline: cx.new(|cx| SingleLineInput::new(window, Default::default(), cx)),
+                    editor: cx.new(|cx| {
+                        Papyru2Editor::new(window, Default::default(), Default::default(), cx)
+                    }),
+                })
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            let inputs = inputs.read(cx);
+            let singleline = inputs.singleline.clone();
+            let editor = inputs.editor.clone();
+            singleline.update(cx, |input, cx| {
+                input.apply_text_and_cursor("題🙂a", 2, window, cx);
+            });
+            editor.update(cx, |editor, cx| {
+                editor.set_req_assoc18_editor_input_guard_active(false, cx);
+                editor.apply_text_and_cursor(body.to_owned(), initial_editor_line, 0, window, cx);
+            });
+            match initial_focus {
+                FocusTarget::SingleLine => {
+                    singleline.update(cx, |input, cx| input.focus(window, cx))
+                }
+                FocusTarget::Editor => editor.update(cx, |editor, cx| editor.focus(window, cx)),
+            }
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        for &(keys, target, title_col, row, col) in steps {
+            cx.simulate_keystrokes(handle, keys);
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                let inputs = inputs.read(cx);
+                let title = inputs.singleline.read(cx);
+                let editor = inputs.editor.read(cx);
+                assert_eq!(
+                    title.is_focused(window, cx),
+                    target == FocusTarget::SingleLine,
+                    "{keys}"
+                );
+                assert_eq!(
+                    editor.is_focused(window, cx),
+                    target == FocusTarget::Editor,
+                    "{keys}"
+                );
+                let subject = title.snapshot(cx);
+                let document = editor.snapshot(cx);
+                assert_eq!(subject.value, "題🙂a");
+                assert_eq!(document.value, body);
+                assert_eq!(subject.cursor_char, title_col, "{keys}");
+                assert_eq!(
+                    (document.cursor_line, document.cursor_char),
+                    (row, col),
+                    "{keys}"
+                );
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_req19_req20_blank_first_line_round_trip(cx: &mut TestAppContext) {
+        use FocusTarget::{Editor, SingleLine};
+        cx.update(gpui_kit::init);
+        for (body, initial_line) in [("", 0), ("\nbody", 1), ("\r\nbody", 1)] {
+            check_keys(
+                cx,
+                body,
+                initial_line,
+                SingleLine,
+                &[
+                    ("right", SingleLine, 3, initial_line, 0),
+                    ("shift-left right", SingleLine, 3, initial_line, 0),
+                    ("right", Editor, 3, 0, 0),
+                    ("shift-left", Editor, 3, 0, 0),
+                    ("left", SingleLine, 3, 0, 0),
+                ],
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn assoc_dispatch_req19_req20_other_positions_keep_native_movement(cx: &mut TestAppContext) {
+        use FocusTarget::{Editor, SingleLine};
+        cx.update(gpui_kit::init);
+        for body in ["text", " "] {
+            check_keys(
+                cx,
+                body,
+                0,
+                SingleLine,
+                &[("right right", SingleLine, 3, 0, 0)],
+            );
+            check_keys(cx, body, 0, Editor, &[("left", Editor, 2, 0, 0)]);
+        }
+        check_keys(
+            cx,
+            "\nbody",
+            1,
+            Editor,
+            &[
+                ("left", Editor, 2, 0, 0),
+                ("shift-right left", Editor, 2, 0, 0),
+                ("left", SingleLine, 3, 0, 0),
+            ],
+        );
     }
 }
 

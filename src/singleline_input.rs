@@ -139,6 +139,11 @@ impl SingleLineInput {
         cx.propagate();
     }
 
+    pub(crate) fn cursor_at_tail(&self, cx: &App) -> bool {
+        let state = self.sl_input_state.read(cx);
+        state.cursor() == state.text().len()
+    }
+
     pub fn snapshot(&self, cx: &App) -> SingleLineSnapshot {
         let state = self.sl_input_state.read(cx);
         let cursor = state.cursor_position();
@@ -236,6 +241,13 @@ impl SingleLineInput {
             line: 0,
             character: cursor_char.min(u32::MAX as usize) as u32,
         };
+    }
+
+    pub(crate) fn focus_at_tail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tail = self.sl_input_state.read(cx).text().len_chars();
+        self.apply_cursor(tail, window, cx);
+        self.focus(window, cx);
+        crate::log::trace_debug(format!("transfer_left singleline cursor={tail}"));
     }
 
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -596,6 +596,15 @@ impl Papyru2Editor {
         true
     }
 
+    pub(crate) fn first_line_is_empty(&self, cx: &App) -> bool {
+        let mut chars = self.input_state.read(cx).text().chars();
+        match chars.next() {
+            None | Some('\n') => true,
+            Some('\r') => chars.next() == Some('\n'),
+            _ => false,
+        }
+    }
+
     fn on_move_up_action(
         &mut self,
         _: &gpui_kit::component::input::MoveUp,

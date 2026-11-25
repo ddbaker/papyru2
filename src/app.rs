@@ -1756,10 +1756,15 @@ impl Render for Papyru2App {
             self.apply_req_ftr32_pending_post_refresh_action(action, window, cx);
         }
 
-        v_flex()
-            .id("papyru2")
-            .size_full()
-            .capture_key_down(cx.listener(Self::on_key_down))
+        let root = crate::sl_editor_association::bind_horizontal_arrows(
+            v_flex().id("papyru2").size_full(),
+            &self.singleline,
+            &self.editor,
+            cx.listener(|app, _, window, cx| {
+                app.ensure_new_file_flow("singleline_right", window, cx)
+            }),
+        );
+        root.capture_key_down(cx.listener(Self::on_key_down))
             .gap_2()
             .p_2()
             .child(self.top_bars.clone())
