@@ -3486,7 +3486,7 @@ pub fn run() {
             startup_display_resolution.display_bounds,
         ));
 
-        let default_centered_bounds = WindowBounds::centered(size(px(1200.), px(800.)), cx);
+        let default_centered_bounds = WindowBounds::centered(None, size(px(1200.), px(800.)), cx);
         let fallback_bounds = crate::window_position::first_launch_fallback_bounds(
             startup_display_resolution.display_bounds,
             default_centered_bounds,

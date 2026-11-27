@@ -21,31 +21,26 @@ icon = [
 ]
 
 [dependencies]
-gpui-kit = { version = "0.10.0", features = ["tree-sitter-languages"] }
+gpui-kit = { version = "0.11.0", features = ["tree-sitter-languages"] }
 raw-window-handle = "=0.6.2"
-reqwest = { version = "0.12.15-zed", package = "zed-reqwest" }
-sum-tree = { version = "0.2.0", package = "zed-sum-tree" }
-iroh = { version = "*" }
+# The loopback RPC uses irpc's noq transport. Keep iroh available for peer endpoints.
+iroh = { version = "*", optional = true }
 irpc = { version = "*", features = ["rpc", "derive", "noq_endpoint_setup"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync"] }
 filetime = "0.2.29"
 
 anyhow = "1.0.102"
 lsp-types = "0.97.0"
-tree-sitter-navi = "0.2.3"
-autocorrect = "2.14.2"
 chrono = "0.4.44"
 smol = "2.0.2"
-color-lsp = "0.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 toml = "1.1.2"
-tracing-subscriber = "0.3.23"
 notify = "8.2.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
-gpui-kit = { version = "0.10.0", features = ["test-support"] }
+gpui-kit = { version = "0.11.0", features = ["test-support"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
