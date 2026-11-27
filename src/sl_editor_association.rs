@@ -14,10 +14,7 @@ pub(crate) fn bind_horizontal_arrows<E: InteractiveElement>(
     let body = editor.clone();
     let root = root.on_action(move |action: &MoveRight, window, cx| {
         let input = title.read(cx);
-        if !input.is_focused(window, cx)
-            || !input.cursor_at_tail(cx)
-            || !body.read(cx).first_line_is_empty(cx)
-        {
+        if !input.is_focused(window, cx) || !input.cursor_at_tail(cx) {
             cx.propagate();
             return;
         }
@@ -39,7 +36,6 @@ pub(crate) fn bind_horizontal_arrows<E: InteractiveElement>(
         if !editor.is_focused(window, cx)
             || editor.req_assoc18_editor_input_guard_active
             || editor.input_state.read(cx).cursor() != 0
-            || !editor.first_line_is_empty(cx)
         {
             cx.propagate();
             return;
@@ -775,10 +771,17 @@ mod horizontal_arrow_tests {
     }
 
     #[gpui_kit::test]
-    fn assoc_dispatch_req19_req20_blank_first_line_round_trip(cx: &mut TestAppContext) {
+    fn assoc_dispatch_req19_to_req22_horizontal_arrow_round_trip(cx: &mut TestAppContext) {
         use FocusTarget::{Editor, SingleLine};
         cx.update(gpui_kit::init);
-        for (body, initial_line) in [("", 0), ("\nbody", 1), ("\r\nbody", 1)] {
+        for (body, initial_line) in [
+            ("", 0),
+            ("\nbody", 1),
+            ("\r\nbody", 1),
+            ("hijkl", 0),
+            (" ", 0),
+            ("本文🙂\nbody", 1),
+        ] {
             check_keys(
                 cx,
                 body,
@@ -796,25 +799,16 @@ mod horizontal_arrow_tests {
     }
 
     #[gpui_kit::test]
-    fn assoc_dispatch_req19_req20_other_positions_keep_native_movement(cx: &mut TestAppContext) {
+    fn assoc_dispatch_horizontal_arrows_preserve_native_navigation(cx: &mut TestAppContext) {
         use FocusTarget::{Editor, SingleLine};
         cx.update(gpui_kit::init);
-        for body in ["text", " "] {
-            check_keys(
-                cx,
-                body,
-                0,
-                SingleLine,
-                &[("right right", SingleLine, 3, 0, 0)],
-            );
-            check_keys(cx, body, 0, Editor, &[("left", Editor, 2, 0, 0)]);
-        }
         check_keys(
             cx,
-            "\nbody",
+            "a\nbody",
             1,
             Editor,
             &[
+                ("left", Editor, 2, 0, 1),
                 ("left", Editor, 2, 0, 0),
                 ("shift-right left", Editor, 2, 0, 0),
                 ("left", SingleLine, 3, 0, 0),
